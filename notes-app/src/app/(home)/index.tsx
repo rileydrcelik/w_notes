@@ -4,6 +4,7 @@ import { FolderCard, NoteCard } from '@/components/notes/cards';
 import { ThemedView } from '@/components/themed-view';
 import { Spacing } from '@/constants/theme';
 import { folders, getRootNotes } from '@/data/notes';
+import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
 
 type GridItem =
   | { type: 'folder'; id: string }
@@ -11,6 +12,7 @@ type GridItem =
 
 export default function HomeScreen() {
   const rootNotes = getRootNotes();
+  const tabBarInset = useTabBarInset();
 
   const items: GridItem[] = [
     ...folders.map((folder) => ({ type: 'folder' as const, id: folder.id })),
@@ -24,7 +26,7 @@ export default function HomeScreen() {
         keyExtractor={(item) => `${item.type}-${item.id}`}
         numColumns={2}
         columnWrapperStyle={styles.row}
-        contentContainerStyle={styles.content}
+        contentContainerStyle={[styles.content, { paddingBottom: tabBarInset }]}
         renderItem={({ item }) => {
           if (item.type === 'folder') {
             const folder = folders.find((f) => f.id === item.id)!;

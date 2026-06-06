@@ -63,3 +63,10 @@ export const Spacing = {
 
 export const BottomTabInset = Platform.select({ ios: 50, android: 80 }) ?? 0;
 export const MaxContentWidth = 800;
+
+/** Floating bottom tab bar geometry, shared by the layout and content insets. */
+export const TabBar = {
+  width: 160,
+  height: 48,
+  margin: Spacing.three,
+} as const;

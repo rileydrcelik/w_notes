@@ -6,11 +6,13 @@ import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Spacing } from '@/constants/theme';
 import { getFolder, getNotesInFolder } from '@/data/notes';
+import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
 
 export default function FolderScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const folder = getFolder(id);
   const notes = folder ? getNotesInFolder(folder.id) : [];
+  const tabBarInset = useTabBarInset();
 
   return (
     <ThemedView style={styles.container}>
@@ -25,7 +27,7 @@ export default function FolderScreen() {
           keyExtractor={(note) => note.id}
           numColumns={2}
           columnWrapperStyle={styles.row}
-          contentContainerStyle={styles.content}
+          contentContainerStyle={[styles.content, { paddingBottom: tabBarInset }]}
           renderItem={({ item }) => <NoteCard note={item} />}
         />
       )}
