@@ -1,35 +1,32 @@
+import Feather from '@expo/vector-icons/Feather';
 import { DarkTheme, DefaultTheme, Tabs, ThemeProvider } from 'expo-router';
-import { SymbolView } from 'expo-symbols';
 import { useColorScheme } from 'react-native';
 
 import { AnimatedSplashOverlay } from '@/components/animated-icon';
-import { Colors } from '@/constants/theme';
+import { FloatingTabBar } from '@/components/floating-tab-bar';
 
 export default function RootLayout() {
   const colorScheme = useColorScheme();
-  const scheme = colorScheme === 'dark' ? 'dark' : 'light';
-  const colors = Colors[scheme];
 
   return (
     <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
       <AnimatedSplashOverlay />
       <Tabs
+        tabBar={(props) => <FloatingTabBar {...props} />}
+        // Keep the few tab screens mounted; freezing/detaching them mid-shift
+        // animation can leave a screen stuck blank on rapid switching.
+        detachInactiveScreens={false}
         screenOptions={{
           headerShown: false,
-          tabBarActiveTintColor: colors.text,
-          tabBarInactiveTintColor: colors.textSecondary,
-          tabBarStyle: { backgroundColor: colors.background },
+          animation: 'shift',
+          freezeOnBlur: false,
         }}>
         <Tabs.Screen
           name="settings"
           options={{
             title: 'Settings',
-            tabBarIcon: ({ color }) => (
-              <SymbolView
-                tintColor={color}
-                name={{ ios: 'gearshape.fill', android: 'settings', web: 'settings' }}
-                size={24}
-              />
+            tabBarIcon: ({ color, size }) => (
+              <Feather name="settings" color={color} size={size} />
             ),
           }}
         />
@@ -37,12 +34,8 @@ export default function RootLayout() {
           name="(home)"
           options={{
             title: 'Home',
-            tabBarIcon: ({ color }) => (
-              <SymbolView
-                tintColor={color}
-                name={{ ios: 'house.fill', android: 'home', web: 'home' }}
-                size={24}
-              />
+            tabBarIcon: ({ color, size }) => (
+              <Feather name="home" color={color} size={size} />
             ),
           }}
         />
@@ -50,12 +43,8 @@ export default function RootLayout() {
           name="menu"
           options={{
             title: 'Menu',
-            tabBarIcon: ({ color }) => (
-              <SymbolView
-                tintColor={color}
-                name={{ ios: 'line.3.horizontal', android: 'menu', web: 'menu' }}
-                size={24}
-              />
+            tabBarIcon: ({ color, size }) => (
+              <Feather name="menu" color={color} size={size} />
             ),
           }}
         />

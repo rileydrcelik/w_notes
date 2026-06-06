@@ -13,6 +13,11 @@ export default function HomeStackLayout() {
         headerStyle: { backgroundColor: colors.background },
         headerTintColor: colors.text,
         contentStyle: { backgroundColor: colors.background },
+        animation: 'slide_from_right',
+        animationDuration: 300,
+        // Back navigation lives in the floating tab bar; hide the native one.
+        headerBackVisible: false,
+        gestureEnabled: true,
       }}>
       <Stack.Screen name="index" options={{ title: 'Notes' }} />
       <Stack.Screen name="folder/[id]" options={{ title: '' }} />

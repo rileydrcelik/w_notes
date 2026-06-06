@@ -5,10 +5,12 @@ import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Spacing } from '@/constants/theme';
 import { getNote } from '@/data/notes';
+import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
 
 export default function NoteScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const note = getNote(id);
+  const tabBarInset = useTabBarInset();
 
   if (!note) {
     return (
@@ -22,7 +24,7 @@ export default function NoteScreen() {
   return (
     <ThemedView style={styles.container}>
       <Stack.Screen options={{ title: note.title }} />
-      <ScrollView contentContainerStyle={styles.content}>
+      <ScrollView contentContainerStyle={[styles.content, { paddingBottom: tabBarInset }]}>
         <ThemedText type="title" style={styles.title}>
           {note.title}
         </ThemedText>
