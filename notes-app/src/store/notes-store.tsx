@@ -11,6 +11,10 @@ type NotesContextValue = {
   getNote: (id: string) => Note | undefined;
   getNotesInFolder: (folderId: string) => Note[];
   getRootNotes: () => Note[];
+  /** Creates an empty note in the given folder (null = root) and returns its id. */
+  createNote: (folderId: string | null) => string;
+  /** Creates an unnamed folder and returns its id. */
+  createFolder: () => string;
   updateNote: (id: string, patch: Partial<Pick<Note, 'title' | 'body'>>) => void;
   updateFolder: (id: string, patch: Partial<Pick<Folder, 'name'>>) => void;
 };
@@ -25,6 +29,21 @@ const NotesContext = createContext<NotesContextValue | null>(null);
 export function NotesProvider({ children }: { children: ReactNode }) {
   const [notes, setNotes] = useState<Note[]>(seedNotes);
   const [folders, setFolders] = useState<Folder[]>(seedFolders);
+
+  const createNote = useCallback<NotesContextValue['createNote']>((folderId) => {
+    const id = `note-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const note: Note = { id, title: '', body: '', folderId, updatedAt: today() };
+    // Prepend so the new note surfaces first in its location.
+    setNotes((prev) => [note, ...prev]);
+    return id;
+  }, []);
+
+  const createFolder = useCallback<NotesContextValue['createFolder']>(() => {
+    const id = `folder-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    // Prepend so the new folder surfaces first in the hierarchy.
+    setFolders((prev) => [{ id, name: '' }, ...prev]);
+    return id;
+  }, []);
 
   const updateNote = useCallback<NotesContextValue['updateNote']>((id, patch) => {
     setNotes((prev) =>
@@ -44,10 +63,12 @@ export function NotesProvider({ children }: { children: ReactNode }) {
       getNote: (id) => notes.find((note) => note.id === id),
       getNotesInFolder: (folderId) => notes.filter((note) => note.folderId === folderId),
       getRootNotes: () => notes.filter((note) => note.folderId === null),
+      createNote,
+      createFolder,
       updateNote,
       updateFolder,
     }),
-    [folders, notes, updateNote, updateFolder],
+    [folders, notes, createNote, createFolder, updateNote, updateFolder],
   );
 
   return <NotesContext.Provider value={value}>{children}</NotesContext.Provider>;
