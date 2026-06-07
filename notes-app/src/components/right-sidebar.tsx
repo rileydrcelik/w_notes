@@ -1,11 +1,17 @@
 import Feather from '@expo/vector-icons/Feather';
+import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
 import { useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, useColorScheme, View } from 'react-native';
-import Animated, { FadeIn, FadeOut, SlideInRight, SlideOutRight } from 'react-native-reanimated';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import Animated, {
+  FadeIn,
+  FadeOut,
+  LinearTransition,
+  SlideInRight,
+  SlideOutRight,
+} from 'react-native-reanimated';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { GlassSurface } from '@/components/glass-surface';
 import { ThemedText } from '@/components/themed-text';
 import { Colors, Spacing } from '@/constants/theme';
 import { useNotes } from '@/store/notes-store';
@@ -20,7 +26,7 @@ const QUICK_ACCESS = [
 ] as const;
 
 /**
- * Right-hand drawer (66% width) listing quick-access shortcuts and the full
+ * Right-hand drawer (73.75% width) listing quick-access shortcuts and the full
  * note hierarchy. Rendered from inside the floating tab bar so the navbar
  * always stacks above it. Always mounted; the inner content mounts/unmounts on
  * `open` so the slide/fade exit animations get a chance to play.
@@ -29,7 +35,8 @@ export function RightSidebar({ open, onClose }: { open: boolean; onClose: () => 
   const scheme = useColorScheme() === 'dark' ? 'dark' : 'light';
   const colors = Colors[scheme];
   const router = useRouter();
-  const { folders, notes, getNotesInFolder, getRootNotes } = useNotes();
+  const insets = useSafeAreaInsets();
+  const { folders, notes, getNotesInFolder, getRootNotes, createFolder } = useNotes();
   const rootNotes = getRootNotes();
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 
@@ -38,6 +45,12 @@ export function RightSidebar({ open, onClose }: { open: boolean; onClose: () => 
   const openNote = (id: string) => {
     onClose();
     router.push({ pathname: '/note/[id]', params: { id } });
+  };
+
+  const addFolder = () => {
+    const id = createFolder();
+    onClose();
+    router.push({ pathname: '/folder/[id]', params: { id } });
   };
 
   return (
@@ -57,105 +70,125 @@ export function RightSidebar({ open, onClose }: { open: boolean; onClose: () => 
             entering={SlideInRight.duration(260)}
             exiting={SlideOutRight.duration(220)}
             style={styles.panel}>
-            <GlassSurface intensity={60} style={styles.panelSurface}>
-              <SafeAreaView edges={['top', 'right', 'bottom']} style={styles.safeArea}>
-                <ScrollView
-                  contentContainerStyle={styles.content}
-                  showsVerticalScrollIndicator={false}>
-                  <ThemedText type="subtitle">Library</ThemedText>
-
-                  <ThemedText type="smallBold" themeColor="textSecondary" style={styles.sectionLabel}>
-                    QUICK ACCESS
+            <SafeAreaView edges={['top', 'right']} style={styles.safeArea}>
+              {/* Quick-access sidebar */}
+              <View style={[styles.sidebar, { backgroundColor: colors.background }]}>
+                <Pressable
+                  onPress={onClose}
+                  style={({ pressed }) => [styles.row, pressed && styles.pressed]}>
+                  <ThemedText type="small" themeColor="textSecondary">
+                    {notes.length}
                   </ThemedText>
+                  <ThemedText style={[styles.rowLabel, styles.quickLabel]} numberOfLines={1}>
+                    All Notes
+                  </ThemedText>
+                  <Feather name="layers" size={18} color={colors.text} style={styles.leadIcon} />
+                </Pressable>
+                {QUICK_ACCESS.map((item) => (
                   <Pressable
+                    key={item.id}
                     onPress={onClose}
                     style={({ pressed }) => [styles.row, pressed && styles.pressed]}>
-                    <Feather name="layers" size={18} color={colors.text} style={styles.leadIcon} />
-                    <ThemedText style={styles.rowLabel} numberOfLines={1}>
-                      All Notes
-                    </ThemedText>
                     <ThemedText type="small" themeColor="textSecondary">
-                      {notes.length}
+                      {item.count}
                     </ThemedText>
+                    <ThemedText style={[styles.rowLabel, styles.quickLabel]} numberOfLines={1}>
+                      {item.label}
+                    </ThemedText>
+                    <Feather name={item.icon} size={18} color={colors.text} style={styles.leadIcon} />
                   </Pressable>
-                  {QUICK_ACCESS.map((item) => (
-                    <Pressable
-                      key={item.id}
-                      onPress={onClose}
-                      style={({ pressed }) => [styles.row, pressed && styles.pressed]}>
-                      <Feather name={item.icon} size={18} color={colors.text} style={styles.leadIcon} />
-                      <ThemedText style={styles.rowLabel} numberOfLines={1}>
-                        {item.label}
-                      </ThemedText>
-                      <ThemedText type="small" themeColor="textSecondary">
-                        {item.count}
-                      </ThemedText>
-                    </Pressable>
-                  ))}
+                ))}
+              </View>
 
-                  <ThemedText type="smallBold" themeColor="textSecondary" style={styles.sectionLabel}>
-                    NOTES
-                  </ThemedText>
+              {/* Notes-hierarchy sidebar */}
+              <View style={[styles.sidebar, styles.notesSidebar, { backgroundColor: colors.background }]}>
+                {/* Pinned header: create a new folder. */}
+                <Pressable
+                  onPress={addFolder}
+                  accessibilityRole="button"
+                  accessibilityLabel="New folder"
+                  style={({ pressed }) => [
+                    styles.newFolderButton,
+                    { backgroundColor: colors.backgroundElement },
+                    pressed && styles.pressed,
+                  ]}>
+                  <Feather name="folder-plus" size={26} color={colors.text} />
+                </Pressable>
+                <ScrollView
+                  contentContainerStyle={[
+                    styles.notesContent,
+                    { paddingBottom: insets.bottom + Spacing.two },
+                  ]}
+                  showsVerticalScrollIndicator={false}>
                   {folders.map((folder) => {
                     const folderNotes = getNotesInFolder(folder.id);
                     const isOpen = expanded[folder.id];
                     return (
-                      <View key={folder.id}>
+                      <Animated.View key={folder.id} layout={LinearTransition.duration(220)}>
                         <Pressable
                           onPress={() => toggle(folder.id)}
                           style={({ pressed }) => [styles.row, pressed && styles.pressed]}>
-                          <Feather
-                            name={isOpen ? 'chevron-down' : 'chevron-right'}
-                            size={18}
-                            color={colors.textSecondary}
-                            style={styles.leadIcon}
-                          />
-                          <ThemedText style={styles.rowLabel} numberOfLines={1}>
-                            {folder.name}
-                          </ThemedText>
                           <ThemedText type="small" themeColor="textSecondary">
                             {folderNotes.length}
                           </ThemedText>
+                          <View style={styles.spacer} />
+                          <Feather
+                            name={isOpen ? 'chevron-down' : 'chevron-left'}
+                            size={18}
+                            color={colors.textSecondary}
+                          />
+                          <ThemedText style={styles.folderName} numberOfLines={1}>
+                            {folder.name}
+                          </ThemedText>
                         </Pressable>
                         {isOpen &&
-                          folderNotes.map((note) => (
-                            <Pressable
+                          folderNotes.map((note, index) => (
+                            <AnimatedPressable
                               key={note.id}
+                              entering={FadeIn.duration(160).delay(index * 25)}
+                              exiting={FadeOut.duration(120)}
                               onPress={() => openNote(note.id)}
                               style={({ pressed }) => [
                                 styles.row,
                                 styles.childRow,
                                 pressed && styles.pressed,
                               ]}>
+                              <ThemedText type="small" style={styles.rowLabel} numberOfLines={1}>
+                                {note.title}
+                              </ThemedText>
                               <Feather
                                 name="file-text"
                                 size={16}
                                 color={colors.textSecondary}
                                 style={styles.leadIcon}
                               />
-                              <ThemedText type="small" style={styles.rowLabel} numberOfLines={1}>
-                                {note.title}
-                              </ThemedText>
-                            </Pressable>
+                            </AnimatedPressable>
                           ))}
-                      </View>
+                      </Animated.View>
                     );
                   })}
 
                   {rootNotes.map((note) => (
-                    <Pressable
+                    <AnimatedPressable
                       key={note.id}
+                      layout={LinearTransition.duration(220)}
                       onPress={() => openNote(note.id)}
                       style={({ pressed }) => [styles.row, pressed && styles.pressed]}>
-                      <Feather name="file-text" size={18} color={colors.text} style={styles.leadIcon} />
                       <ThemedText style={styles.rowLabel} numberOfLines={1}>
                         {note.title}
                       </ThemedText>
-                    </Pressable>
+                      <Feather name="file-text" size={18} color={colors.text} style={styles.leadIcon} />
+                    </AnimatedPressable>
                   ))}
                 </ScrollView>
-              </SafeAreaView>
-            </GlassSurface>
+                {/* Subtle fade so content dissolves into the bottom edge. */}
+                <LinearGradient
+                  pointerEvents="none"
+                  colors={['transparent', 'rgba(0,0,0,0.85)']}
+                  style={styles.bottomFade}
+                />
+              </View>
+            </SafeAreaView>
           </Animated.View>
         </>
       )}
@@ -184,40 +217,63 @@ const styles = StyleSheet.create({
     top: 0,
     bottom: 0,
     right: 0,
-    width: '66%',
+    width: '73.75%',
+  },
+  safeArea: {
+    flex: 1,
+    gap: Spacing.three,
+  },
+  /** A standalone docked card, flush to the screen's right edge. */
+  sidebar: {
+    overflow: 'hidden',
+    padding: Spacing.two,
+    // Extra inset so the right-aligned content isn't jammed against the edge.
+    paddingRight: Spacing.three,
+    borderTopLeftRadius: Spacing.four,
+    borderBottomLeftRadius: Spacing.four,
     shadowColor: '#000',
     shadowOpacity: 0.4,
     shadowRadius: 24,
     shadowOffset: { width: -8, height: 0 },
     elevation: 24,
   },
-  panelSurface: {
+  /** The lower sidebar takes the remaining height and scrolls internally. */
+  notesSidebar: {
     flex: 1,
-    borderTopLeftRadius: Spacing.four,
-    borderBottomLeftRadius: Spacing.four,
+    // Reaches the screen's bottom edge, so its bottom-left corner stays square.
+    borderBottomLeftRadius: 0,
   },
-  safeArea: {
-    flex: 1,
-  },
-  content: {
-    padding: Spacing.four,
+  notesContent: {
     gap: Spacing.one,
   },
-  sectionLabel: {
-    marginTop: Spacing.three,
-    marginBottom: Spacing.one,
-    letterSpacing: 1,
+  bottomFade: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    height: Spacing.six,
   },
   row: {
     flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'flex-end',
     gap: Spacing.two,
     paddingVertical: Spacing.two,
     paddingHorizontal: Spacing.two,
     borderRadius: Spacing.two,
   },
   childRow: {
-    marginLeft: Spacing.four,
+    marginRight: Spacing.four,
+  },
+  /** Pinned create-folder button above the scrolling hierarchy. */
+  newFolderButton: {
+    alignSelf: 'center',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: Spacing.two,
+    paddingHorizontal: Spacing.six,
+    marginBottom: Spacing.two,
+    borderRadius: Spacing.three,
   },
   pressed: {
     opacity: 0.55,
@@ -228,5 +284,17 @@ const styles = StyleSheet.create({
   },
   rowLabel: {
     flex: 1,
+    textAlign: 'right',
+  },
+  spacer: {
+    flex: 1,
+  },
+  folderName: {
+    flexShrink: 1,
+    textAlign: 'right',
+  },
+  quickLabel: {
+    fontSize: 18,
+    lineHeight: 24,
   },
 });

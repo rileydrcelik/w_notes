@@ -1,6 +1,6 @@
 import Feather from '@expo/vector-icons/Feather';
 import { type Href, usePathname, useRouter } from 'expo-router';
-import type { ReactNode } from 'react';
+import type { ComponentProps, RefObject } from 'react';
 import { useEffect, useState } from 'react';
 import { Keyboard, Platform, Pressable, StyleSheet, useColorScheme, View } from 'react-native';
 import Animated, {
@@ -9,8 +9,6 @@ import Animated, {
   LinearTransition,
   useAnimatedStyle,
   useSharedValue,
-  withSequence,
-  withSpring,
   withTiming,
 } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -19,6 +17,7 @@ import { GlassSurface } from '@/components/glass-surface';
 import { RightSidebar } from '@/components/right-sidebar';
 import { Colors, Spacing, TabBar } from '@/constants/theme';
 import { useTabBarBottom } from '@/hooks/use-tab-bar-inset';
+import { useNotes } from '@/store/notes-store';
 
 /** Tracks on-screen keyboard visibility so the bar can move out of its way. */
 function useKeyboardVisible() {
@@ -36,23 +35,24 @@ function useKeyboardVisible() {
   return visible;
 }
 
-type TabIconProps = { focused: boolean; color: string; size: number };
+type FeatherName = ComponentProps<typeof Feather>['name'];
+
+/**
+ * The fixed tab set. `menu` opens the side drawer instead of navigating; the
+ * others map to their route. Order mirrors the screens declared in _layout.
+ */
+const TABS: { key: string; icon: FeatherName; path?: Href }[] = [
+  { key: 'settings', icon: 'settings', path: '/settings' as Href },
+  { key: 'home', icon: 'home', path: '/' as Href },
+  { key: 'menu', icon: 'menu' },
+];
 
 type FloatingTabBarProps = {
-  state: { index: number; routes: { key: string; name: string }[] };
-  descriptors: Record<
-    string,
-    { options: { tabBarIcon?: (props: TabIconProps) => ReactNode } }
-  >;
-  navigation: {
-    emit: (event: { type: 'tabPress'; target: string; canPreventDefault: true }) => {
-      defaultPrevented: boolean;
-    };
-    navigate: (name: string) => void;
-  };
+  /** Android blur target (ref to the screens' BlurTargetView); null elsewhere. */
+  blurTarget?: RefObject<View | null> | null;
 };
 
-export function FloatingTabBar({ state, descriptors, navigation }: FloatingTabBarProps) {
+export function FloatingTabBar({ blurTarget }: FloatingTabBarProps) {
   const scheme = useColorScheme() === 'dark' ? 'dark' : 'light';
   const colors = Colors[scheme];
   const router = useRouter();
@@ -61,6 +61,8 @@ export function FloatingTabBar({ state, descriptors, navigation }: FloatingTabBa
   const bottom = useTabBarBottom();
   // The menu tab opens a side drawer instead of navigating to a screen.
   const [menuOpen, setMenuOpen] = useState(false);
+  // Settings is the only sibling tab; everything else lives under the home group.
+  const onSettings = pathname === '/settings';
   // While the keyboard is up, the bar relocates to the top-right and stacks
   // vertically so it never sits over the keyboard.
   const vertical = useKeyboardVisible();
@@ -86,8 +88,12 @@ export function FloatingTabBar({ state, descriptors, navigation }: FloatingTabBa
     <>
       {/* Rendered before the cluster so the navbar always stacks above the drawer. */}
       <RightSidebar open={menuOpen} onClose={() => setMenuOpen(false)} />
+      {/* The navbar steps aside while the drawer is open. */}
+      {!menuOpen && (
       <Animated.View
         pointerEvents="box-none"
+        entering={FadeIn.duration(200)}
+        exiting={FadeOut.duration(150)}
         layout={LinearTransition.duration(220)}
         style={[styles.host, hostPlacement]}>
         <View style={[styles.cluster, vertical && styles.clusterVertical]}>
@@ -98,7 +104,8 @@ export function FloatingTabBar({ state, descriptors, navigation }: FloatingTabBa
                 <Pressable accessibilityRole="button" accessibilityLabel="Go back" onPress={goBack}>
                   <GlassSurface
                     intensity={75}
-                    tintOpacity={0.85}
+                    tintOpacity={0.5}
+                    blurTarget={blurTarget}
                     style={[styles.backButton, { width: TabBar.height, height: TabBar.height }]}>
                     <Feather name="chevron-left" color={colors.textSecondary} size={26} />
                   </GlassSurface>
@@ -109,13 +116,14 @@ export function FloatingTabBar({ state, descriptors, navigation }: FloatingTabBa
 
           <GlassSurface
             intensity={75}
-            tintOpacity={0.85}
+            tintOpacity={0.5}
+            blurTarget={blurTarget}
             style={[styles.bar, vertical && styles.barVertical, barSize]}>
-            {state.routes.map((route, index) => {
-              const { options } = descriptors[route.key];
-              // The menu tab reflects the drawer's open state rather than navigation.
-              const isMenu = route.name === 'menu';
-              const focused = isMenu ? menuOpen : state.index === index;
+            {TABS.map((tab) => {
+              // The menu tab reflects the drawer's open state rather than navigation;
+              // settings is active on its own route, home on everything else.
+              const isMenu = tab.key === 'menu';
+              const focused = isMenu ? menuOpen : tab.key === 'settings' ? onSettings : !onSettings;
 
               const onPress = () => {
                 // Any navbar press dismisses the keyboard before acting.
@@ -124,28 +132,21 @@ export function FloatingTabBar({ state, descriptors, navigation }: FloatingTabBa
                   setMenuOpen((prev) => !prev);
                   return;
                 }
-                const event = navigation.emit({
-                  type: 'tabPress',
-                  target: route.key,
-                  canPreventDefault: true,
-                });
-                if (!focused && !event.defaultPrevented) {
-                  navigation.navigate(route.name);
-                }
+                if (tab.path) router.navigate(tab.path);
               };
 
               return (
                 <Pressable
-                  key={route.key}
+                  key={tab.key}
                   accessibilityRole="button"
                   accessibilityState={focused ? { selected: true } : {}}
                   onPress={onPress}
                   style={styles.item}>
-                  {options.tabBarIcon?.({
-                    focused,
-                    color: focused ? '#7a89b8' : colors.textSecondary,
-                    size: 28,
-                  })}
+                  <Feather
+                    name={tab.icon}
+                    color={focused ? '#7a89b8' : colors.textSecondary}
+                    size={28}
+                  />
                 </Pressable>
               );
             })}
@@ -153,35 +154,80 @@ export function FloatingTabBar({ state, descriptors, navigation }: FloatingTabBa
 
           {/* Trailing slot: the create button, mirroring the back button. */}
           <View pointerEvents="box-none" style={[styles.sideSlot, slotStyle]}>
-            <CreateButton iconColor={colors.textSecondary} />
+            <CreateButton
+              iconColor={colors.textSecondary}
+              keyboardVisible={vertical}
+              blurTarget={blurTarget}
+            />
           </View>
         </View>
       </Animated.View>
+      )}
     </>
   );
 }
 
-/** Create action; mirrors the back button. No-op for now beyond a press animation. */
-function CreateButton({ iconColor }: { iconColor: string }) {
+/**
+ * Trailing action button. With the keyboard up it becomes a "done" affordance —
+ * a check that dismisses the keyboard; otherwise it's the create (+) button that
+ * adds a note in the current location (a folder, or the root) and opens it.
+ */
+function CreateButton({
+  iconColor,
+  keyboardVisible,
+  blurTarget,
+}: {
+  iconColor: string;
+  keyboardVisible: boolean;
+  blurTarget?: RefObject<View | null> | null;
+}) {
+  const router = useRouter();
+  const pathname = usePathname();
+  const { createNote, getNote } = useNotes();
   const scale = useSharedValue(1);
   const animatedStyle = useAnimatedStyle(() => ({ transform: [{ scale: scale.value }] }));
 
+  // Resolve the folder the new note should land in from the current route:
+  // a folder screen creates inside that folder, a note screen alongside its
+  // sibling notes, and everywhere else (home, settings) at the root.
+  const targetFolderId = (): string | null => {
+    const folderMatch = pathname.match(/^\/folder\/([^/]+)/);
+    if (folderMatch) return decodeURIComponent(folderMatch[1]);
+    const noteMatch = pathname.match(/^\/note\/([^/]+)/);
+    if (noteMatch) return getNote(decodeURIComponent(noteMatch[1]))?.folderId ?? null;
+    return null;
+  };
+
   const onPress = () => {
     Keyboard.dismiss();
-    scale.value = withSequence(
-      withTiming(0.82, { duration: 100 }),
-      withSpring(1, { damping: 6, stiffness: 220 }),
-    );
+    // With the keyboard up this button just confirms/dismisses; otherwise create.
+    if (keyboardVisible) return;
+    const id = createNote(targetFolderId());
+    router.push({ pathname: '/note/[id]', params: { id } });
   };
 
   return (
     <Animated.View style={animatedStyle}>
-      <Pressable accessibilityRole="button" accessibilityLabel="Create" onPress={onPress}>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={keyboardVisible ? 'Done' : 'Create'}
+        onPressIn={() => {
+          scale.value = withTiming(0.92, { duration: 80 });
+        }}
+        onPressOut={() => {
+          scale.value = withTiming(1, { duration: 120 });
+        }}
+        onPress={onPress}>
         <GlassSurface
           intensity={75}
           tintOpacity={0.85}
+          blurTarget={blurTarget}
           style={[styles.createButton, { width: TabBar.height, height: TabBar.height }]}>
-          <Feather name="plus" color={iconColor} size={26} />
+          <Feather
+            name={keyboardVisible ? 'check' : 'plus'}
+            color={iconColor}
+            size={26}
+          />
         </GlassSurface>
       </Pressable>
     </Animated.View>

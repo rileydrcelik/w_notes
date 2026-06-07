@@ -1,3 +1,4 @@
+import { LinearGradient } from 'expo-linear-gradient';
 import { Stack, useLocalSearchParams } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
 import {
@@ -7,6 +8,7 @@ import {
   StyleSheet,
   TextInput,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
@@ -20,6 +22,11 @@ export default function NoteScreen() {
   const { getNote, updateNote } = useNotes();
   const theme = useTheme();
   const tabBarInset = useTabBarInset();
+  const insets = useSafeAreaInsets();
+
+  // Measured height of the sticky title block, so the fade gradient sits right
+  // beneath it regardless of how many lines the title wraps to.
+  const [titleHeight, setTitleHeight] = useState(0);
 
   const note = getNote(id);
   const [title, setTitle] = useState(note?.title ?? '');
@@ -71,22 +78,23 @@ export default function NoteScreen() {
 
   return (
     <ThemedView style={styles.container}>
-      <Stack.Screen options={{ title: title || 'Note' }} />
+      <Stack.Screen options={{ headerShown: false }} />
       <KeyboardAvoidingView
         style={styles.container}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+        <TextInput
+          value={title}
+          onChangeText={setTitle}
+          onLayout={(e) => setTitleHeight(e.nativeEvent.layout.height)}
+          placeholder="Title"
+          placeholderTextColor={theme.textSecondary}
+          style={[styles.title, { color: theme.text, paddingTop: insets.top + Spacing.two }]}
+          multiline
+        />
         <ScrollView
           contentContainerStyle={[styles.content, { paddingBottom: tabBarInset }]}
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}>
-          <TextInput
-            value={title}
-            onChangeText={setTitle}
-            placeholder="Title"
-            placeholderTextColor={theme.textSecondary}
-            style={[styles.title, { color: theme.text }]}
-            multiline
-          />
           <TextInput
             value={body}
             onChangeText={setBody}
@@ -97,6 +105,12 @@ export default function NoteScreen() {
             textAlignVertical="top"
           />
         </ScrollView>
+        {/* Fades scrolling body text into the sticky title. */}
+        <LinearGradient
+          pointerEvents="none"
+          colors={[theme.background, `${theme.background}00`]}
+          style={[styles.fade, { top: titleHeight }]}
+        />
       </KeyboardAvoidingView>
     </ThemedView>
   );
@@ -107,13 +121,21 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   content: {
-    padding: Spacing.four,
+    paddingHorizontal: Spacing.four,
+    paddingTop: Spacing.three,
     gap: Spacing.three,
   },
   title: {
-    fontSize: 32,
-    lineHeight: 38,
+    paddingHorizontal: Spacing.four,
+    fontSize: 40,
+    lineHeight: 46,
     fontWeight: '700',
+  },
+  fade: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    height: Spacing.five,
   },
   body: {
     fontSize: 16,
