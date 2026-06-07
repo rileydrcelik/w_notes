@@ -1,6 +1,10 @@
 /**
- * Dummy data for the notes app. Notes either live inside a folder
+ * Seed data for the notes app. Notes either live inside a folder
  * (`folderId` set) or directly on the home screen (`folderId: null`).
+ *
+ * These arrays are only the initial defaults: at runtime the live, editable
+ * copy lives in the notes store (`@/store/notes-store`), which seeds itself
+ * from here on first launch and then persists changes to local storage.
  */
 
 export type Note = {
@@ -16,14 +20,14 @@ export type Folder = {
   name: string;
 };
 
-export const folders: Folder[] = [
+export const seedFolders: Folder[] = [
   { id: 'work', name: 'Work' },
   { id: 'personal', name: 'Personal' },
   { id: 'recipes', name: 'Recipes' },
   { id: 'travel', name: 'Travel' },
 ];
 
-export const notes: Note[] = [
+export const seedNotes: Note[] = [
   {
     id: 'quick-thought',
     title: 'Quick thought',
@@ -257,19 +261,3 @@ export const notes: Note[] = [
   },
 ];
 
-export function getFolder(id: string): Folder | undefined {
-  return folders.find((folder) => folder.id === id);
-}
-
-export function getNote(id: string): Note | undefined {
-  return notes.find((note) => note.id === id);
-}
-
-export function getNotesInFolder(folderId: string): Note[] {
-  return notes.filter((note) => note.folderId === folderId);
-}
-
-/** Notes shown directly on the home screen (not inside a folder). */
-export function getRootNotes(): Note[] {
-  return notes.filter((note) => note.folderId === null);
-}

@@ -4,14 +4,16 @@ import { useColorScheme } from 'react-native';
 
 import { AnimatedSplashOverlay } from '@/components/animated-icon';
 import { FloatingTabBar } from '@/components/floating-tab-bar';
+import { NotesProvider } from '@/store/notes-store';
 
 export default function RootLayout() {
   const colorScheme = useColorScheme();
 
   return (
     <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
-      <AnimatedSplashOverlay />
-      <Tabs
+      <NotesProvider>
+        <AnimatedSplashOverlay />
+        <Tabs
         tabBar={(props) => <FloatingTabBar {...props} />}
         // Keep the few tab screens mounted; freezing/detaching them mid-shift
         // animation can leave a screen stuck blank on rapid switching.
@@ -48,7 +50,8 @@ export default function RootLayout() {
             ),
           }}
         />
-      </Tabs>
+        </Tabs>
+      </NotesProvider>
     </ThemeProvider>
   );
 }
