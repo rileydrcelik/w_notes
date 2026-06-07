@@ -3,14 +3,15 @@ import { FlatList, StyleSheet } from 'react-native';
 import { FolderCard, NoteCard } from '@/components/notes/cards';
 import { ThemedView } from '@/components/themed-view';
 import { Spacing } from '@/constants/theme';
-import { folders, getRootNotes } from '@/data/notes';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
+import { useNotes } from '@/store/notes-store';
 
 type GridItem =
   | { type: 'folder'; id: string }
   | { type: 'note'; id: string };
 
 export default function HomeScreen() {
+  const { folders, getRootNotes } = useNotes();
   const rootNotes = getRootNotes();
   const tabBarInset = useTabBarInset();
 

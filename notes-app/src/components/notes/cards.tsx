@@ -1,36 +1,32 @@
 import { useRouter } from 'expo-router';
-import { SymbolView } from 'expo-symbols';
 import { Pressable, StyleSheet } from 'react-native';
 
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Spacing } from '@/constants/theme';
 import type { Folder, Note } from '@/data/notes';
-import { getNotesInFolder } from '@/data/notes';
-import { useTheme } from '@/hooks/use-theme';
+import { useNotes } from '@/store/notes-store';
 
 export function FolderCard({ folder }: { folder: Folder }) {
-  const theme = useTheme();
   const router = useRouter();
+  const { getNotesInFolder } = useNotes();
   const count = getNotesInFolder(folder.id).length;
 
   return (
     <Pressable
       style={({ pressed }) => [styles.cardWrapper, pressed && styles.pressed]}
       onPress={() => router.push({ pathname: '/folder/[id]', params: { id: folder.id } })}>
-      <ThemedView type="backgroundElement" style={styles.card}>
-        <SymbolView
-          tintColor={theme.text}
-          name={{ ios: 'folder.fill', android: 'folder', web: 'folder' }}
-          size={28}
-        />
-        <ThemedView type="backgroundElement" style={styles.cardFooter}>
-          <ThemedText type="smallBold" numberOfLines={1}>
-            {folder.name}
-          </ThemedText>
-          <ThemedText type="small" themeColor="textSecondary">
-            {count} {count === 1 ? 'note' : 'notes'}
-          </ThemedText>
+      <ThemedView style={styles.folder}>
+        <ThemedView type="backgroundElement" style={styles.folderTab} />
+        <ThemedView type="backgroundElement" style={styles.folderBody}>
+          <ThemedView type="backgroundElement" style={styles.cardFooter}>
+            <ThemedText type="smallBold" numberOfLines={1}>
+              {folder.name}
+            </ThemedText>
+            <ThemedText type="small" themeColor="textSecondary">
+              {count} {count === 1 ? 'note' : 'notes'}
+            </ThemedText>
+          </ThemedView>
         </ThemedView>
       </ThemedView>
     </Pressable>
@@ -67,6 +63,24 @@ const styles = StyleSheet.create({
     flex: 1,
     minHeight: 120,
     borderRadius: Spacing.three,
+    padding: Spacing.three,
+    gap: Spacing.two,
+  },
+  folder: {
+    flex: 1,
+    minHeight: 120,
+    backgroundColor: 'transparent',
+  },
+  folderTab: {
+    width: '45%',
+    height: Spacing.four,
+    borderTopLeftRadius: Spacing.two,
+    borderTopRightRadius: Spacing.two,
+  },
+  folderBody: {
+    flex: 1,
+    borderRadius: Spacing.three,
+    borderTopLeftRadius: 0,
     padding: Spacing.three,
     gap: Spacing.two,
   },
