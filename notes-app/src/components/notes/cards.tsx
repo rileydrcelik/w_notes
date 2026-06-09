@@ -1,3 +1,4 @@
+import Feather from '@expo/vector-icons/Feather';
 import { useRouter } from 'expo-router';
 import { Pressable, StyleSheet, View } from 'react-native';
 
@@ -6,20 +7,29 @@ import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Spacing } from '@/constants/theme';
 import type { Folder, Note } from '@/data/notes';
+import { useDoubleTap } from '@/hooks/use-double-tap';
 import { useTheme } from '@/hooks/use-theme';
 import { useNotes } from '@/store/notes-store';
 
+const FAVORITE = '#f5a623';
+
 export function FolderCard({ folder }: { folder: Folder }) {
   const router = useRouter();
-  const { getNotesInFolder } = useNotes();
+  const { getNotesInFolder, toggleFolderFavorite } = useNotes();
   const { openOptions } = useItemOptions();
   const theme = useTheme();
   const count = getNotesInFolder(folder.id).length;
 
+  // Tap opens the folder; double-tap favorites it.
+  const onPress = useDoubleTap(
+    () => router.push({ pathname: '/folder/[id]', params: { id: folder.id } }),
+    () => toggleFolderFavorite(folder.id),
+  );
+
   return (
     <Pressable
       style={({ pressed }) => [styles.cardWrapper, pressed && styles.pressed]}
-      onPress={() => router.push({ pathname: '/folder/[id]', params: { id: folder.id } })}
+      onPress={onPress}
       onLongPress={() => openOptions({ type: 'folder', id: folder.id })}>
       <ThemedView style={styles.folder}>
         {/* Tab: flat top that slopes down to the body at 45° on the right. */}
@@ -29,9 +39,12 @@ export function FolderCard({ folder }: { folder: Folder }) {
         </View>
         <ThemedView type="backgroundElement" style={styles.folderBody}>
           <ThemedView type="backgroundElement" style={styles.cardFooter}>
-            <ThemedText type="smallBold" numberOfLines={1}>
-              {folder.name}
-            </ThemedText>
+            <View style={styles.titleRow}>
+              <ThemedText type="smallBold" numberOfLines={1} style={styles.titleText}>
+                {folder.name}
+              </ThemedText>
+              {folder.favorite && <Feather name="star" size={13} color={FAVORITE} />}
+            </View>
             <ThemedText type="small" themeColor="textSecondary">
               {count} {count === 1 ? 'note' : 'notes'}
             </ThemedText>
@@ -44,17 +57,27 @@ export function FolderCard({ folder }: { folder: Folder }) {
 
 export function NoteCard({ note }: { note: Note }) {
   const router = useRouter();
+  const { toggleNoteFavorite } = useNotes();
   const { openOptions } = useItemOptions();
+
+  // Tap opens the note; double-tap favorites it.
+  const onPress = useDoubleTap(
+    () => router.push({ pathname: '/note/[id]', params: { id: note.id } }),
+    () => toggleNoteFavorite(note.id),
+  );
 
   return (
     <Pressable
       style={({ pressed }) => [styles.cardWrapper, pressed && styles.pressed]}
-      onPress={() => router.push({ pathname: '/note/[id]', params: { id: note.id } })}
+      onPress={onPress}
       onLongPress={() => openOptions({ type: 'note', id: note.id })}>
       <ThemedView type="backgroundElementAlt" style={styles.card}>
-        <ThemedText type="smallBold" numberOfLines={1}>
-          {note.title}
-        </ThemedText>
+        <View style={styles.titleRow}>
+          <ThemedText type="smallBold" numberOfLines={1} style={styles.titleText}>
+            {note.title}
+          </ThemedText>
+          {note.favorite && <Feather name="star" size={13} color={FAVORITE} />}
+        </View>
         <ThemedText type="small" themeColor="textSecondary" numberOfLines={4}>
           {note.body}
         </ThemedText>
@@ -111,5 +134,13 @@ const styles = StyleSheet.create({
   cardFooter: {
     gap: Spacing.half,
     marginTop: 'auto',
+  },
+  titleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.one,
+  },
+  titleText: {
+    flexShrink: 1,
   },
 });

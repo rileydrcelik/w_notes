@@ -13,17 +13,20 @@ export type Note = {
   body: string;
   folderId: string | null;
   updatedAt: string;
+  favorite?: boolean;
+  shared?: boolean;
 };
 
 export type Folder = {
   id: string;
   name: string;
+  favorite?: boolean;
 };
 
 export const seedFolders: Folder[] = [
-  { id: 'work', name: 'Work' },
+  { id: 'work', name: 'Work', favorite: true },
   { id: 'personal', name: 'Personal' },
-  { id: 'recipes', name: 'Recipes' },
+  { id: 'recipes', name: 'Recipes', favorite: true },
   { id: 'travel', name: 'Travel' },
 ];
 
@@ -70,6 +73,7 @@ export const seedNotes: Note[] = [
     body: 'Remember to back up the photos from the weekend before the phone storage fills up again.',
     folderId: null,
     updatedAt: '2026-06-05',
+    favorite: true,
   },
   {
     id: 'shopping',
@@ -77,6 +81,7 @@ export const seedNotes: Note[] = [
     body: 'Milk\nEggs\nCoffee beans\nOlive oil\nDishwasher tablets',
     folderId: null,
     updatedAt: '2026-06-04',
+    shared: true,
   },
   {
     id: 'standup',
@@ -84,6 +89,7 @@ export const seedNotes: Note[] = [
     body: 'Yesterday: finished the dev build setup.\nToday: wire up navigation between screens.\nBlockers: none.',
     folderId: 'work',
     updatedAt: '2026-06-06',
+    favorite: true,
   },
   {
     id: 'q3-goals',
@@ -91,6 +97,7 @@ export const seedNotes: Note[] = [
     body: 'Ship the notes app MVP.\nWrite onboarding docs.\nClean up the backlog.',
     folderId: 'work',
     updatedAt: '2026-06-02',
+    shared: true,
   },
   {
     id: 'one-on-one',
@@ -189,6 +196,7 @@ export const seedNotes: Note[] = [
     body: '3 ripe bananas, 1/3 cup melted butter, 3/4 cup sugar, 1 egg, 1 tsp vanilla, 1 tsp baking soda, pinch of salt, 1.5 cups flour. 350F for 50 min.',
     folderId: 'recipes',
     updatedAt: '2026-05-20',
+    favorite: true,
   },
   {
     id: 'lisbon',
@@ -196,6 +204,7 @@ export const seedNotes: Note[] = [
     body: 'Stay in Alfama.\nTram 28 early to beat the crowds.\nPastéis de Belém is worth the line.\nDay trip to Sintra.',
     folderId: 'travel',
     updatedAt: '2026-05-15',
+    favorite: true,
   },
   {
     id: 'book-notes',
@@ -217,6 +226,7 @@ export const seedNotes: Note[] = [
     body: 'Dune Part Two\nThe Holdovers\nPast Lives\nAnatomy of a Fall',
     folderId: null,
     updatedAt: '2026-06-02',
+    favorite: true,
   },
   {
     id: 'house-plants',
