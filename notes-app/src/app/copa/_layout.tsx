@@ -3,7 +3,7 @@ import { useColorScheme } from 'react-native';
 
 import { Colors } from '@/constants/theme';
 
-export default function HomeStackLayout() {
+export default function CopaStackLayout() {
   const colorScheme = useColorScheme();
   const colors = Colors[colorScheme === 'dark' ? 'dark' : 'light'];
 
@@ -17,19 +17,10 @@ export default function HomeStackLayout() {
         animationDuration: 300,
         // Back navigation lives in the floating tab bar; hide the native one.
         headerBackVisible: false,
-        // Swipe right anywhere on a folder/note screen to go back, not just
-        // from the left edge.
         gestureEnabled: true,
-        fullScreenGestureEnabled: true,
       }}>
       <Stack.Screen name="index" options={{ headerShown: false }} />
-      <Stack.Screen name="folder/[id]" options={{ title: '' }} />
-      <Stack.Screen name="note/[id]" options={{ title: '' }} />
-      <Stack.Screen name="menu" options={{ headerShown: false }} />
-      <Stack.Screen name="settings" options={{ headerShown: false }} />
-      <Stack.Screen name="favorites" options={{ headerShown: false }} />
-      <Stack.Screen name="shared" options={{ headerShown: false }} />
-      <Stack.Screen name="trash" options={{ headerShown: false }} />
+      <Stack.Screen name="[id]" options={{ headerShown: false }} />
     </Stack>
   );
 }

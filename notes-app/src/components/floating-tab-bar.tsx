@@ -17,7 +17,9 @@ import { GlassSurface } from '@/components/glass-surface';
 import { RightSidebar } from '@/components/right-sidebar';
 import { Colors, Spacing, TabBar } from '@/constants/theme';
 import { useTabBarBottom } from '@/hooks/use-tab-bar-inset';
+import { useCopa } from '@/store/copa-store';
 import { useNotes } from '@/store/notes-store';
+import { useSidebar } from '@/store/sidebar-store';
 
 /** Tracks on-screen keyboard visibility so the bar can move out of its way. */
 function useKeyboardVisible() {
@@ -38,11 +40,12 @@ function useKeyboardVisible() {
 type FeatherName = ComponentProps<typeof Feather>['name'];
 
 /**
- * The fixed tab set. `menu` opens the side drawer instead of navigating; the
- * others map to their route. Order mirrors the screens declared in _layout.
+ * The fixed tab set. `menu` opens the side drawer and `copy` triggers the
+ * copy/paste action (no route); the rest map to their screen. Order mirrors
+ * the screens declared in _layout.
  */
 const TABS: { key: string; icon: FeatherName; path?: Href }[] = [
-  { key: 'settings', icon: 'settings', path: '/settings' as Href },
+  { key: 'copa', icon: 'clipboard', path: '/copa' as Href },
   { key: 'home', icon: 'home', path: '/' as Href },
   { key: 'menu', icon: 'menu' },
 ];
@@ -59,10 +62,13 @@ export function FloatingTabBar({ blurTarget }: FloatingTabBarProps) {
   const pathname = usePathname();
   const insets = useSafeAreaInsets();
   const bottom = useTabBarBottom();
-  // The menu tab opens a side drawer instead of navigating to a screen.
-  const [menuOpen, setMenuOpen] = useState(false);
-  // Settings is the only sibling tab; everything else lives under the home group.
-  const onSettings = pathname === '/settings';
+  // The menu tab opens a side drawer instead of navigating to a screen. Its
+  // open state is shared (via context) so the home screen's left-swipe can open
+  // the same drawer.
+  const { open: menuOpen, setOpen: setMenuOpen } = useSidebar();
+  // Copa is the only sibling tab; everything else lives under the home group.
+  // Its editor lives at /copa/[id], so match the whole copa stack.
+  const onCopa = pathname === '/copa' || pathname.startsWith('/copa/');
   // While the keyboard is up, the bar relocates to the top-right and stacks
   // vertically so it never sits over the keyboard.
   const vertical = useKeyboardVisible();
@@ -120,10 +126,10 @@ export function FloatingTabBar({ blurTarget }: FloatingTabBarProps) {
             blurTarget={blurTarget}
             style={[styles.bar, vertical && styles.barVertical, barSize]}>
             {TABS.map((tab) => {
-              // The menu tab reflects the drawer's open state rather than navigation;
-              // settings is active on its own route, home on everything else.
+              // The menu tab reflects the drawer's open state rather than
+              // navigation; copa is active on its own route, home on everything else.
               const isMenu = tab.key === 'menu';
-              const focused = isMenu ? menuOpen : tab.key === 'settings' ? onSettings : !onSettings;
+              const focused = isMenu ? menuOpen : tab.key === 'copa' ? onCopa : !onCopa;
 
               const onPress = () => {
                 // Any navbar press dismisses the keyboard before acting.
@@ -184,12 +190,13 @@ function CreateButton({
   const router = useRouter();
   const pathname = usePathname();
   const { createNote, getNote } = useNotes();
+  const { createCopa } = useCopa();
   const scale = useSharedValue(1);
   const animatedStyle = useAnimatedStyle(() => ({ transform: [{ scale: scale.value }] }));
 
   // Resolve the folder the new note should land in from the current route:
   // a folder screen creates inside that folder, a note screen alongside its
-  // sibling notes, and everywhere else (home, settings) at the root.
+  // sibling notes, and everywhere else (e.g. home) at the root.
   const targetFolderId = (): string | null => {
     const folderMatch = pathname.match(/^\/folder\/([^/]+)/);
     if (folderMatch) return decodeURIComponent(folderMatch[1]);
@@ -202,6 +209,12 @@ function CreateButton({
     Keyboard.dismiss();
     // With the keyboard up this button just confirms/dismisses; otherwise create.
     if (keyboardVisible) return;
+    // On the copa tab the button creates a copy block; elsewhere, a note.
+    if (pathname === '/copa' || pathname.startsWith('/copa/')) {
+      const id = createCopa();
+      router.push({ pathname: '/copa/[id]', params: { id } });
+      return;
+    }
     const id = createNote(targetFolderId());
     router.push({ pathname: '/note/[id]', params: { id } });
   };

@@ -10,6 +10,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { SwipeBackView } from '@/components/swipe-back-view';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Spacing } from '@/constants/theme';
@@ -77,42 +78,44 @@ export default function NoteScreen() {
   }
 
   return (
-    <ThemedView style={styles.container}>
-      <Stack.Screen options={{ headerShown: false }} />
-      <KeyboardAvoidingView
-        style={styles.container}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-        <TextInput
-          value={title}
-          onChangeText={setTitle}
-          onLayout={(e) => setTitleHeight(e.nativeEvent.layout.height)}
-          placeholder="Title"
-          placeholderTextColor={theme.textSecondary}
-          style={[styles.title, { color: theme.text, paddingTop: insets.top + Spacing.two }]}
-          multiline
-        />
-        <ScrollView
-          contentContainerStyle={[styles.content, { paddingBottom: tabBarInset }]}
-          keyboardShouldPersistTaps="handled"
-          showsVerticalScrollIndicator={false}>
+    <SwipeBackView>
+      <ThemedView style={styles.container}>
+        <Stack.Screen options={{ headerShown: false }} />
+        <KeyboardAvoidingView
+          style={styles.container}
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
           <TextInput
-            value={body}
-            onChangeText={setBody}
-            placeholder="Start typing…"
+            value={title}
+            onChangeText={setTitle}
+            onLayout={(e) => setTitleHeight(e.nativeEvent.layout.height)}
+            placeholder="Title"
             placeholderTextColor={theme.textSecondary}
-            style={[styles.body, { color: theme.text }]}
+            style={[styles.title, { color: theme.text, paddingTop: insets.top + Spacing.two }]}
             multiline
-            textAlignVertical="top"
           />
-        </ScrollView>
-        {/* Fades scrolling body text into the sticky title. */}
-        <LinearGradient
-          pointerEvents="none"
-          colors={[theme.background, `${theme.background}00`]}
-          style={[styles.fade, { top: titleHeight }]}
-        />
-      </KeyboardAvoidingView>
-    </ThemedView>
+          <ScrollView
+            contentContainerStyle={[styles.content, { paddingBottom: tabBarInset }]}
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}>
+            <TextInput
+              value={body}
+              onChangeText={setBody}
+              placeholder="Start typing…"
+              placeholderTextColor={theme.textSecondary}
+              style={[styles.body, { color: theme.text }]}
+              multiline
+              textAlignVertical="top"
+            />
+          </ScrollView>
+          {/* Fades scrolling body text into the sticky title. */}
+          <LinearGradient
+            pointerEvents="none"
+            colors={[theme.background, `${theme.background}00`]}
+            style={[styles.fade, { top: titleHeight }]}
+          />
+        </KeyboardAvoidingView>
+      </ThemedView>
+    </SwipeBackView>
   );
 }
 
