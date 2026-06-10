@@ -1,31 +1,27 @@
-import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from 'react';
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from 'react';
 
-import { seedFolders, seedNotes, type Folder, type Note } from '@/data/notes';
+import { db, type TrashEntry } from '@/lib/db';
+import type { Folder, Note } from '@/data/notes';
 
 const today = () => new Date().toISOString().slice(0, 10);
-const DAY = 24 * 60 * 60 * 1000;
 
-/** A deleted note or folder held in the trash, restorable until purged. */
-export type TrashEntry =
-  | { kind: 'note'; id: string; deletedAt: number; note: Note }
-  | { kind: 'folder'; id: string; deletedAt: number; folder: Folder; notes: Note[] };
+// Re-exported so existing imports (`import { type TrashEntry } from '@/store/notes-store'`)
+// keep working now that the canonical definition lives in the db module.
+export type { TrashEntry };
 
-// A couple of placeholder entries so the trash isn't empty on first launch;
-// real deletions are prepended ahead of these.
-const seedTrash: TrashEntry[] = [
-  {
-    kind: 'note',
-    id: 'trash-seed-1',
-    deletedAt: Date.now() - 3 * DAY,
-    note: { id: 'trash-seed-1', title: 'Old meeting notes', body: '', folderId: null, updatedAt: today() },
-  },
-  {
-    kind: 'note',
-    id: 'trash-seed-2',
-    deletedAt: Date.now() - 7 * DAY,
-    note: { id: 'trash-seed-2', title: 'Draft announcement', body: '', folderId: null, updatedAt: today() },
-  },
-];
+const rid = (prefix: string) =>
+  `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+/** Logs a failed background sync without disturbing the optimistic UI. */
+const syncFailed = (e: unknown) => console.warn('[notes] background sync failed:', e);
 
 type NotesContextValue = {
   folders: Folder[];
@@ -61,27 +57,47 @@ type NotesContextValue = {
 const NotesContext = createContext<NotesContextValue | null>(null);
 
 /**
- * Holds the live, editable notes and folders, seeded from `@/data/notes`.
- * State lives in memory for the session; durable persistence will be backed
- * by SQL later.
+ * Holds the live, editable notes and folders. On mount it hydrates from
+ * on-device SQLite; every mutation updates local state immediately (optimistic)
+ * and writes through to SQLite in the background, so the UI stays instant while
+ * changes are durably persisted on the device.
  */
 export function NotesProvider({ children }: { children: ReactNode }) {
-  const [notes, setNotes] = useState<Note[]>(seedNotes);
-  const [folders, setFolders] = useState<Folder[]>(seedFolders);
-  const [trash, setTrash] = useState<TrashEntry[]>(seedTrash);
+  const [notes, setNotes] = useState<Note[]>([]);
+  const [folders, setFolders] = useState<Folder[]>([]);
+  const [trash, setTrash] = useState<TrashEntry[]>([]);
+
+  // Hydrate from the API once on mount.
+  useEffect(() => {
+    let cancelled = false;
+    db
+      .bootstrap()
+      .then((data) => {
+        if (cancelled) return;
+        setNotes(data.notes);
+        setFolders(data.folders);
+        setTrash(data.trash);
+      })
+      .catch((e) => console.warn('[notes] failed to load from API:', e));
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const createNote = useCallback<NotesContextValue['createNote']>((folderId) => {
-    const id = `note-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const id = rid('note');
     const note: Note = { id, title: '', body: '', folderId, updatedAt: today() };
     // Prepend so the new note surfaces first in its location.
     setNotes((prev) => [note, ...prev]);
+    db.createNote({ id, folderId }).catch(syncFailed);
     return id;
   }, []);
 
   const createFolder = useCallback<NotesContextValue['createFolder']>(() => {
-    const id = `folder-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const id = rid('folder');
     // Prepend so the new folder surfaces first in the hierarchy.
     setFolders((prev) => [{ id, name: '' }, ...prev]);
+    db.createFolder({ id }).catch(syncFailed);
     return id;
   }, []);
 
@@ -89,16 +105,19 @@ export function NotesProvider({ children }: { children: ReactNode }) {
     setNotes((prev) =>
       prev.map((note) => (note.id === id ? { ...note, ...patch, updatedAt: today() } : note)),
     );
+    db.updateNote(id, patch).catch(syncFailed);
   }, []);
 
   const updateFolder = useCallback<NotesContextValue['updateFolder']>((id, patch) => {
     setFolders((prev) => prev.map((folder) => (folder.id === id ? { ...folder, ...patch } : folder)));
+    db.updateFolder(id, patch).catch(syncFailed);
   }, []);
 
   const moveNote = useCallback<NotesContextValue['moveNote']>((id, folderId) => {
     setNotes((prev) =>
       prev.map((note) => (note.id === id ? { ...note, folderId, updatedAt: today() } : note)),
     );
+    db.updateNote(id, { folderId }).catch(syncFailed);
   }, []);
 
   const deleteNote = useCallback<NotesContextValue['deleteNote']>(
@@ -107,6 +126,7 @@ export function NotesProvider({ children }: { children: ReactNode }) {
       if (!note) return;
       setNotes((prev) => prev.filter((n) => n.id !== id));
       setTrash((prev) => [{ kind: 'note', id, deletedAt: Date.now(), note }, ...prev]);
+      db.deleteNote(id).catch(syncFailed);
     },
     [notes],
   );
@@ -124,6 +144,7 @@ export function NotesProvider({ children }: { children: ReactNode }) {
         { kind: 'folder', id, deletedAt: Date.now(), folder, notes: folderNotes },
         ...prev,
       ]);
+      db.deleteFolder(id).catch(syncFailed);
     },
     [folders, notes],
   );
@@ -143,25 +164,37 @@ export function NotesProvider({ children }: { children: ReactNode }) {
         setNotes((prev) => [...entry.notes, ...prev]);
       }
       setTrash((prev) => prev.filter((e) => e.id !== entryId));
+      db.restoreFromTrash(entryId).catch(syncFailed);
     },
     [trash, folders],
   );
 
   const markNoteShared = useCallback<NotesContextValue['markNoteShared']>((id) => {
     setNotes((prev) => prev.map((note) => (note.id === id ? { ...note, shared: true } : note)));
+    db.updateNote(id, { shared: true }).catch(syncFailed);
   }, []);
 
-  const toggleNoteFavorite = useCallback<NotesContextValue['toggleNoteFavorite']>((id) => {
-    setNotes((prev) =>
-      prev.map((note) => (note.id === id ? { ...note, favorite: !note.favorite } : note)),
-    );
-  }, []);
+  const toggleNoteFavorite = useCallback<NotesContextValue['toggleNoteFavorite']>(
+    (id) => {
+      const next = !notes.find((n) => n.id === id)?.favorite;
+      setNotes((prev) =>
+        prev.map((note) => (note.id === id ? { ...note, favorite: next } : note)),
+      );
+      db.updateNote(id, { favorite: next }).catch(syncFailed);
+    },
+    [notes],
+  );
 
-  const toggleFolderFavorite = useCallback<NotesContextValue['toggleFolderFavorite']>((id) => {
-    setFolders((prev) =>
-      prev.map((folder) => (folder.id === id ? { ...folder, favorite: !folder.favorite } : folder)),
-    );
-  }, []);
+  const toggleFolderFavorite = useCallback<NotesContextValue['toggleFolderFavorite']>(
+    (id) => {
+      const next = !folders.find((f) => f.id === id)?.favorite;
+      setFolders((prev) =>
+        prev.map((folder) => (folder.id === id ? { ...folder, favorite: next } : folder)),
+      );
+      db.updateFolder(id, { favorite: next }).catch(syncFailed);
+    },
+    [folders],
+  );
 
   const value = useMemo<NotesContextValue>(
     () => ({

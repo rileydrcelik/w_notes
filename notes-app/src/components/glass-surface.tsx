@@ -1,7 +1,11 @@
 import { BlurView } from 'expo-blur';
 import { GlassView, isLiquidGlassAvailable } from 'expo-glass-effect';
 import type { ReactNode, RefObject } from 'react';
-import { Platform, StyleSheet, useColorScheme, View, type StyleProp, type ViewStyle } from 'react-native';
+import { Platform, StyleSheet, View, type StyleProp, type ViewStyle } from 'react-native';
+
+import { hexToRgba } from '@/constants/theme';
+import { useColorScheme } from '@/hooks/use-color-scheme';
+import { useTheme } from '@/hooks/use-theme';
 
 // Real blur is available with iOS Liquid Glass; elsewhere GlassView renders a
 // plain view, so BlurView supplies the frosted fallback.
@@ -34,9 +38,12 @@ export function GlassSurface({
   tintOpacity = 0.2,
   blurTarget,
 }: GlassSurfaceProps) {
-  const scheme = useColorScheme() === 'dark' ? 'dark' : 'light';
+  const scheme = useColorScheme();
+  const theme = useTheme();
 
-  const tint = scheme === 'dark' ? `rgba(33,34,37,${tintOpacity})` : `rgba(240,240,243,${tintOpacity})`;
+  // Tint the glass with the active surface color so it adapts to every theme
+  // (incl. Solarized), matching the raised-element color underneath.
+  const tint = hexToRgba(theme.backgroundElement, tintOpacity);
 
   if (LIQUID_GLASS) {
     return (

@@ -1,8 +1,9 @@
 import { BlurTargetView } from 'expo-blur';
 import { DarkTheme, DefaultTheme, ThemeProvider, usePathname } from 'expo-router';
+import { StatusBar } from 'expo-status-bar';
 import { TopTabs } from 'expo-router/js-top-tabs';
 import { useMemo, useState, type RefObject } from 'react';
-import { Platform, StyleSheet, useColorScheme, type View } from 'react-native';
+import { Platform, StyleSheet, type View } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 
 import { AnimatedSplashOverlay } from '@/components/animated-icon';
@@ -12,13 +13,25 @@ import { ItemOptionsProvider } from '@/components/item-options-modal';
 import { CopaProvider } from '@/store/copa-store';
 import { NotesProvider } from '@/store/notes-store';
 import { SidebarProvider } from '@/store/sidebar-store';
+import { AppThemeProvider, useThemePref } from '@/store/theme-store';
 
 // Top-level routes that the pager slides between. Everything else (a folder or
 // note) lives inside the home group's stack, which keeps its own back-swipe.
 const SWIPEABLE_PATHS = ['/', '/copa'];
 
 export default function RootLayout() {
-  const colorScheme = useColorScheme();
+  // The theme provider must sit above everything that reads the theme.
+  return (
+    <GestureHandlerRootView style={styles.root}>
+      <AppThemeProvider>
+        <AppShell />
+      </AppThemeProvider>
+    </GestureHandlerRootView>
+  );
+}
+
+function AppShell() {
+  const { scheme } = useThemePref();
   const pathname = usePathname();
 
   // The pager owns horizontal swipes only while on a top-level screen. On a
@@ -51,33 +64,32 @@ export default function RootLayout() {
   );
 
   return (
-    <GestureHandlerRootView style={styles.root}>
-      <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
-        <NotesProvider>
-          <CopaProvider>
-          <SidebarProvider>
-          <ItemOptionsProvider>
-          <CopaOptionsProvider>
-            <AnimatedSplashOverlay />
-            {Platform.OS === 'android' ? (
-              <BlurTargetView
-                // Cast: expo-blur types `ref` as RefObject, but we need a callback
-                // ref to push the node into state once it mounts.
-                ref={setTarget as unknown as RefObject<View | null>}
-                style={StyleSheet.absoluteFill}>
-                {screens}
-              </BlurTargetView>
-            ) : (
-              screens
-            )}
-            <FloatingTabBar blurTarget={blurTarget} />
-          </CopaOptionsProvider>
-          </ItemOptionsProvider>
-          </SidebarProvider>
-          </CopaProvider>
-        </NotesProvider>
-      </ThemeProvider>
-    </GestureHandlerRootView>
+    <ThemeProvider value={scheme === 'dark' ? DarkTheme : DefaultTheme}>
+      <StatusBar style={scheme === 'dark' ? 'light' : 'dark'} />
+      <NotesProvider>
+        <CopaProvider>
+        <SidebarProvider>
+        <ItemOptionsProvider>
+        <CopaOptionsProvider>
+          <AnimatedSplashOverlay />
+          {Platform.OS === 'android' ? (
+            <BlurTargetView
+              // Cast: expo-blur types `ref` as RefObject, but we need a callback
+              // ref to push the node into state once it mounts.
+              ref={setTarget as unknown as RefObject<View | null>}
+              style={StyleSheet.absoluteFill}>
+              {screens}
+            </BlurTargetView>
+          ) : (
+            screens
+          )}
+          <FloatingTabBar blurTarget={blurTarget} />
+        </CopaOptionsProvider>
+        </ItemOptionsProvider>
+        </SidebarProvider>
+        </CopaProvider>
+      </NotesProvider>
+    </ThemeProvider>
   );
 }
 

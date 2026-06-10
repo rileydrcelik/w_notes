@@ -2,7 +2,7 @@ import Feather from '@expo/vector-icons/Feather';
 import { type Href, usePathname, useRouter } from 'expo-router';
 import type { ComponentProps, RefObject } from 'react';
 import { useEffect, useState } from 'react';
-import { Keyboard, Platform, Pressable, StyleSheet, useColorScheme, View } from 'react-native';
+import { Keyboard, Platform, Pressable, StyleSheet, View } from 'react-native';
 import Animated, {
   FadeIn,
   FadeOut,
@@ -15,8 +15,9 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { GlassSurface } from '@/components/glass-surface';
 import { RightSidebar } from '@/components/right-sidebar';
-import { Colors, Spacing, TabBar } from '@/constants/theme';
+import { Spacing, TabBar } from '@/constants/theme';
 import { useTabBarBottom } from '@/hooks/use-tab-bar-inset';
+import { useTheme } from '@/hooks/use-theme';
 import { useCopa } from '@/store/copa-store';
 import { useNotes } from '@/store/notes-store';
 import { useSidebar } from '@/store/sidebar-store';
@@ -56,8 +57,7 @@ type FloatingTabBarProps = {
 };
 
 export function FloatingTabBar({ blurTarget }: FloatingTabBarProps) {
-  const scheme = useColorScheme() === 'dark' ? 'dark' : 'light';
-  const colors = Colors[scheme];
+  const colors = useTheme();
   const router = useRouter();
   const pathname = usePathname();
   const insets = useSafeAreaInsets();

@@ -8,7 +8,6 @@ import {
   Share,
   StyleSheet,
   TextInput,
-  useColorScheme,
   View,
 } from 'react-native';
 import Animated, { FadeIn, FadeOut, SlideInDown, SlideOutDown } from 'react-native-reanimated';
@@ -17,7 +16,8 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ConfirmDialog } from '@/components/confirm-dialog';
 import { GlassSurface } from '@/components/glass-surface';
 import { ThemedText } from '@/components/themed-text';
-import { Colors, Spacing } from '@/constants/theme';
+import { Spacing } from '@/constants/theme';
+import { useTheme } from '@/hooks/use-theme';
 import { useNotes } from '@/store/notes-store';
 
 type FeatherName = ComponentProps<typeof Feather>['name'];
@@ -144,8 +144,7 @@ function OptionsSheet({
   onMove: (id: string) => void;
   onDelete: (target: OptionsTarget) => void;
 }) {
-  const scheme = useColorScheme() === 'dark' ? 'dark' : 'light';
-  const colors = Colors[scheme];
+  const colors = useTheme();
   const insets = useSafeAreaInsets();
   const {
     getNote,
@@ -258,7 +257,7 @@ function OptionsSheet({
  * field from the stored value each time a new target opens it.
  */
 function RenameDialog({ target, onClose }: { target: OptionsTarget | null; onClose: () => void }) {
-  const colors = Colors[useColorScheme() === 'dark' ? 'dark' : 'light'];
+  const colors = useTheme();
   const { getNote, getFolder, updateNote, updateFolder } = useNotes();
   const [value, setValue] = useState('');
   const [seededId, setSeededId] = useState<string | null>(null);
@@ -361,8 +360,7 @@ function RenameDialog({ target, onClose }: { target: OptionsTarget | null; onClo
  * a note. The note's current location is marked and tapping a row moves it.
  */
 function MoveSheet({ noteId, onClose }: { noteId: string | null; onClose: () => void }) {
-  const scheme = useColorScheme() === 'dark' ? 'dark' : 'light';
-  const colors = Colors[scheme];
+  const colors = useTheme();
   const insets = useSafeAreaInsets();
   const { folders, getNote, moveNote } = useNotes();
 
