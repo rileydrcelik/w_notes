@@ -15,6 +15,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { GlassSurface } from '@/components/glass-surface';
 import { RightSidebar } from '@/components/right-sidebar';
+import { dismissActiveEditor } from '@/lib/active-editor';
 import { Spacing, TabBar } from '@/constants/theme';
 import { useTabBarBottom } from '@/hooks/use-tab-bar-inset';
 import { useTheme } from '@/hooks/use-theme';
@@ -76,6 +77,7 @@ export function FloatingTabBar({ blurTarget }: FloatingTabBarProps) {
   const showBack = pathname !== '/';
 
   const goBack = () => {
+    dismissActiveEditor();
     Keyboard.dismiss();
     if (router.canGoBack()) router.back();
     else router.replace('/' as Href);
@@ -206,6 +208,8 @@ function CreateButton({
   };
 
   const onPress = () => {
+    // Blur the native rich editor (Keyboard.dismiss can't) before dismissing.
+    dismissActiveEditor();
     Keyboard.dismiss();
     // With the keyboard up this button just confirms/dismisses; otherwise create.
     if (keyboardVisible) return;

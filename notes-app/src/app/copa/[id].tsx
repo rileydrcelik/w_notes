@@ -1,9 +1,18 @@
 import { LinearGradient } from 'expo-linear-gradient';
 import { Stack, useLocalSearchParams } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
-import { KeyboardAvoidingView, Platform, ScrollView, StyleSheet, TextInput } from 'react-native';
+import {
+  KeyboardAvoidingView,
+  Platform,
+  ScrollView,
+  StyleSheet,
+  TextInput,
+  useWindowDimensions,
+} from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import type { EnrichedTextInputInstance, OnChangeStateEvent } from 'react-native-enriched';
 
+import { FormattingToolbar } from '@/components/formatting-toolbar';
 import { MarkdownEditor } from '@/components/markdown-editor';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
@@ -18,6 +27,7 @@ export default function CopaBlockScreen() {
   const theme = useTheme();
   const tabBarInset = useTabBarInset();
   const insets = useSafeAreaInsets();
+  const { height } = useWindowDimensions();
 
   // Measured height of the sticky title block, so the fade gradient sits right
   // beneath it regardless of how many lines the title wraps to.
@@ -26,6 +36,12 @@ export default function CopaBlockScreen() {
   const item = getCopa(id);
   const [label, setLabel] = useState(item?.label ?? '');
   const [content, setContent] = useState(item?.content ?? '');
+
+  // Rich-editor handle + live state, so the floating toolbar can drive and
+  // reflect formatting while the body is focused.
+  const editorRef = useRef<EnrichedTextInputInstance>(null);
+  const [editing, setEditing] = useState(false);
+  const [fmtState, setFmtState] = useState<OnChangeStateEvent | null>(null);
 
   // Latest edit state, refreshed after each render so the unmount flush below
   // can read it without writing refs during render.
@@ -87,7 +103,14 @@ export default function CopaBlockScreen() {
           multiline
         />
         <ScrollView
-          contentContainerStyle={[styles.content, { paddingBottom: tabBarInset }]}
+          contentContainerStyle={[
+            styles.content,
+            // While editing, pad a full screen below so the body scrolls well
+            // clear of the keyboard and into blank space (Android is
+            // edge-to-edge, so the keyboard doesn't shrink the scroll frame).
+            // Collapse it in view mode.
+            { paddingBottom: editing ? height : tabBarInset },
+          ]}
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}>
           <MarkdownEditor
@@ -95,6 +118,9 @@ export default function CopaBlockScreen() {
             value={content}
             onChangeText={setContent}
             placeholder="Contents to copy…"
+            editorRef={editorRef}
+            onFocusChange={setEditing}
+            onStateChange={setFmtState}
           />
         </ScrollView>
         {/* Fades scrolling body text into the sticky title. */}
@@ -104,6 +130,8 @@ export default function CopaBlockScreen() {
           style={[styles.fade, { top: titleHeight }]}
         />
       </KeyboardAvoidingView>
+      {/* Outside the KeyboardAvoidingView: it rides the keyboard inset itself. */}
+      <FormattingToolbar editorRef={editorRef} state={fmtState} visible={editing} />
     </ThemedView>
   );
 }
