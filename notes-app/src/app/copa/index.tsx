@@ -1,7 +1,7 @@
 import Feather from '@expo/vector-icons/Feather';
 import * as Clipboard from 'expo-clipboard';
 import { LinearGradient } from 'expo-linear-gradient';
-import { useRef, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import {
   FlatList,
   type LayoutChangeEvent,
@@ -13,6 +13,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { BottomFade } from '@/components/bottom-fade';
+import { FavoriteStar } from '@/components/favorite-star';
 import { useCopaOptions } from '@/components/copa-options-modal';
 import { SearchBar, SEARCH_BAR_HEIGHT } from '@/components/search-bar';
 import { ThemedText } from '@/components/themed-text';
@@ -20,6 +21,7 @@ import { ThemedView } from '@/components/themed-view';
 import { Spacing } from '@/constants/theme';
 import { type CopaItem } from '@/data/copa';
 import { useDoubleTap } from '@/hooks/use-double-tap';
+import { htmlToPlainText } from '@/lib/html-text';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
 import { useTheme } from '@/hooks/use-theme';
 import { useCopa } from '@/store/copa-store';
@@ -42,6 +44,9 @@ function CopaCard({ item }: { item: CopaItem }) {
   const [expanded, setExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
   const copiedTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  // Content is rich HTML now; flatten to plain text for both the preview and
+  // what lands on the clipboard (pasting raw <html> tags would be useless).
+  const text = useMemo(() => htmlToPlainText(item.content), [item.content]);
 
   const overflowing = maxLines !== undefined && totalLines !== undefined && totalLines > maxLines;
   const clamp = overflowing && !expanded;
@@ -59,7 +64,7 @@ function CopaCard({ item }: { item: CopaItem }) {
   };
 
   const onCopy = async () => {
-    await Clipboard.setStringAsync(item.content);
+    await Clipboard.setStringAsync(text);
     setCopied(true);
     clearTimeout(copiedTimer.current);
     copiedTimer.current = setTimeout(() => setCopied(false), 1500);
@@ -102,12 +107,10 @@ function CopaCard({ item }: { item: CopaItem }) {
             <ThemedText type="smallBold" themeColor="textSecondary">
               {item.label}
             </ThemedText>
-            {item.favorite && (
-              <Feather name="star" size={14} color="#f5a623" style={styles.favoriteStar} />
-            )}
+            {item.favorite && <FavoriteStar size={14} style={styles.favoriteStar} />}
           </View>
           <ThemedText numberOfLines={clamp ? maxLines : undefined} onTextLayout={onTextLayout}>
-            {item.content}
+            {text}
           </ThemedText>
           <View style={styles.footer}>
             <Feather name={copied ? 'check' : 'copy'} size={18} color={theme.textSecondary} />

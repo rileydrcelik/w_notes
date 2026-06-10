@@ -1,90 +1,124 @@
-import { useState } from 'react';
-import { Pressable, StyleSheet, TextInput, type NativeSyntheticEvent, type TextInputSelectionChangeEventData } from 'react-native';
+import { useEffect, useMemo, useState, type RefObject } from 'react';
+import { Keyboard } from 'react-native';
+import {
+  EnrichedTextInput,
+  type EnrichedInputStyle,
+  type EnrichedTextInputInstance,
+  type HtmlStyle,
+  type OnChangeStateEvent,
+} from 'react-native-enriched';
 
-import { MarkdownView } from '@/components/markdown-view';
-import { ThemedText } from '@/components/themed-text';
+import { hexToRgba, type Palette } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
-import { toggleCheckboxAt } from '@/lib/markdown';
+import { setActiveEditorDismiss } from '@/lib/active-editor';
+
+const LINK_COLOR = '#3c87f7';
+
+/**
+ * Block-level theming for the rich editor. Base color/size come from the
+ * `style` prop below; this only carries what the per-tag renderers need.
+ */
+function htmlStyle(theme: Palette): HtmlStyle {
+  return {
+    h1: { fontSize: 28, bold: true },
+    h2: { fontSize: 22, bold: true },
+    h3: { fontSize: 18, bold: true },
+    blockquote: { borderColor: theme.backgroundSelected, color: theme.textSecondary, gapWidth: 12 },
+    codeblock: { color: theme.text, backgroundColor: theme.backgroundElementAlt, borderRadius: 8 },
+    code: { color: theme.text, backgroundColor: theme.backgroundElementAlt },
+    a: { color: LINK_COLOR, textDecorationLine: 'underline' },
+    ol: { markerColor: theme.textSecondary },
+    ul: { bulletColor: theme.textSecondary },
+    // Smaller than the default 24 (which equals the line height and crowds
+    // consecutive items) so checklist rows get vertical breathing room.
+    ulCheckbox: { boxColor: theme.textSecondary, boxSize: 18 },
+  };
+}
+
+function editorStyle(theme: Palette): EnrichedInputStyle {
+  return { color: theme.text, fontSize: 16, lineHeight: 24, fontWeight: '500', minHeight: 120 };
+}
 
 type Props = {
+  /** Initial body as HTML (the editor is uncontrolled — pass `key={id}` to reseed). */
   value: string;
-  onChangeText: (text: string) => void;
+  /** Fires with the current HTML on every change. */
+  onChangeText: (html: string) => void;
   placeholder?: string;
+  /** Imperative handle so a toolbar can drive formatting commands. */
+  editorRef?: RefObject<EnrichedTextInputInstance | null>;
+  /** Reports focus so the screen can show/hide the formatting toolbar. */
+  onFocusChange?: (focused: boolean) => void;
+  /** Reports the active inline/block styles so the toolbar can highlight them. */
+  onStateChange?: (state: OnChangeStateEvent) => void;
 };
 
 /**
- * A body field that previews Markdown and edits raw text. Tapping a word in the
- * preview drops into a plain TextInput with the caret placed at that exact spot;
- * blurring returns to the rendered view. Checkbox taps toggle in place without
- * leaving the preview. Pass `key={id}` so the edit/preview state resets when
- * navigating between notes.
+ * Note/copa body — a single always-on rich text field backed by the native
+ * `react-native-enriched` editor. It stores HTML (headings, lists, checkboxes,
+ * quotes, code render as you type — true WYSIWYG, no raw markdown ever shown).
+ * There are no markdown shortcuts in the native editor, so block formatting is
+ * applied through the imperative commands exposed via `editorRef` (driven by
+ * the FormattingToolbar). Pass `key={id}` so the field reseeds between notes.
  */
-export function MarkdownEditor({ value, onChangeText, placeholder }: Props) {
+export function MarkdownEditor({
+  value,
+  onChangeText,
+  placeholder,
+  editorRef,
+  onFocusChange,
+  onStateChange,
+}: Props) {
   const theme = useTheme();
-  const [editing, setEditing] = useState(value.trim().length === 0);
-  // Focus the field only when the user taps in, not on the initial empty state —
-  // so opening a new note leaves the keyboard free for the title first.
-  const [autoFocus, setAutoFocus] = useState(false);
-  // The caret is *seeded* to the tapped offset, then released so typing stays
-  // uncontrolled (a permanently controlled selection makes the caret lag).
-  const [seed, setSeed] = useState<{ start: number; end: number }>();
+  // Stable across keystrokes — onChangeHtml re-renders this on every change, and
+  // re-sending fresh style objects to native each time feeds layout churn.
+  const html = useMemo(() => htmlStyle(theme), [theme]);
+  const base = useMemo(() => editorStyle(theme), [theme]);
+  // Seed once. The native view re-applies `defaultValue` whenever it changes,
+  // which would reset the editor's content and caret on every keystroke (the
+  // parent updates `value` continuously for persistence). Freeze it via a
+  // lazy initial state; `key={id}` on the parent remounts this to reseed when
+  // switching notes.
+  const [initialValue] = useState(value);
+  const [focused, setFocused] = useState(false);
 
-  const startEditing = (offset: number) => {
-    const at = Math.max(0, Math.min(offset, value.length));
-    setSeed({ start: at, end: at });
-    setAutoFocus(true);
-    setEditing(true);
-  };
-
-  // Once the native view applies the seeded caret, hand control back.
-  const onSelectionChange = (_e: NativeSyntheticEvent<TextInputSelectionChangeEventData>) => {
-    if (seed) setSeed(undefined);
-  };
-
-  if (editing) {
-    return (
-      <TextInput
-        value={value}
-        onChangeText={onChangeText}
-        onBlur={() => setEditing(false)}
-        selection={seed}
-        onSelectionChange={onSelectionChange}
-        placeholder={placeholder}
-        placeholderTextColor={theme.textSecondary}
-        style={[styles.body, { color: theme.text }]}
-        autoFocus={autoFocus}
-        multiline
-        textAlignVertical="top"
-      />
-    );
-  }
+  // The keyboard's "hide" button dismisses the keyboard without blurring this
+  // native input, which would leave the editor (and toolbar) in edit mode with
+  // no keyboard. While focused, treat a keyboard hide as a request to blur.
+  useEffect(() => {
+    if (!focused) return;
+    const sub = Keyboard.addListener('keyboardDidHide', () => editorRef?.current?.blur());
+    return () => sub.remove();
+  }, [focused, editorRef]);
 
   return (
-    // Fallback: a tap that misses any word drops the caret at the end.
-    <Pressable onPress={() => startEditing(value.length)} style={styles.preview}>
-      {value.trim().length === 0 ? (
-        <ThemedText themeColor="textSecondary" style={styles.body}>
-          {placeholder}
-        </ThemedText>
-      ) : (
-        <MarkdownView
-          text={value}
-          onPressAt={startEditing}
-          onToggleCheckbox={(line) => onChangeText(toggleCheckboxAt(value, line))}
-        />
-      )}
-    </Pressable>
+    <EnrichedTextInput
+      ref={editorRef}
+      defaultValue={initialValue}
+      placeholder={placeholder}
+      placeholderTextColor={theme.textSecondary}
+      cursorColor={theme.text}
+      selectionColor={hexToRgba(theme.textSecondary, 0.3)}
+      scrollEnabled={false}
+      // Android: apply size updates synchronously so a newline (which grows the
+      // input) doesn't flicker the layout and bounce the caret back up.
+      androidExperimentalSynchronousEvents
+      htmlStyle={html}
+      style={base}
+      onChangeHtml={(e) => onChangeText(e.nativeEvent.value)}
+      onChangeState={(e) => onStateChange?.(e.nativeEvent)}
+      onFocus={() => {
+        // The native editor isn't registered with RN's TextInputState, so the
+        // navbar's "done" can't reach it via Keyboard.dismiss(). Expose a blur.
+        setActiveEditorDismiss(() => editorRef?.current?.blur());
+        setFocused(true);
+        onFocusChange?.(true);
+      }}
+      onBlur={() => {
+        setActiveEditorDismiss(null);
+        setFocused(false);
+        onFocusChange?.(false);
+      }}
+    />
   );
 }
-
-const styles = StyleSheet.create({
-  body: {
-    fontSize: 16,
-    lineHeight: 24,
-    fontWeight: '500',
-    minHeight: 300,
-  },
-  preview: {
-    minHeight: 300,
-  },
-});
