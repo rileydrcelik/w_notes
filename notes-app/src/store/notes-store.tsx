@@ -30,10 +30,14 @@ type NotesContextValue = {
   getNote: (id: string) => Note | undefined;
   getNotesInFolder: (folderId: string) => Note[];
   getRootNotes: () => Note[];
+  /** Folders that live on the home screen (no parent). */
+  getRootFolders: () => Folder[];
+  /** Folders nested directly inside the given folder. */
+  getSubfolders: (parentId: string) => Folder[];
   /** Creates an empty note in the given folder (null = root) and returns its id. */
   createNote: (folderId: string | null) => string;
-  /** Creates an unnamed folder and returns its id. */
-  createFolder: () => string;
+  /** Creates an unnamed folder inside the given parent (null = root); returns its id. */
+  createFolder: (parentId: string | null) => string;
   updateNote: (id: string, patch: Partial<Pick<Note, 'title' | 'body'>>) => void;
   updateFolder: (id: string, patch: Partial<Pick<Folder, 'name'>>) => void;
   /** Moves a note into a folder, or to the home screen when folderId is null. */
@@ -93,11 +97,11 @@ export function NotesProvider({ children }: { children: ReactNode }) {
     return id;
   }, []);
 
-  const createFolder = useCallback<NotesContextValue['createFolder']>(() => {
+  const createFolder = useCallback<NotesContextValue['createFolder']>((parentId) => {
     const id = rid('folder');
     // Prepend so the new folder surfaces first in the hierarchy.
-    setFolders((prev) => [{ id, name: '' }, ...prev]);
-    db.createFolder({ id }).catch(syncFailed);
+    setFolders((prev) => [{ id, name: '', parentId }, ...prev]);
+    db.createFolder({ id, parentId }).catch(syncFailed);
     return id;
   }, []);
 
@@ -135,13 +139,33 @@ export function NotesProvider({ children }: { children: ReactNode }) {
     (id) => {
       const folder = folders.find((f) => f.id === id);
       if (!folder) return;
-      // Trash the folder together with the notes it held, so a restore brings
-      // the whole thing back.
-      const folderNotes = notes.filter((note) => note.folderId === id);
-      setNotes((prev) => prev.filter((note) => note.folderId !== id));
-      setFolders((prev) => prev.filter((f) => f.id !== id));
+      // Gather the whole subtree (this folder + every descendant folder) so the
+      // delete cascades and a restore brings the entire group back together.
+      const subtreeIds = new Set<string>([id]);
+      let grew = true;
+      while (grew) {
+        grew = false;
+        for (const f of folders) {
+          if (f.parentId && subtreeIds.has(f.parentId) && !subtreeIds.has(f.id)) {
+            subtreeIds.add(f.id);
+            grew = true;
+          }
+        }
+      }
+      const descendantFolders = folders.filter((f) => f.id !== id && subtreeIds.has(f.id));
+      const subtreeNotes = notes.filter((note) => note.folderId && subtreeIds.has(note.folderId));
+
+      setNotes((prev) => prev.filter((note) => !(note.folderId && subtreeIds.has(note.folderId))));
+      setFolders((prev) => prev.filter((f) => !subtreeIds.has(f.id)));
       setTrash((prev) => [
-        { kind: 'folder', id, deletedAt: Date.now(), folder, notes: folderNotes },
+        {
+          kind: 'folder',
+          id,
+          deletedAt: Date.now(),
+          folder,
+          folders: descendantFolders,
+          notes: subtreeNotes,
+        },
         ...prev,
       ]);
       db.deleteFolder(id).catch(syncFailed);
@@ -160,7 +184,12 @@ export function NotesProvider({ children }: { children: ReactNode }) {
         const note = folderExists ? entry.note : { ...entry.note, folderId: null };
         setNotes((prev) => [note, ...prev]);
       } else {
-        setFolders((prev) => [entry.folder, ...prev]);
+        // Reattach the root folder to its parent, or to home if that parent is
+        // gone; the rest of the subtree comes back unchanged around it.
+        const parentExists =
+          entry.folder.parentId === null || folders.some((f) => f.id === entry.folder.parentId);
+        const folder = parentExists ? entry.folder : { ...entry.folder, parentId: null };
+        setFolders((prev) => [folder, ...entry.folders, ...prev]);
         setNotes((prev) => [...entry.notes, ...prev]);
       }
       setTrash((prev) => prev.filter((e) => e.id !== entryId));
@@ -204,6 +233,8 @@ export function NotesProvider({ children }: { children: ReactNode }) {
       getNote: (id) => notes.find((note) => note.id === id),
       getNotesInFolder: (folderId) => notes.filter((note) => note.folderId === folderId),
       getRootNotes: () => notes.filter((note) => note.folderId === null),
+      getRootFolders: () => folders.filter((folder) => folder.parentId == null),
+      getSubfolders: (parentId) => folders.filter((folder) => folder.parentId === parentId),
       createNote,
       createFolder,
       updateNote,

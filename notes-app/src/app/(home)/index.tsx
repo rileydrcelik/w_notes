@@ -26,7 +26,7 @@ const OPEN_DISTANCE = 60;
 const OPEN_VELOCITY = 500;
 
 export default function HomeScreen() {
-  const { folders, notes, getRootNotes } = useNotes();
+  const { folders, notes, getRootNotes, getRootFolders } = useNotes();
   const tabBarInset = useTabBarInset();
   const insets = useSafeAreaInsets();
   const theme = useTheme();
@@ -41,12 +41,12 @@ export default function HomeScreen() {
   const q = query.trim().toLowerCase();
   const searching = q.length > 0;
 
-  // Default view: folders, then notes that live on the home screen. While
-  // searching, match folders by name and notes by title/body across every
-  // folder, so results aren't limited to the home screen.
+  // Default view: home-screen folders, then notes that live on the home screen.
+  // While searching, match folders by name and notes by title/body across the
+  // whole tree, so results aren't limited to the home screen.
   const matchedFolders = searching
     ? folders.filter((folder) => folder.name.toLowerCase().includes(q))
-    : folders;
+    : getRootFolders();
   const matchedNotes = searching
     ? notes.filter(
         (note) => note.title.toLowerCase().includes(q) || note.body.toLowerCase().includes(q),

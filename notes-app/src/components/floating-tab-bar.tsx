@@ -7,6 +7,8 @@ import Animated, {
   FadeIn,
   FadeOut,
   LinearTransition,
+  SlideInDown,
+  SlideOutDown,
   useAnimatedStyle,
   useSharedValue,
   withTiming,
@@ -15,6 +17,8 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { GlassSurface } from '@/components/glass-surface';
 import { RightSidebar } from '@/components/right-sidebar';
+import { ThemedText } from '@/components/themed-text';
+import type { Note } from '@/data/notes';
 import { dismissActiveEditor } from '@/lib/active-editor';
 import { Spacing, TabBar } from '@/constants/theme';
 import { useTabBarBottom } from '@/hooks/use-tab-bar-inset';
@@ -22,6 +26,8 @@ import { useTheme } from '@/hooks/use-theme';
 import { useCopa } from '@/store/copa-store';
 import { useNotes } from '@/store/notes-store';
 import { useSidebar } from '@/store/sidebar-store';
+
+const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
 /** Tracks on-screen keyboard visibility so the bar can move out of its way. */
 function useKeyboardVisible() {
@@ -63,6 +69,8 @@ export function FloatingTabBar({ blurTarget }: FloatingTabBarProps) {
   const pathname = usePathname();
   const insets = useSafeAreaInsets();
   const bottom = useTabBarBottom();
+  // Long-pressing the create button opens a small sheet to pick note vs folder.
+  const [createMenuOpen, setCreateMenuOpen] = useState(false);
   // The menu tab opens a side drawer instead of navigating to a screen. Its
   // open state is shared (via context) so the home screen's left-swipe can open
   // the same drawer.
@@ -166,28 +174,114 @@ export function FloatingTabBar({ blurTarget }: FloatingTabBarProps) {
               iconColor={colors.textSecondary}
               keyboardVisible={vertical}
               blurTarget={blurTarget}
+              onLongPress={() => setCreateMenuOpen(true)}
             />
           </View>
         </View>
       </Animated.View>
       )}
+      {/* Note/folder picker from a long-press; stacks above the navbar. */}
+      <CreateMenu open={createMenuOpen} onClose={() => setCreateMenuOpen(false)} />
     </>
   );
 }
 
 /**
+ * Bottom sheet shown when the create button is long-pressed: pick between a new
+ * note and a new folder. Both are created in the current location (the open
+ * folder, or the root) and opened straight away.
+ */
+function CreateMenu({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const colors = useTheme();
+  const insets = useSafeAreaInsets();
+  const router = useRouter();
+  const pathname = usePathname();
+  const { createNote, createFolder, getNote } = useNotes();
+
+  const onCreateNote = () => {
+    onClose();
+    const id = createNote(currentFolderId(pathname, getNote));
+    router.push({ pathname: '/note/[id]', params: { id } });
+  };
+
+  const onCreateFolder = () => {
+    onClose();
+    const id = createFolder(currentFolderId(pathname, getNote));
+    router.push({ pathname: '/folder/[id]', params: { id } });
+  };
+
+  const options: { key: string; label: string; icon: FeatherName; onPress: () => void }[] = [
+    { key: 'note', label: 'New note', icon: 'file-plus', onPress: onCreateNote },
+    { key: 'folder', label: 'New folder', icon: 'folder-plus', onPress: onCreateFolder },
+  ];
+
+  return (
+    <View style={styles.menuOverlay} pointerEvents={open ? 'box-none' : 'none'}>
+      {open && (
+        <>
+          <AnimatedPressable
+            entering={FadeIn.duration(180)}
+            exiting={FadeOut.duration(180)}
+            style={styles.menuBackdrop}
+            onPress={onClose}
+            accessibilityRole="button"
+            accessibilityLabel="Dismiss"
+          />
+          <Animated.View
+            entering={SlideInDown.duration(260)}
+            exiting={SlideOutDown.duration(220)}
+            style={[styles.menuHost, { paddingBottom: insets.bottom + Spacing.three }]}>
+            <GlassSurface intensity={75} tintOpacity={0.85} style={styles.menuSheet}>
+              {options.map((option) => (
+                <Pressable
+                  key={option.key}
+                  onPress={option.onPress}
+                  accessibilityRole="button"
+                  accessibilityLabel={option.label}
+                  style={({ pressed }) => [styles.menuRow, pressed && styles.menuRowPressed]}>
+                  <Feather name={option.icon} size={20} color={colors.text} style={styles.menuIcon} />
+                  <ThemedText style={[styles.menuLabel, { color: colors.text }]}>
+                    {option.label}
+                  </ThemedText>
+                </Pressable>
+              ))}
+            </GlassSurface>
+          </Animated.View>
+        </>
+      )}
+    </View>
+  );
+}
+
+/**
+ * Resolve the folder a new item should land in from the current route: a folder
+ * screen creates inside that folder, a note screen alongside its siblings, and
+ * everywhere else (e.g. home) at the root.
+ */
+function currentFolderId(pathname: string, getNote: (id: string) => Note | undefined): string | null {
+  const folderMatch = pathname.match(/^\/folder\/([^/]+)/);
+  if (folderMatch) return decodeURIComponent(folderMatch[1]);
+  const noteMatch = pathname.match(/^\/note\/([^/]+)/);
+  if (noteMatch) return getNote(decodeURIComponent(noteMatch[1]))?.folderId ?? null;
+  return null;
+}
+
+/**
  * Trailing action button. With the keyboard up it becomes a "done" affordance —
  * a check that dismisses the keyboard; otherwise it's the create (+) button that
- * adds a note in the current location (a folder, or the root) and opens it.
+ * adds a note in the current location (a folder, or the root) and opens it. A
+ * long-press opens a menu to create a folder instead (handled by the parent).
  */
 function CreateButton({
   iconColor,
   keyboardVisible,
   blurTarget,
+  onLongPress,
 }: {
   iconColor: string;
   keyboardVisible: boolean;
   blurTarget?: RefObject<View | null> | null;
+  onLongPress: () => void;
 }) {
   const router = useRouter();
   const pathname = usePathname();
@@ -196,16 +290,7 @@ function CreateButton({
   const scale = useSharedValue(1);
   const animatedStyle = useAnimatedStyle(() => ({ transform: [{ scale: scale.value }] }));
 
-  // Resolve the folder the new note should land in from the current route:
-  // a folder screen creates inside that folder, a note screen alongside its
-  // sibling notes, and everywhere else (e.g. home) at the root.
-  const targetFolderId = (): string | null => {
-    const folderMatch = pathname.match(/^\/folder\/([^/]+)/);
-    if (folderMatch) return decodeURIComponent(folderMatch[1]);
-    const noteMatch = pathname.match(/^\/note\/([^/]+)/);
-    if (noteMatch) return getNote(decodeURIComponent(noteMatch[1]))?.folderId ?? null;
-    return null;
-  };
+  const onCopa = pathname === '/copa' || pathname.startsWith('/copa/');
 
   const onPress = () => {
     // Blur the native rich editor (Keyboard.dismiss can't) before dismissing.
@@ -214,13 +299,22 @@ function CreateButton({
     // With the keyboard up this button just confirms/dismisses; otherwise create.
     if (keyboardVisible) return;
     // On the copa tab the button creates a copy block; elsewhere, a note.
-    if (pathname === '/copa' || pathname.startsWith('/copa/')) {
+    if (onCopa) {
       const id = createCopa();
       router.push({ pathname: '/copa/[id]', params: { id } });
       return;
     }
-    const id = createNote(targetFolderId());
+    const id = createNote(currentFolderId(pathname, getNote));
     router.push({ pathname: '/note/[id]', params: { id } });
+  };
+
+  const handleLongPress = () => {
+    // The folder option doesn't apply to copa, and the button is a "done" key
+    // while the keyboard is up — only offer the menu when plainly creating.
+    if (keyboardVisible || onCopa) return;
+    dismissActiveEditor();
+    Keyboard.dismiss();
+    onLongPress();
   };
 
   return (
@@ -234,7 +328,8 @@ function CreateButton({
         onPressOut={() => {
           scale.value = withTiming(1, { duration: 120 });
         }}
-        onPress={onPress}>
+        onPress={onPress}
+        onLongPress={handleLongPress}>
         <GlassSurface
           intensity={75}
           tintOpacity={0.85}
@@ -319,5 +414,57 @@ const styles = StyleSheet.create({
     alignSelf: 'stretch',
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  // Long-press create menu: a backdrop with a bottom sheet, mirroring the
+  // shared options sheet's glass treatment.
+  menuOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    justifyContent: 'flex-end',
+  },
+  menuBackdrop: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0,0,0,0.35)',
+  },
+  menuHost: {
+    paddingHorizontal: Spacing.three,
+  },
+  menuSheet: {
+    overflow: 'hidden',
+    borderRadius: Spacing.four,
+    padding: Spacing.two,
+    shadowColor: '#000',
+    shadowOpacity: 0.4,
+    shadowRadius: 24,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 24,
+  },
+  menuRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.three,
+    paddingVertical: Spacing.three,
+    paddingHorizontal: Spacing.two,
+    borderRadius: Spacing.three,
+  },
+  menuRowPressed: {
+    opacity: 0.55,
+  },
+  menuIcon: {
+    width: 24,
+    textAlign: 'center',
+  },
+  menuLabel: {
+    flex: 1,
+    fontSize: 16,
+    lineHeight: 24,
+    fontWeight: '600',
   },
 });

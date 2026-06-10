@@ -1,7 +1,7 @@
 import Feather from '@expo/vector-icons/Feather';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter, type Href } from 'expo-router';
-import { useState, type ComponentProps } from 'react';
+import { useState, type ComponentProps, type ReactNode } from 'react';
 import { Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import Animated, {
   FadeIn,
@@ -15,10 +15,14 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { SearchBar, SEARCH_BAR_HEIGHT } from '@/components/search-bar';
 import { ThemedText } from '@/components/themed-text';
 import { Spacing } from '@/constants/theme';
+import type { Folder } from '@/data/notes';
 import { useTheme } from '@/hooks/use-theme';
 import { useNotes } from '@/store/notes-store';
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
+
+/** Right-margin step per nesting level, indenting deeper rows from the edge. */
+const INDENT = Spacing.four;
 
 type FeatherName = ComponentProps<typeof Feather>['name'];
 
@@ -32,7 +36,8 @@ export function RightSidebar({ open, onClose }: { open: boolean; onClose: () => 
   const colors = useTheme();
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { folders, notes, trash, getNotesInFolder, getRootNotes, createFolder } = useNotes();
+  const { folders, notes, trash, getNotesInFolder, getRootNotes, getRootFolders, getSubfolders, createFolder } =
+    useNotes();
   const rootNotes = getRootNotes();
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [query, setQuery] = useState('');
@@ -56,15 +61,17 @@ export function RightSidebar({ open, onClose }: { open: boolean; onClose: () => 
   const noteMatches = (title: string, body: string) =>
     title.toLowerCase().includes(q) || body.toLowerCase().includes(q);
 
-  // While searching, keep folders whose name matches or that hold a matching
-  // note, and root notes that match by title/body.
-  const visibleFolders = searching
-    ? folders.filter(
-        (folder) =>
-          folder.name.toLowerCase().includes(q) ||
-          getNotesInFolder(folder.id).some((note) => noteMatches(note.title, note.body)),
-      )
-    : folders;
+  // A folder is relevant while searching if its own name matches, it holds a
+  // matching note, or anything beneath it in the tree qualifies.
+  const folderMatchesSearch = (folder: Folder): boolean =>
+    folder.name.toLowerCase().includes(q) ||
+    getNotesInFolder(folder.id).some((note) => noteMatches(note.title, note.body)) ||
+    getSubfolders(folder.id).some(folderMatchesSearch);
+
+  // The hierarchy is rendered from the home-screen folders down; searching
+  // prunes it to branches that contain a match. Root notes follow underneath.
+  const rootFolders = getRootFolders();
+  const visibleRootFolders = searching ? rootFolders.filter(folderMatchesSearch) : rootFolders;
   const visibleRootNotes = searching
     ? rootNotes.filter((note) => noteMatches(note.title, note.body))
     : rootNotes;
@@ -82,9 +89,81 @@ export function RightSidebar({ open, onClose }: { open: boolean; onClose: () => 
   };
 
   const addFolder = () => {
-    const id = createFolder();
+    const id = createFolder(null);
     onClose();
     router.push({ pathname: '/folder/[id]', params: { id } });
+  };
+
+  // Renders a folder row and, when open, its subfolders (recursively) and notes
+  // beneath it — each level stepped further in from the right edge.
+  const renderFolder = (folder: Folder, depth: number): ReactNode => {
+    const folderNotes = getNotesInFolder(folder.id);
+    const subfolders = getSubfolders(folder.id);
+    const nameMatch = searching && folder.name.toLowerCase().includes(q);
+    // While searching (unless this folder's own name matched) narrow to the
+    // matching notes and the subfolders whose branch contains a match.
+    const childNotes =
+      searching && !nameMatch
+        ? folderNotes.filter((note) => noteMatches(note.title, note.body))
+        : folderNotes;
+    const childFolders =
+      searching && !nameMatch ? subfolders.filter(folderMatchesSearch) : subfolders;
+    // Searching forces every surviving branch open; otherwise honor the toggle.
+    const isOpen = searching ? true : expanded[folder.id];
+
+    return (
+      <Animated.View key={folder.id} layout={LinearTransition.duration(220)}>
+        <Pressable
+          onPress={() => toggle(folder.id)}
+          style={({ pressed }) => [
+            styles.row,
+            { marginRight: depth * INDENT },
+            pressed && styles.pressed,
+          ]}>
+          <ThemedText type="small" themeColor="textSecondary">
+            {folderNotes.length}
+          </ThemedText>
+          <View style={styles.spacer} />
+          <Feather
+            name={isOpen ? 'chevron-down' : 'chevron-left'}
+            size={18}
+            color={colors.textSecondary}
+          />
+          <ThemedText style={styles.folderName} numberOfLines={1}>
+            {folder.name}
+          </ThemedText>
+        </Pressable>
+        {isOpen && (
+          <>
+            {childFolders.map((sub) => renderFolder(sub, depth + 1))}
+            {childNotes.map((note, index) => (
+              <Animated.View
+                key={note.id}
+                entering={FadeIn.duration(160).delay(index * 25)}
+                exiting={FadeOut.duration(120)}>
+                <Pressable
+                  onPress={() => openNote(note.id)}
+                  style={({ pressed }) => [
+                    styles.row,
+                    { marginRight: (depth + 1) * INDENT },
+                    pressed && styles.pressed,
+                  ]}>
+                  <ThemedText type="small" style={styles.rowLabel} numberOfLines={1}>
+                    {note.title}
+                  </ThemedText>
+                  <Feather
+                    name="file-text"
+                    size={16}
+                    color={colors.textSecondary}
+                    style={styles.leadIcon}
+                  />
+                </Pressable>
+              </Animated.View>
+            ))}
+          </>
+        )}
+      </Animated.View>
+    );
   };
 
   return (
@@ -162,62 +241,7 @@ export function RightSidebar({ open, onClose }: { open: boolean; onClose: () => 
                     { paddingBottom: insets.bottom + Spacing.two },
                   ]}
                   showsVerticalScrollIndicator={false}>
-                  {visibleFolders.map((folder) => {
-                    const folderNotes = getNotesInFolder(folder.id);
-                    const nameMatch = searching && folder.name.toLowerCase().includes(q);
-                    // Searching forces the folder open and narrows to matching
-                    // notes (unless the folder name itself matched).
-                    const childNotes =
-                      searching && !nameMatch
-                        ? folderNotes.filter((note) => noteMatches(note.title, note.body))
-                        : folderNotes;
-                    const isOpen = searching ? true : expanded[folder.id];
-                    return (
-                      <Animated.View key={folder.id} layout={LinearTransition.duration(220)}>
-                        <Pressable
-                          onPress={() => toggle(folder.id)}
-                          style={({ pressed }) => [styles.row, pressed && styles.pressed]}>
-                          <ThemedText type="small" themeColor="textSecondary">
-                            {folderNotes.length}
-                          </ThemedText>
-                          <View style={styles.spacer} />
-                          <Feather
-                            name={isOpen ? 'chevron-down' : 'chevron-left'}
-                            size={18}
-                            color={colors.textSecondary}
-                          />
-                          <ThemedText style={styles.folderName} numberOfLines={1}>
-                            {folder.name}
-                          </ThemedText>
-                        </Pressable>
-                        {isOpen &&
-                          childNotes.map((note, index) => (
-                            <Animated.View
-                              key={note.id}
-                              entering={FadeIn.duration(160).delay(index * 25)}
-                              exiting={FadeOut.duration(120)}>
-                              <Pressable
-                                onPress={() => openNote(note.id)}
-                                style={({ pressed }) => [
-                                  styles.row,
-                                  styles.childRow,
-                                  pressed && styles.pressed,
-                                ]}>
-                                <ThemedText type="small" style={styles.rowLabel} numberOfLines={1}>
-                                  {note.title}
-                                </ThemedText>
-                                <Feather
-                                  name="file-text"
-                                  size={16}
-                                  color={colors.textSecondary}
-                                  style={styles.leadIcon}
-                                />
-                              </Pressable>
-                            </Animated.View>
-                          ))}
-                      </Animated.View>
-                    );
-                  })}
+                  {visibleRootFolders.map((folder) => renderFolder(folder, 0))}
 
                   {visibleRootNotes.map((note) => (
                     <Animated.View key={note.id} layout={LinearTransition.duration(220)}>
@@ -325,9 +349,6 @@ const styles = StyleSheet.create({
     paddingVertical: Spacing.two,
     paddingHorizontal: Spacing.two,
     borderRadius: Spacing.two,
-  },
-  childRow: {
-    marginRight: Spacing.four,
   },
   /** Pinned header row: search field on the left, new-folder button on the right. */
   searchRow: {
