@@ -10,6 +10,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { MarkdownEditor } from '@/components/markdown-editor';
 import { SwipeBackView } from '@/components/swipe-back-view';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
@@ -97,14 +98,11 @@ export default function NoteScreen() {
             contentContainerStyle={[styles.content, { paddingBottom: tabBarInset }]}
             keyboardShouldPersistTaps="handled"
             showsVerticalScrollIndicator={false}>
-            <TextInput
+            <MarkdownEditor
+              key={id}
               value={body}
               onChangeText={setBody}
               placeholder="Start typing…"
-              placeholderTextColor={theme.textSecondary}
-              style={[styles.body, { color: theme.text }]}
-              multiline
-              textAlignVertical="top"
             />
           </ScrollView>
           {/* Fades scrolling body text into the sticky title. */}
@@ -139,12 +137,6 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     height: Spacing.five,
-  },
-  body: {
-    fontSize: 16,
-    lineHeight: 24,
-    fontWeight: '500',
-    minHeight: 300,
   },
   empty: {
     flex: 1,

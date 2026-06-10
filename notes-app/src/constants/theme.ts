@@ -34,6 +34,16 @@ export const Colors = {
     backgroundSelected: '#dcd4bd', // selection / pressed
     textSecondary: '#657b83', // base00 — secondary content
   },
+  // Solarized Dark — the canonical mirror of the light variant. Deep teal base
+  // (base03/base02) with the brighter blue-grey body text (base1/base0).
+  solarizedDark: {
+    text: '#93a1a1', // base1 — primary content
+    background: '#002b36', // base03 — deepest surface
+    backgroundElement: '#073642', // base02 — raised surfaces
+    backgroundElementAlt: '#052f38', // a touch deeper, for alt cards
+    backgroundSelected: '#0a4452', // selection / pressed
+    textSecondary: '#839496', // base0 — secondary content
+  },
 } as const;
 
 /** The three palettes share the same keys; any of them is a full Palette. */
@@ -47,6 +57,34 @@ export function hexToRgba(hex: string, alpha: number): string {
   const g = parseInt(h.slice(2, 4), 16);
   const b = parseInt(h.slice(4, 6), 16);
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
+/** Parse a #rrggbb string into [r, g, b] (0-255). */
+function hexToRgb(hex: string): [number, number, number] {
+  const h = hex.replace('#', '');
+  return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)];
+}
+
+/** Linearly interpolate between two #rrggbb colors. t in [0, 1]. */
+export function lerpColor(from: string, to: string, t: number): string {
+  const [r1, g1, b1] = hexToRgb(from);
+  const [r2, g2, b2] = hexToRgb(to);
+  const r = Math.round(r1 + (r2 - r1) * t);
+  const g = Math.round(g1 + (g2 - g1) * t);
+  const b = Math.round(b1 + (b2 - b1) * t);
+  const hex = (n: number) => n.toString(16).padStart(2, '0');
+  return `#${hex(r)}${hex(g)}${hex(b)}`;
+}
+
+/** Interpolate every key of two palettes, producing an in-between palette. */
+export function lerpPalette(from: Palette, to: Palette, t: number): Palette {
+  if (t <= 0) return from;
+  if (t >= 1) return to;
+  const out = {} as Palette;
+  for (const key of Object.keys(from) as ThemeColor[]) {
+    out[key] = lerpColor(from[key], to[key], t);
+  }
+  return out;
 }
 
 export const Fonts = Platform.select({

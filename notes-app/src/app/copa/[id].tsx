@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { KeyboardAvoidingView, Platform, ScrollView, StyleSheet, TextInput } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { MarkdownEditor } from '@/components/markdown-editor';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Spacing } from '@/constants/theme';
@@ -89,14 +90,11 @@ export default function CopaBlockScreen() {
           contentContainerStyle={[styles.content, { paddingBottom: tabBarInset }]}
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}>
-          <TextInput
+          <MarkdownEditor
+            key={id}
             value={content}
             onChangeText={setContent}
             placeholder="Contents to copy…"
-            placeholderTextColor={theme.textSecondary}
-            style={[styles.body, { color: theme.text }]}
-            multiline
-            textAlignVertical="top"
           />
         </ScrollView>
         {/* Fades scrolling body text into the sticky title. */}
@@ -130,12 +128,6 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     height: Spacing.five,
-  },
-  body: {
-    fontSize: 16,
-    lineHeight: 24,
-    fontWeight: '500',
-    minHeight: 300,
   },
   empty: {
     flex: 1,
