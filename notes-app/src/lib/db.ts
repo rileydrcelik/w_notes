@@ -1,5 +1,6 @@
 import * as SQLite from 'expo-sqlite';
 
+import { Sentry } from '@/lib/sentry';
 import type { Folder, Note } from '@/data/notes';
 import type { CopaItem } from '@/data/copa';
 
@@ -14,6 +15,17 @@ import type { CopaItem } from '@/data/copa';
  */
 
 const DB_NAME = 'wnotes.db';
+
+/**
+ * Records a lightweight Sentry breadcrumb for a database mutation. These don't
+ * report anything on their own — they ride along as context on whatever error
+ * is captured next (e.g. a failed write surfaced by the store), so a report
+ * shows the recent sequence of DB ops that led up to it. No-op when Sentry is
+ * disabled.
+ */
+function dbCrumb(op: string, data?: Record<string, unknown>): void {
+  Sentry.addBreadcrumb({ category: 'db', message: op, level: 'info', data });
+}
 
 // ---- Raw row shapes (snake_case, booleans as 0/1, timestamps as epoch ms) ----
 
@@ -215,6 +227,7 @@ export const db = {
   },
 
   async createNote({ id, folderId }: { id: string; folderId: string | null }): Promise<void> {
+    dbCrumb('createNote', { id, folderId });
     const database = await getDb();
     const now = Date.now();
     await database.runAsync(
@@ -227,6 +240,7 @@ export const db = {
     id: string,
     patch: Partial<Pick<Note, 'title' | 'body' | 'folderId' | 'favorite' | 'shared'>>,
   ): Promise<void> {
+    dbCrumb('updateNote', { id, fields: Object.keys(patch) });
     const database = await getDb();
     const sets: string[] = [];
     const args: SQLite.SQLiteBindValue[] = [];
@@ -242,6 +256,7 @@ export const db = {
   },
 
   async deleteNote(id: string): Promise<void> {
+    dbCrumb('deleteNote', { id });
     const database = await getDb();
     await database.runAsync(
       'UPDATE notes SET deleted_at = ?, trashed_with_folder_id = NULL WHERE id = ?',
@@ -256,6 +271,7 @@ export const db = {
     id: string;
     parentId: string | null;
   }): Promise<void> {
+    dbCrumb('createFolder', { id, parentId });
     const database = await getDb();
     await database.runAsync(
       'INSERT INTO folders (id, name, parent_id, created_at) VALUES (?, ?, ?, ?)',
@@ -267,6 +283,7 @@ export const db = {
     id: string,
     patch: Partial<Pick<Folder, 'name' | 'favorite'>>,
   ): Promise<void> {
+    dbCrumb('updateFolder', { id, fields: Object.keys(patch) });
     const database = await getDb();
     const sets: string[] = [];
     const args: SQLite.SQLiteBindValue[] = [];
@@ -284,6 +301,7 @@ export const db = {
    * single restore brings the entire group back as it was.
    */
   async deleteFolder(id: string): Promise<void> {
+    dbCrumb('deleteFolder', { id });
     const database = await getDb();
     const now = Date.now();
     // Walk the tree to gather the folder and all live descendant folders.
@@ -322,6 +340,7 @@ export const db = {
   },
 
   async restoreFromTrash(id: string): Promise<void> {
+    dbCrumb('restoreFromTrash', { id });
     const database = await getDb();
     const folder = await database.getFirstAsync<FolderRow>(
       'SELECT * FROM folders WHERE id = ? AND deleted_at IS NOT NULL',
@@ -386,6 +405,7 @@ export const db = {
   },
 
   async createCopa({ id }: { id: string }): Promise<void> {
+    dbCrumb('createCopa', { id });
     const database = await getDb();
     await database.runAsync('INSERT INTO copa_items (id, label, content, created_at) VALUES (?, ?, ?, ?)', [
       id,
@@ -399,6 +419,7 @@ export const db = {
     id: string,
     patch: Partial<Pick<CopaItem, 'label' | 'content' | 'favorite'>>,
   ): Promise<void> {
+    dbCrumb('updateCopa', { id, fields: Object.keys(patch) });
     const database = await getDb();
     const sets: string[] = [];
     const args: SQLite.SQLiteBindValue[] = [];
@@ -412,6 +433,7 @@ export const db = {
   },
 
   async deleteCopa(id: string): Promise<void> {
+    dbCrumb('deleteCopa', { id });
     const database = await getDb();
     await database.runAsync('DELETE FROM copa_items WHERE id = ?', [id]);
   },

@@ -8,6 +8,7 @@ import {
   type ReactNode,
 } from 'react';
 
+import { Sentry } from '@/lib/sentry';
 import { db, type TrashEntry } from '@/lib/db';
 import type { Folder, Note } from '@/data/notes';
 
@@ -20,8 +21,16 @@ export type { TrashEntry };
 const rid = (prefix: string) =>
   `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
-/** Logs a failed background sync without disturbing the optimistic UI. */
-const syncFailed = (e: unknown) => console.warn('[notes] background sync failed:', e);
+/**
+ * Reports a failed background persist/sync without disturbing the optimistic UI.
+ * The write already failed silently to the user (state was updated optimistically),
+ * so this is the only place it surfaces: a console warning for dev plus a Sentry
+ * capture (with the db breadcrumbs attached) for visibility in production.
+ */
+const syncFailed = (e: unknown) => {
+  console.warn('[notes] background sync failed:', e);
+  Sentry.captureException(e, { tags: { source: 'notes-store' } });
+};
 
 type NotesContextValue = {
   folders: Folder[];
@@ -82,7 +91,10 @@ export function NotesProvider({ children }: { children: ReactNode }) {
         setFolders(data.folders);
         setTrash(data.trash);
       })
-      .catch((e) => console.warn('[notes] failed to load from API:', e));
+      .catch((e) => {
+        console.warn('[notes] failed to load from device:', e);
+        Sentry.captureException(e, { tags: { source: 'notes-store', op: 'bootstrap' } });
+      });
     return () => {
       cancelled = true;
     };
