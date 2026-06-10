@@ -8,7 +8,6 @@ import {
   Share,
   StyleSheet,
   TextInput,
-  useColorScheme,
   View,
 } from 'react-native';
 import Animated, { FadeIn, FadeOut, SlideInDown, SlideOutDown } from 'react-native-reanimated';
@@ -17,7 +16,8 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ConfirmDialog } from '@/components/confirm-dialog';
 import { GlassSurface } from '@/components/glass-surface';
 import { ThemedText } from '@/components/themed-text';
-import { Colors, Spacing } from '@/constants/theme';
+import { Spacing } from '@/constants/theme';
+import { useTheme } from '@/hooks/use-theme';
 import { useCopa } from '@/store/copa-store';
 
 type FeatherName = ComponentProps<typeof Feather>['name'];
@@ -121,8 +121,7 @@ function OptionsSheet({
   onRename: (id: string) => void;
   onDelete: (id: string) => void;
 }) {
-  const scheme = useColorScheme() === 'dark' ? 'dark' : 'light';
-  const colors = Colors[scheme];
+  const colors = useTheme();
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const { getCopa, toggleFavorite } = useCopa();
@@ -214,7 +213,7 @@ function OptionsSheet({
  * stored label each time it opens and commits on save.
  */
 function RenameDialog({ targetId, onClose }: { targetId: string | null; onClose: () => void }) {
-  const colors = Colors[useColorScheme() === 'dark' ? 'dark' : 'light'];
+  const colors = useTheme();
   const { getCopa, updateCopa } = useCopa();
   const [value, setValue] = useState('');
 

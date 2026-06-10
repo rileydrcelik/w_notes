@@ -2,7 +2,7 @@ import Feather from '@expo/vector-icons/Feather';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter, type Href } from 'expo-router';
 import { useState, type ComponentProps } from 'react';
-import { Pressable, ScrollView, StyleSheet, useColorScheme, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import Animated, {
   FadeIn,
   FadeOut,
@@ -14,7 +14,8 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 
 import { SearchBar, SEARCH_BAR_HEIGHT } from '@/components/search-bar';
 import { ThemedText } from '@/components/themed-text';
-import { Colors, Spacing } from '@/constants/theme';
+import { Spacing } from '@/constants/theme';
+import { useTheme } from '@/hooks/use-theme';
 import { useNotes } from '@/store/notes-store';
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
@@ -28,8 +29,7 @@ type FeatherName = ComponentProps<typeof Feather>['name'];
  * `open` so the slide/fade exit animations get a chance to play.
  */
 export function RightSidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const scheme = useColorScheme() === 'dark' ? 'dark' : 'light';
-  const colors = Colors[scheme];
+  const colors = useTheme();
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { folders, notes, trash, getNotesInFolder, getRootNotes, createFolder } = useNotes();
@@ -192,51 +192,66 @@ export function RightSidebar({ open, onClose }: { open: boolean; onClose: () => 
                         </Pressable>
                         {isOpen &&
                           childNotes.map((note, index) => (
-                            <AnimatedPressable
+                            <Animated.View
                               key={note.id}
                               entering={FadeIn.duration(160).delay(index * 25)}
-                              exiting={FadeOut.duration(120)}
-                              onPress={() => openNote(note.id)}
-                              style={({ pressed }) => [
-                                styles.row,
-                                styles.childRow,
-                                pressed && styles.pressed,
-                              ]}>
-                              <ThemedText type="small" style={styles.rowLabel} numberOfLines={1}>
-                                {note.title}
-                              </ThemedText>
-                              <Feather
-                                name="file-text"
-                                size={16}
-                                color={colors.textSecondary}
-                                style={styles.leadIcon}
-                              />
-                            </AnimatedPressable>
+                              exiting={FadeOut.duration(120)}>
+                              <Pressable
+                                onPress={() => openNote(note.id)}
+                                style={({ pressed }) => [
+                                  styles.row,
+                                  styles.childRow,
+                                  pressed && styles.pressed,
+                                ]}>
+                                <ThemedText type="small" style={styles.rowLabel} numberOfLines={1}>
+                                  {note.title}
+                                </ThemedText>
+                                <Feather
+                                  name="file-text"
+                                  size={16}
+                                  color={colors.textSecondary}
+                                  style={styles.leadIcon}
+                                />
+                              </Pressable>
+                            </Animated.View>
                           ))}
                       </Animated.View>
                     );
                   })}
 
                   {visibleRootNotes.map((note) => (
-                    <AnimatedPressable
-                      key={note.id}
-                      layout={LinearTransition.duration(220)}
-                      onPress={() => openNote(note.id)}
-                      style={({ pressed }) => [styles.row, pressed && styles.pressed]}>
-                      <ThemedText style={styles.rowLabel} numberOfLines={1}>
-                        {note.title}
-                      </ThemedText>
-                      <Feather name="file-text" size={18} color={colors.text} style={styles.leadIcon} />
-                    </AnimatedPressable>
+                    <Animated.View key={note.id} layout={LinearTransition.duration(220)}>
+                      <Pressable
+                        onPress={() => openNote(note.id)}
+                        style={({ pressed }) => [styles.row, pressed && styles.pressed]}>
+                        <ThemedText style={styles.rowLabel} numberOfLines={1}>
+                          {note.title}
+                        </ThemedText>
+                        <Feather name="file-text" size={18} color={colors.text} style={styles.leadIcon} />
+                      </Pressable>
+                    </Animated.View>
                   ))}
                 </ScrollView>
                 {/* Subtle fade so content dissolves into the bottom edge. */}
                 <LinearGradient
                   pointerEvents="none"
-                  colors={['transparent', 'rgba(0,0,0,0.85)']}
+                  colors={[`${colors.background}00`, colors.background]}
                   style={styles.bottomFade}
                 />
               </View>
+
+              {/* Floating settings button, docked to the notes sidebar's bottom-right. */}
+              <Pressable
+                onPress={() => goTo('/settings')}
+                accessibilityRole="button"
+                accessibilityLabel="Settings"
+                style={({ pressed }) => [
+                  styles.settingsButton,
+                  { backgroundColor: colors.backgroundElement, bottom: insets.bottom + Spacing.three },
+                  pressed && styles.pressed,
+                ]}>
+                <Feather name="settings" size={24} color={colors.text} />
+              </Pressable>
             </SafeAreaView>
           </Animated.View>
         </>
@@ -331,6 +346,21 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     borderRadius: Spacing.three,
+  },
+  /** Floating settings button, bottom-right of the notes sidebar. */
+  settingsButton: {
+    position: 'absolute',
+    right: Spacing.three,
+    width: SEARCH_BAR_HEIGHT,
+    height: SEARCH_BAR_HEIGHT,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: Spacing.three,
+    shadowColor: '#000',
+    shadowOpacity: 0.4,
+    shadowRadius: 16,
+    shadowOffset: { width: 0, height: 0 },
+    elevation: 16,
   },
   pressed: {
     opacity: 0.55,

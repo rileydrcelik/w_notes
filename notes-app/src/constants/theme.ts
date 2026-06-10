@@ -24,9 +24,30 @@ export const Colors = {
     backgroundSelected: '#2E3135',
     textSecondary: '#B0B4BA',
   },
+  // Ethan Schoonover's Solarized Light. Warm paper base (base3/base2) with the
+  // signature low-contrast blue-grey body text (base01/base00).
+  solarizedLight: {
+    text: '#586e75', // base01 — primary content
+    background: '#fdf6e3', // base3 — paper
+    backgroundElement: '#eee8d5', // base2 — raised surfaces
+    backgroundElementAlt: '#e7e1cd', // a touch deeper, for alt cards
+    backgroundSelected: '#dcd4bd', // selection / pressed
+    textSecondary: '#657b83', // base00 — secondary content
+  },
 } as const;
 
-export type ThemeColor = keyof typeof Colors.light & keyof typeof Colors.dark;
+/** The three palettes share the same keys; any of them is a full Palette. */
+export type ThemeColor = keyof typeof Colors.light;
+export type Palette = Record<ThemeColor, string>;
+
+/** Hex (#rrggbb) -> rgba() string, for tints that need an alpha channel. */
+export function hexToRgba(hex: string, alpha: number): string {
+  const h = hex.replace('#', '');
+  const r = parseInt(h.slice(0, 2), 16);
+  const g = parseInt(h.slice(2, 4), 16);
+  const b = parseInt(h.slice(4, 6), 16);
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
 
 export const Fonts = Platform.select({
   ios: {
