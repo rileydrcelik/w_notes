@@ -1,0 +1,45 @@
+# Local dev stack: Postgres 16 + the FastAPI sync API.
+#
+#   docker compose up --build
+#   curl http://localhost:8000/health
+#
+# The api waits for Postgres to be healthy, runs Alembic migrations, then serves.
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: wnotes
+      POSTGRES_PASSWORD: wnotes
+      POSTGRES_DB: wnotes
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wnotes -d wnotes"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      # asyncpg driver URL. Host `db` is the compose service name.
+      DATABASE_URL: postgresql+asyncpg://wnotes:wnotes@db:5432/wnotes
+      # Paste your Python-project DSN here (or via a .env file) to enable Sentry.
+      SENTRY_DSN: ${SENTRY_DSN:-}
+      ENV: ${ENV:-development}
+    ports:
+      - "8000:8000"
+    # Live-reload during development: the source is mounted and uvicorn watches it.
+    volumes:
+      - ./:/app
+    command: >
+      sh -c "alembic upgrade head &&
+             uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+
+volumes:
+  pgdata:

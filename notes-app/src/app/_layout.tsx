@@ -6,6 +6,9 @@ import { useMemo, useState, type RefObject } from 'react';
 import { Platform, StyleSheet, type View } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 
+// Side-effect import: initializes Sentry before anything renders (no-op until a
+// DSN is set in EXPO_PUBLIC_SENTRY_DSN). `Sentry` is re-exported for the wrap.
+import { Sentry } from '@/lib/sentry';
 import { AnimatedSplashOverlay } from '@/components/animated-icon';
 import { FloatingTabBar } from '@/components/floating-tab-bar';
 import { CopaOptionsProvider } from '@/components/copa-options-modal';
@@ -19,7 +22,7 @@ import { AppThemeProvider, useThemePref } from '@/store/theme-store';
 // note) lives inside the home group's stack, which keeps its own back-swipe.
 const SWIPEABLE_PATHS = ['/', '/copa'];
 
-export default function RootLayout() {
+function RootLayout() {
   // The theme provider must sit above everything that reads the theme.
   return (
     <GestureHandlerRootView style={styles.root}>
@@ -29,6 +32,10 @@ export default function RootLayout() {
     </GestureHandlerRootView>
   );
 }
+
+// Sentry.wrap adds error boundary + touch/navigation breadcrumbs around the app.
+// It's a no-op passthrough when Sentry isn't initialized.
+export default Sentry.wrap(RootLayout);
 
 function AppShell() {
   const { scheme } = useThemePref();

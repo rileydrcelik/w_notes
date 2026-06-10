@@ -8,12 +8,17 @@ import {
   type ReactNode,
 } from 'react';
 
+import { Sentry } from '@/lib/sentry';
 import { db } from '@/lib/db';
 import type { CopaItem } from '@/data/copa';
 
 const rid = () => `copa-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
-const syncFailed = (e: unknown) => console.warn('[copa] background sync failed:', e);
+/** Reports a failed background persist without disturbing the optimistic UI. */
+const syncFailed = (e: unknown) => {
+  console.warn('[copa] background sync failed:', e);
+  Sentry.captureException(e, { tags: { source: 'copa-store' } });
+};
 
 type CopaContextValue = {
   items: CopaItem[];
@@ -43,7 +48,10 @@ export function CopaProvider({ children }: { children: ReactNode }) {
       .then((data) => {
         if (!cancelled) setItems(data);
       })
-      .catch((e) => console.warn('[copa] failed to load from API:', e));
+      .catch((e) => {
+        console.warn('[copa] failed to load from device:', e);
+        Sentry.captureException(e, { tags: { source: 'copa-store', op: 'bootstrap' } });
+      });
     return () => {
       cancelled = true;
     };

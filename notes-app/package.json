@@ -5,6 +5,7 @@
   "dependencies": {
     "@expo/ui": "~56.0.16",
     "@expo/vector-icons": "^15.0.2",
+    "@sentry/react-native": "~7.11.0",
     "expo": "~56.0.9",
     "expo-blur": "~56.0.3",
     "expo-clipboard": "~56.0.4",
