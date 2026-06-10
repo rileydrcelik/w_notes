@@ -15,6 +15,7 @@ const THEME_OPTIONS: { key: ThemeKey; label: string; description: string }[] = [
   { key: 'system', label: 'System', description: 'Match your device' },
   { key: 'dark', label: 'Dark', description: 'Dark background, light text' },
   { key: 'solarized', label: 'Solarized Light', description: 'Warm, low-contrast paper' },
+  { key: 'solarizedDark', label: 'Solarized Dark', description: 'Deep teal, low-contrast' },
 ];
 
 export default function SettingsScreen() {
@@ -26,6 +27,7 @@ export default function SettingsScreen() {
   const previewPalette = (key: ThemeKey): Palette => {
     if (key === 'dark') return Colors.dark;
     if (key === 'solarized') return Colors.solarizedLight;
+    if (key === 'solarizedDark') return Colors.solarizedDark;
     return Colors[device === 'dark' ? 'dark' : 'light'];
   };
 

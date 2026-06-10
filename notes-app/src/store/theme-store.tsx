@@ -4,24 +4,41 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from 'react';
 import { useColorScheme as useDeviceColorScheme } from 'react-native';
 
-import { Colors, type Palette } from '@/constants/theme';
+import { Colors, lerpPalette, type Palette } from '@/constants/theme';
 import { db } from '@/lib/db';
 
 /** What the user picked in Settings. 'system' follows the device. */
-export type ThemeKey = 'system' | 'dark' | 'solarized';
+export type ThemeKey = 'system' | 'dark' | 'solarized' | 'solarizedDark';
 
 /** Settings key the chosen theme is persisted under in SQLite. */
 const THEME_KEY = 'themeKey';
+const THEME_KEYS: ThemeKey[] = ['system', 'dark', 'solarized', 'solarizedDark'];
 const isThemeKey = (value: string): value is ThemeKey =>
-  value === 'system' || value === 'dark' || value === 'solarized';
+  (THEME_KEYS as string[]).includes(value);
 
 /** The light/dark axis some chrome still branches on (blur tint, status bar). */
 export type Scheme = 'light' | 'dark';
+
+/** How long a theme change takes to crossfade, in ms. */
+const TRANSITION_MS = 320;
+
+/** Ease-in-out so the crossfade accelerates then settles. */
+const easeInOut = (t: number): number =>
+  t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+
+/** Resolve a chosen theme key (plus the device scheme) to a concrete look. */
+function resolveTheme(themeKey: ThemeKey, device: Scheme): { scheme: Scheme; colors: Palette } {
+  if (themeKey === 'solarized') return { scheme: 'light', colors: Colors.solarizedLight };
+  if (themeKey === 'solarizedDark') return { scheme: 'dark', colors: Colors.solarizedDark };
+  if (themeKey === 'dark') return { scheme: 'dark', colors: Colors.dark };
+  return { scheme: device, colors: Colors[device] };
+}
 
 export type ThemePref = {
   themeKey: ThemeKey;
@@ -41,8 +58,22 @@ const ThemeContext = createContext<ThemePref | null>(null);
  * on-device SQLite on mount and written back through on every change.
  */
 export function AppThemeProvider({ children }: { children: ReactNode }) {
-  const device = useDeviceColorScheme();
+  const deviceRaw = useDeviceColorScheme();
+  const device: Scheme = deviceRaw === 'dark' ? 'dark' : 'light';
   const [themeKey, setThemeKeyState] = useState<ThemeKey>('system');
+
+  // The look we want to be showing, derived from the chosen key + device.
+  const target = useMemo(() => resolveTheme(themeKey, device), [themeKey, device]);
+
+  // The look currently on screen. Diverges from `target` mid-transition while
+  // the palette crossfades, then converges on it.
+  const [display, setDisplay] = useState(target);
+  // Latest displayed look, readable from the rAF loop without re-subscribing.
+  const displayRef = useRef(display);
+  displayRef.current = display;
+  const rafRef = useRef<number | null>(null);
+  // Only user-initiated changes animate; hydration / device flips snap.
+  const animateNext = useRef(false);
 
   // Hydrate the saved choice once on mount; default stays 'system' if unset.
   useEffect(() => {
@@ -58,22 +89,47 @@ export function AppThemeProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
+  // Drive the display toward the target whenever the target changes. A chosen
+  // change crossfades; anything else snaps so launch never flashes a stray theme.
+  useEffect(() => {
+    if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
+
+    if (!animateNext.current) {
+      setDisplay(target);
+      return;
+    }
+    animateNext.current = false;
+
+    const from = displayRef.current;
+    let startTime: number | null = null;
+    const tick = (now: number) => {
+      if (startTime == null) startTime = now;
+      const t = Math.min(1, (now - startTime) / TRANSITION_MS);
+      const e = easeInOut(t);
+      setDisplay({
+        // Flip the light/dark chrome (blur tint, status bar) at the midpoint.
+        scheme: e < 0.5 ? from.scheme : target.scheme,
+        colors: lerpPalette(from.colors, target.colors, e),
+      });
+      rafRef.current = t < 1 ? requestAnimationFrame(tick) : null;
+    };
+    rafRef.current = requestAnimationFrame(tick);
+
+    return () => {
+      if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
+    };
+  }, [target]);
+
   // Update state immediately (optimistic) and persist through to SQLite.
   const setThemeKey = useCallback((key: ThemeKey) => {
+    animateNext.current = true;
     setThemeKeyState(key);
     db.setSetting(THEME_KEY, key).catch((e) => console.warn('[theme] failed to save theme:', e));
   }, []);
 
-  const { scheme, colors } = useMemo<{ scheme: Scheme; colors: Palette }>(() => {
-    if (themeKey === 'solarized') return { scheme: 'light', colors: Colors.solarizedLight };
-    if (themeKey === 'dark') return { scheme: 'dark', colors: Colors.dark };
-    const s: Scheme = device === 'dark' ? 'dark' : 'light';
-    return { scheme: s, colors: Colors[s] };
-  }, [themeKey, device]);
-
   const value = useMemo<ThemePref>(
-    () => ({ themeKey, setThemeKey, scheme, colors }),
-    [themeKey, scheme, colors],
+    () => ({ themeKey, setThemeKey, scheme: display.scheme, colors: display.colors }),
+    [themeKey, setThemeKey, display],
   );
 
   return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;
