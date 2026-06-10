@@ -19,5 +19,7 @@ export type Note = {
 export type Folder = {
   id: string;
   name: string;
+  /** Parent folder, or null when the folder lives on the home screen. */
+  parentId: string | null;
   favorite?: boolean;
 };

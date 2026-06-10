@@ -2,29 +2,37 @@ import { Stack, useLocalSearchParams } from 'expo-router';
 import { FlatList, StyleSheet, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { NoteCard } from '@/components/notes/cards';
+import { FolderCard, NoteCard } from '@/components/notes/cards';
 import { SwipeBackView } from '@/components/swipe-back-view';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Spacing } from '@/constants/theme';
-import type { Note } from '@/data/notes';
+import type { Folder, Note } from '@/data/notes';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
 import { useTheme } from '@/hooks/use-theme';
 import { useNotes } from '@/store/notes-store';
 
-type GridItem = { kind: 'note'; note: Note } | { kind: 'spacer' };
+type GridItem =
+  | { kind: 'folder'; folder: Folder }
+  | { kind: 'note'; note: Note }
+  | { kind: 'spacer' };
 
 export default function FolderScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
-  const { getFolder, getNotesInFolder, updateFolder } = useNotes();
+  const { getFolder, getNotesInFolder, getSubfolders, updateFolder } = useNotes();
   const theme = useTheme();
   const folder = getFolder(id);
+  const subfolders = folder ? getSubfolders(folder.id) : [];
   const notes = folder ? getNotesInFolder(folder.id) : [];
   const tabBarInset = useTabBarInset();
   const insets = useSafeAreaInsets();
 
-  const items: GridItem[] = notes.map((note) => ({ kind: 'note' as const, note }));
-  // Keep a lone/odd last note to a single column instead of spanning both.
+  // Subfolders sit above the notes, mirroring the home screen's ordering.
+  const items: GridItem[] = [
+    ...subfolders.map((sub) => ({ kind: 'folder' as const, folder: sub })),
+    ...notes.map((note) => ({ kind: 'note' as const, note })),
+  ];
+  // Keep a lone/odd last card to a single column instead of spanning both.
   if (items.length % 2 === 1) items.push({ kind: 'spacer' });
 
   const header = (
@@ -46,7 +54,13 @@ export default function FolderScreen() {
         <Stack.Screen options={{ headerShown: false }} />
         <FlatList
           data={items}
-          keyExtractor={(item, index) => (item.kind === 'note' ? item.note.id : `spacer-${index}`)}
+          keyExtractor={(item, index) =>
+            item.kind === 'note'
+              ? item.note.id
+              : item.kind === 'folder'
+                ? item.folder.id
+                : `spacer-${index}`
+          }
           numColumns={2}
           columnWrapperStyle={styles.row}
           contentContainerStyle={[
@@ -56,12 +70,14 @@ export default function FolderScreen() {
           ListHeaderComponent={header}
           ListEmptyComponent={
             <ThemedText themeColor="textSecondary" style={styles.empty}>
-              No notes in this folder yet.
+              Nothing here yet. Tap + to add a note, or long-press it for a folder.
             </ThemedText>
           }
-          renderItem={({ item }) =>
-            item.kind === 'spacer' ? <View style={styles.spacer} /> : <NoteCard note={item.note} />
-          }
+          renderItem={({ item }) => {
+            if (item.kind === 'spacer') return <View style={styles.spacer} />;
+            if (item.kind === 'folder') return <FolderCard folder={item.folder} />;
+            return <NoteCard note={item.note} />;
+          }}
         />
       </ThemedView>
     </SwipeBackView>
