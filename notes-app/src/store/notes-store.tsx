@@ -7,9 +7,11 @@ import {
   useState,
   type ReactNode,
 } from 'react';
+import { AppState } from 'react-native';
 
 import { Sentry } from '@/lib/sentry';
 import { db, type TrashEntry } from '@/lib/db';
+import { requestSync, subscribeSynced, syncNow } from '@/lib/sync/sync-engine';
 import type { Folder, Note } from '@/data/notes';
 
 const today = () => new Date().toISOString().slice(0, 10);
@@ -30,6 +32,16 @@ const rid = (prefix: string) =>
 const syncFailed = (e: unknown) => {
   console.warn('[notes] background sync failed:', e);
   Sentry.captureException(e, { tags: { source: 'notes-store' } });
+};
+
+/**
+ * Persist a write optimistically: report failures to Sentry and schedule a
+ * (debounced) sync so the change propagates to the backend. Module-scoped so it
+ * isn't a hook dependency.
+ */
+const persist = (write: Promise<unknown>) => {
+  write.catch(syncFailed);
+  requestSync();
 };
 
 type NotesContextValue = {
@@ -80,32 +92,45 @@ export function NotesProvider({ children }: { children: ReactNode }) {
   const [folders, setFolders] = useState<Folder[]>([]);
   const [trash, setTrash] = useState<TrashEntry[]>([]);
 
-  // Hydrate from the API once on mount.
-  useEffect(() => {
-    let cancelled = false;
-    db
-      .bootstrap()
-      .then((data) => {
-        if (cancelled) return;
-        setNotes(data.notes);
-        setFolders(data.folders);
-        setTrash(data.trash);
-      })
-      .catch((e) => {
-        console.warn('[notes] failed to load from device:', e);
-        Sentry.captureException(e, { tags: { source: 'notes-store', op: 'bootstrap' } });
-      });
-    return () => {
-      cancelled = true;
-    };
+  // Re-read the whole slice from SQLite. Used to hydrate on mount and to refresh
+  // after a sync pulls remote changes into the database.
+  const reload = useCallback(async () => {
+    try {
+      const data = await db.bootstrap();
+      setNotes(data.notes);
+      setFolders(data.folders);
+      setTrash(data.trash);
+    } catch (e) {
+      console.warn('[notes] failed to load from device:', e);
+      Sentry.captureException(e, { tags: { source: 'notes-store', op: 'bootstrap' } });
+    }
   }, []);
+
+  // Hydrate on mount, then kick a first sync. (reload sets state only after an
+  // await, so this isn't a synchronous-setState-in-effect despite the lint rule.)
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- async hydrate
+    void reload().then(() => syncNow().catch(() => {}));
+  }, [reload]);
+
+  // Refresh when a sync applies remote changes, and sync on app foreground.
+  useEffect(() => {
+    const unsub = subscribeSynced(() => void reload());
+    const sub = AppState.addEventListener('change', (s) => {
+      if (s === 'active') void syncNow().catch(() => {});
+    });
+    return () => {
+      unsub();
+      sub.remove();
+    };
+  }, [reload]);
 
   const createNote = useCallback<NotesContextValue['createNote']>((folderId) => {
     const id = rid('note');
     const note: Note = { id, title: '', body: '', folderId, updatedAt: today() };
     // Prepend so the new note surfaces first in its location.
     setNotes((prev) => [note, ...prev]);
-    db.createNote({ id, folderId }).catch(syncFailed);
+    persist(db.createNote({ id, folderId }));
     return id;
   }, []);
 
@@ -113,7 +138,7 @@ export function NotesProvider({ children }: { children: ReactNode }) {
     const id = rid('folder');
     // Prepend so the new folder surfaces first in the hierarchy.
     setFolders((prev) => [{ id, name: '', parentId }, ...prev]);
-    db.createFolder({ id, parentId }).catch(syncFailed);
+    persist(db.createFolder({ id, parentId }));
     return id;
   }, []);
 
@@ -121,19 +146,19 @@ export function NotesProvider({ children }: { children: ReactNode }) {
     setNotes((prev) =>
       prev.map((note) => (note.id === id ? { ...note, ...patch, updatedAt: today() } : note)),
     );
-    db.updateNote(id, patch).catch(syncFailed);
+    persist(db.updateNote(id, patch));
   }, []);
 
   const updateFolder = useCallback<NotesContextValue['updateFolder']>((id, patch) => {
     setFolders((prev) => prev.map((folder) => (folder.id === id ? { ...folder, ...patch } : folder)));
-    db.updateFolder(id, patch).catch(syncFailed);
+    persist(db.updateFolder(id, patch));
   }, []);
 
   const moveNote = useCallback<NotesContextValue['moveNote']>((id, folderId) => {
     setNotes((prev) =>
       prev.map((note) => (note.id === id ? { ...note, folderId, updatedAt: today() } : note)),
     );
-    db.updateNote(id, { folderId }).catch(syncFailed);
+    persist(db.updateNote(id, { folderId }));
   }, []);
 
   const deleteNote = useCallback<NotesContextValue['deleteNote']>(
@@ -142,7 +167,7 @@ export function NotesProvider({ children }: { children: ReactNode }) {
       if (!note) return;
       setNotes((prev) => prev.filter((n) => n.id !== id));
       setTrash((prev) => [{ kind: 'note', id, deletedAt: Date.now(), note }, ...prev]);
-      db.deleteNote(id).catch(syncFailed);
+      persist(db.deleteNote(id));
     },
     [notes],
   );
@@ -180,7 +205,7 @@ export function NotesProvider({ children }: { children: ReactNode }) {
         },
         ...prev,
       ]);
-      db.deleteFolder(id).catch(syncFailed);
+      persist(db.deleteFolder(id));
     },
     [folders, notes],
   );
@@ -205,14 +230,14 @@ export function NotesProvider({ children }: { children: ReactNode }) {
         setNotes((prev) => [...entry.notes, ...prev]);
       }
       setTrash((prev) => prev.filter((e) => e.id !== entryId));
-      db.restoreFromTrash(entryId).catch(syncFailed);
+      persist(db.restoreFromTrash(entryId));
     },
     [trash, folders],
   );
 
   const markNoteShared = useCallback<NotesContextValue['markNoteShared']>((id) => {
     setNotes((prev) => prev.map((note) => (note.id === id ? { ...note, shared: true } : note)));
-    db.updateNote(id, { shared: true }).catch(syncFailed);
+    persist(db.updateNote(id, { shared: true }));
   }, []);
 
   const toggleNoteFavorite = useCallback<NotesContextValue['toggleNoteFavorite']>(
@@ -221,7 +246,7 @@ export function NotesProvider({ children }: { children: ReactNode }) {
       setNotes((prev) =>
         prev.map((note) => (note.id === id ? { ...note, favorite: next } : note)),
       );
-      db.updateNote(id, { favorite: next }).catch(syncFailed);
+      persist(db.updateNote(id, { favorite: next }));
     },
     [notes],
   );
@@ -232,7 +257,7 @@ export function NotesProvider({ children }: { children: ReactNode }) {
       setFolders((prev) =>
         prev.map((folder) => (folder.id === id ? { ...folder, favorite: next } : folder)),
       );
-      db.updateFolder(id, { favorite: next }).catch(syncFailed);
+      persist(db.updateFolder(id, { favorite: next }));
     },
     [folders],
   );

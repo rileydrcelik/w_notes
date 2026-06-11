@@ -48,6 +48,7 @@ type FolderRow = {
   parent_id: string | null;
   favorite: number;
   created_at: number;
+  updated_at: number;
   deleted_at: number | null;
   trashed_with_folder_id: string | null;
 };
@@ -58,6 +59,8 @@ type CopaRow = {
   content: string;
   favorite: number;
   created_at: number;
+  updated_at: number;
+  deleted_at: number | null;
 };
 
 // ---- Trash entry shape, shared with the store / trash screen ----
@@ -81,6 +84,50 @@ export type BootstrapData = {
   trash: TrashEntry[];
 };
 
+// ---- Sync wire shapes (snake_case rows exchanged with the backend) ----
+// `favorite`/`shared` are number (0/1) when read from SQLite and boolean when
+// they arrive as JSON from the server, so both are accepted.
+
+export type FolderSync = {
+  id: string;
+  name: string;
+  parent_id: string | null;
+  favorite: number | boolean;
+  created_at: number;
+  updated_at: number;
+  deleted_at: number | null;
+  trashed_with_folder_id: string | null;
+};
+
+export type NoteSync = {
+  id: string;
+  title: string;
+  body: string;
+  folder_id: string | null;
+  favorite: number | boolean;
+  shared: number | boolean;
+  created_at: number;
+  updated_at: number;
+  deleted_at: number | null;
+  trashed_with_folder_id: string | null;
+};
+
+export type CopaSync = {
+  id: string;
+  label: string;
+  content: string;
+  favorite: number | boolean;
+  created_at: number;
+  updated_at: number;
+  deleted_at: number | null;
+};
+
+export type SyncPayload = {
+  folders: FolderSync[];
+  notes: NoteSync[];
+  copa_items: CopaSync[];
+};
+
 // ---- Connection (opened + migrated once, lazily) ----
 
 let dbPromise: Promise<SQLite.SQLiteDatabase> | null = null;
@@ -101,8 +148,10 @@ async function open(): Promise<SQLite.SQLiteDatabase> {
       parent_id              TEXT,
       favorite               INTEGER NOT NULL DEFAULT 0,
       created_at             INTEGER NOT NULL,
+      updated_at             INTEGER NOT NULL DEFAULT 0,
       deleted_at             INTEGER,
-      trashed_with_folder_id TEXT
+      trashed_with_folder_id TEXT,
+      dirty                  INTEGER NOT NULL DEFAULT 1
     );
 
     CREATE TABLE IF NOT EXISTS notes (
@@ -115,7 +164,8 @@ async function open(): Promise<SQLite.SQLiteDatabase> {
       created_at             INTEGER NOT NULL,
       updated_at             INTEGER NOT NULL,
       deleted_at             INTEGER,
-      trashed_with_folder_id TEXT
+      trashed_with_folder_id TEXT,
+      dirty                  INTEGER NOT NULL DEFAULT 1
     );
 
     CREATE TABLE IF NOT EXISTS copa_items (
@@ -123,7 +173,10 @@ async function open(): Promise<SQLite.SQLiteDatabase> {
       label       TEXT NOT NULL DEFAULT '',
       content     TEXT NOT NULL DEFAULT '',
       favorite    INTEGER NOT NULL DEFAULT 0,
-      created_at  INTEGER NOT NULL
+      created_at  INTEGER NOT NULL,
+      updated_at  INTEGER NOT NULL DEFAULT 0,
+      deleted_at  INTEGER,
+      dirty       INTEGER NOT NULL DEFAULT 1
     );
 
     CREATE TABLE IF NOT EXISTS settings (
@@ -138,9 +191,14 @@ async function open(): Promise<SQLite.SQLiteDatabase> {
   // Nesting was added after the first schema shipped: bring older `folders`
   // tables up to date before creating the parent_id index.
   await ensureFolderColumns(database);
-  await database.execAsync(
-    'CREATE INDEX IF NOT EXISTS idx_folders_parent_id ON folders (parent_id);',
-  );
+  // Sync was added later still: backfill the columns it needs on older tables.
+  await ensureSyncColumns(database);
+  await database.execAsync(`
+    CREATE INDEX IF NOT EXISTS idx_folders_parent_id ON folders (parent_id);
+    CREATE INDEX IF NOT EXISTS idx_notes_dirty ON notes (dirty);
+    CREATE INDEX IF NOT EXISTS idx_folders_dirty ON folders (dirty);
+    CREATE INDEX IF NOT EXISTS idx_copa_dirty ON copa_items (dirty);
+  `);
   return database;
 }
 
@@ -153,6 +211,47 @@ async function ensureFolderColumns(database: SQLite.SQLiteDatabase): Promise<voi
   }
   if (!has('trashed_with_folder_id')) {
     await database.execAsync('ALTER TABLE folders ADD COLUMN trashed_with_folder_id TEXT');
+  }
+}
+
+/**
+ * Adds the columns sync relies on to tables created before sync existed:
+ *  - `updated_at` (folders/copa) — the last-writer-wins clock; backfilled from
+ *    `created_at` so pre-existing rows have a sane timestamp.
+ *  - `deleted_at` (copa) — copa deletes become soft so they can propagate.
+ *  - `dirty` — marks a row as having un-pushed local changes. Existing rows
+ *    default to 1 so a first sync uploads everything already on the device.
+ */
+async function ensureSyncColumns(database: SQLite.SQLiteDatabase): Promise<void> {
+  const colsOf = async (table: string) =>
+    (await database.getAllAsync<{ name: string }>(`PRAGMA table_info(${table})`)).map(
+      (c) => c.name,
+    );
+
+  const folderCols = await colsOf('folders');
+  if (!folderCols.includes('updated_at')) {
+    await database.execAsync('ALTER TABLE folders ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0');
+    await database.execAsync('UPDATE folders SET updated_at = created_at WHERE updated_at = 0');
+  }
+  if (!folderCols.includes('dirty')) {
+    await database.execAsync('ALTER TABLE folders ADD COLUMN dirty INTEGER NOT NULL DEFAULT 1');
+  }
+
+  const noteCols = await colsOf('notes');
+  if (!noteCols.includes('dirty')) {
+    await database.execAsync('ALTER TABLE notes ADD COLUMN dirty INTEGER NOT NULL DEFAULT 1');
+  }
+
+  const copaCols = await colsOf('copa_items');
+  if (!copaCols.includes('updated_at')) {
+    await database.execAsync('ALTER TABLE copa_items ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0');
+    await database.execAsync('UPDATE copa_items SET updated_at = created_at WHERE updated_at = 0');
+  }
+  if (!copaCols.includes('deleted_at')) {
+    await database.execAsync('ALTER TABLE copa_items ADD COLUMN deleted_at INTEGER');
+  }
+  if (!copaCols.includes('dirty')) {
+    await database.execAsync('ALTER TABLE copa_items ADD COLUMN dirty INTEGER NOT NULL DEFAULT 1');
   }
 }
 
@@ -249,7 +348,7 @@ export const db = {
     if (patch.folderId !== undefined) (sets.push('folder_id = ?'), args.push(patch.folderId));
     if (patch.favorite !== undefined) (sets.push('favorite = ?'), args.push(patch.favorite ? 1 : 0));
     if (patch.shared !== undefined) (sets.push('shared = ?'), args.push(patch.shared ? 1 : 0));
-    sets.push('updated_at = ?');
+    sets.push('updated_at = ?', 'dirty = 1');
     args.push(Date.now());
     args.push(id);
     await database.runAsync(`UPDATE notes SET ${sets.join(', ')} WHERE id = ?`, args);
@@ -258,9 +357,10 @@ export const db = {
   async deleteNote(id: string): Promise<void> {
     dbCrumb('deleteNote', { id });
     const database = await getDb();
+    const now = Date.now();
     await database.runAsync(
-      'UPDATE notes SET deleted_at = ?, trashed_with_folder_id = NULL WHERE id = ?',
-      [Date.now(), id],
+      'UPDATE notes SET deleted_at = ?, updated_at = ?, dirty = 1, trashed_with_folder_id = NULL WHERE id = ?',
+      [now, now, id],
     );
   },
 
@@ -273,9 +373,10 @@ export const db = {
   }): Promise<void> {
     dbCrumb('createFolder', { id, parentId });
     const database = await getDb();
+    const now = Date.now();
     await database.runAsync(
-      'INSERT INTO folders (id, name, parent_id, created_at) VALUES (?, ?, ?, ?)',
-      [id, '', parentId, Date.now()],
+      'INSERT INTO folders (id, name, parent_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
+      [id, '', parentId, now, now],
     );
   },
 
@@ -291,6 +392,8 @@ export const db = {
     if (patch.favorite !== undefined)
       (sets.push('favorite = ?'), args.push(patch.favorite ? 1 : 0));
     if (sets.length === 0) return;
+    sets.push('updated_at = ?', 'dirty = 1');
+    args.push(Date.now());
     args.push(id);
     await database.runAsync(`UPDATE folders SET ${sets.join(', ')} WHERE id = ?`, args);
   },
@@ -322,20 +425,24 @@ export const db = {
     await database.withTransactionAsync(async () => {
       // Trash every note living anywhere in the subtree, tagged with the root.
       await database.runAsync(
-        `UPDATE notes SET deleted_at = ?, trashed_with_folder_id = ?
+        `UPDATE notes SET deleted_at = ?, updated_at = ?, dirty = 1, trashed_with_folder_id = ?
          WHERE deleted_at IS NULL AND folder_id IN (${placeholders(subtreeIds.length)})`,
-        [now, id, ...subtreeIds],
+        [now, now, id, ...subtreeIds],
       );
       // Trash descendant folders, tagged with the root so they restore together.
       if (descendantIds.length > 0) {
         await database.runAsync(
-          `UPDATE folders SET deleted_at = ?, trashed_with_folder_id = ?
+          `UPDATE folders SET deleted_at = ?, updated_at = ?, dirty = 1, trashed_with_folder_id = ?
            WHERE id IN (${placeholders(descendantIds.length)})`,
-          [now, id, ...descendantIds],
+          [now, now, id, ...descendantIds],
         );
       }
       // The root folder is the top-level trash entry (no trashed_with tag).
-      await database.runAsync('UPDATE folders SET deleted_at = ? WHERE id = ?', [now, id]);
+      await database.runAsync('UPDATE folders SET deleted_at = ?, updated_at = ?, dirty = 1 WHERE id = ?', [
+        now,
+        now,
+        id,
+      ]);
     });
   },
 
@@ -357,19 +464,20 @@ export const db = {
         );
         if (!parent) parentId = null;
       }
+      const now = Date.now();
       await database.withTransactionAsync(async () => {
-        await database.runAsync('UPDATE folders SET deleted_at = NULL, parent_id = ? WHERE id = ?', [
-          parentId,
-          id,
-        ]);
+        await database.runAsync(
+          'UPDATE folders SET deleted_at = NULL, updated_at = ?, dirty = 1, parent_id = ? WHERE id = ?',
+          [now, parentId, id],
+        );
         // Bring back the whole subtree that was trashed alongside this folder.
         await database.runAsync(
-          'UPDATE folders SET deleted_at = NULL, trashed_with_folder_id = NULL WHERE trashed_with_folder_id = ?',
-          [id],
+          'UPDATE folders SET deleted_at = NULL, updated_at = ?, dirty = 1, trashed_with_folder_id = NULL WHERE trashed_with_folder_id = ?',
+          [now, id],
         );
         await database.runAsync(
-          'UPDATE notes SET deleted_at = NULL, trashed_with_folder_id = NULL WHERE trashed_with_folder_id = ?',
-          [id],
+          'UPDATE notes SET deleted_at = NULL, updated_at = ?, dirty = 1, trashed_with_folder_id = NULL WHERE trashed_with_folder_id = ?',
+          [now, id],
         );
       });
       return;
@@ -390,8 +498,8 @@ export const db = {
         if (!parent) folderId = null;
       }
       await database.runAsync(
-        'UPDATE notes SET deleted_at = NULL, trashed_with_folder_id = NULL, folder_id = ? WHERE id = ?',
-        [folderId, id],
+        'UPDATE notes SET deleted_at = NULL, updated_at = ?, dirty = 1, trashed_with_folder_id = NULL, folder_id = ? WHERE id = ?',
+        [Date.now(), folderId, id],
       );
     }
   },
@@ -399,7 +507,7 @@ export const db = {
   async listCopa(): Promise<CopaItem[]> {
     const database = await getDb();
     const rows = await database.getAllAsync<CopaRow>(
-      'SELECT * FROM copa_items ORDER BY created_at DESC',
+      'SELECT * FROM copa_items WHERE deleted_at IS NULL ORDER BY created_at DESC',
     );
     return rows.map(toCopa);
   },
@@ -407,12 +515,11 @@ export const db = {
   async createCopa({ id }: { id: string }): Promise<void> {
     dbCrumb('createCopa', { id });
     const database = await getDb();
-    await database.runAsync('INSERT INTO copa_items (id, label, content, created_at) VALUES (?, ?, ?, ?)', [
-      id,
-      '',
-      '',
-      Date.now(),
-    ]);
+    const now = Date.now();
+    await database.runAsync(
+      'INSERT INTO copa_items (id, label, content, created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
+      [id, '', '', now, now],
+    );
   },
 
   async updateCopa(
@@ -428,6 +535,8 @@ export const db = {
     if (patch.favorite !== undefined)
       (sets.push('favorite = ?'), args.push(patch.favorite ? 1 : 0));
     if (sets.length === 0) return;
+    sets.push('updated_at = ?', 'dirty = 1');
+    args.push(Date.now());
     args.push(id);
     await database.runAsync(`UPDATE copa_items SET ${sets.join(', ')} WHERE id = ?`, args);
   },
@@ -435,7 +544,189 @@ export const db = {
   async deleteCopa(id: string): Promise<void> {
     dbCrumb('deleteCopa', { id });
     const database = await getDb();
-    await database.runAsync('DELETE FROM copa_items WHERE id = ?', [id]);
+    const now = Date.now();
+    // Soft delete so the removal can sync to other devices (a hard DELETE would
+    // be invisible to the server and the row would resurrect on the next pull).
+    await database.runAsync(
+      'UPDATE copa_items SET deleted_at = ?, updated_at = ?, dirty = 1 WHERE id = ?',
+      [now, now, id],
+    );
+  },
+
+  // ---- Sync support ----
+
+  /** All rows with un-pushed local changes, in the backend's wire shape. */
+  async getDirty(): Promise<SyncPayload> {
+    const database = await getDb();
+    const [folders, notes, copa_items] = await Promise.all([
+      database.getAllAsync<FolderSync>(
+        `SELECT id, name, parent_id, favorite, created_at, updated_at, deleted_at,
+                trashed_with_folder_id
+         FROM folders WHERE dirty = 1`,
+      ),
+      database.getAllAsync<NoteSync>(
+        `SELECT id, title, body, folder_id, favorite, shared, created_at, updated_at,
+                deleted_at, trashed_with_folder_id
+         FROM notes WHERE dirty = 1`,
+      ),
+      database.getAllAsync<CopaSync>(
+        `SELECT id, label, content, favorite, created_at, updated_at, deleted_at
+         FROM copa_items WHERE dirty = 1`,
+      ),
+    ]);
+    return { folders, notes, copa_items };
+  },
+
+  /**
+   * Clears the dirty flag on rows we successfully pushed — but only if the row
+   * hasn't been edited again since (matched on `updated_at`), so a change made
+   * mid-sync stays pending and goes out on the next pass.
+   */
+  async markSynced(payload: SyncPayload): Promise<void> {
+    const database = await getDb();
+    await database.withTransactionAsync(async () => {
+      for (const f of payload.folders) {
+        await database.runAsync('UPDATE folders SET dirty = 0 WHERE id = ? AND updated_at = ?', [
+          f.id,
+          f.updated_at,
+        ]);
+      }
+      for (const n of payload.notes) {
+        await database.runAsync('UPDATE notes SET dirty = 0 WHERE id = ? AND updated_at = ?', [
+          n.id,
+          n.updated_at,
+        ]);
+      }
+      for (const c of payload.copa_items) {
+        await database.runAsync('UPDATE copa_items SET dirty = 0 WHERE id = ? AND updated_at = ?', [
+          c.id,
+          c.updated_at,
+        ]);
+      }
+    });
+  },
+
+  /**
+   * Upserts rows pulled from the server, last-writer-wins on `updated_at`: a
+   * server row is applied only when it's newer-or-equal to the local copy, so a
+   * locally-dirty row that's still newer is left to push. Applied rows are
+   * marked clean (dirty = 0). Returns how many rows actually changed locally,
+   * so callers know whether the UI needs refreshing.
+   */
+  async applyServerRows(payload: SyncPayload): Promise<number> {
+    const database = await getDb();
+    const bit = (v: number | boolean) => (v ? 1 : 0);
+    let changed = 0;
+    await database.withTransactionAsync(async () => {
+      for (const f of payload.folders) {
+        const r = await database.runAsync(
+          `INSERT INTO folders
+             (id, name, parent_id, favorite, created_at, updated_at, deleted_at,
+              trashed_with_folder_id, dirty)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)
+           ON CONFLICT(id) DO UPDATE SET
+             name = excluded.name, parent_id = excluded.parent_id,
+             favorite = excluded.favorite, created_at = excluded.created_at,
+             updated_at = excluded.updated_at, deleted_at = excluded.deleted_at,
+             trashed_with_folder_id = excluded.trashed_with_folder_id, dirty = 0
+           WHERE excluded.updated_at >= folders.updated_at`,
+          [
+            f.id,
+            f.name,
+            f.parent_id,
+            bit(f.favorite),
+            f.created_at,
+            f.updated_at,
+            f.deleted_at,
+            f.trashed_with_folder_id,
+          ],
+        );
+        changed += r.changes;
+      }
+      for (const n of payload.notes) {
+        const r = await database.runAsync(
+          `INSERT INTO notes
+             (id, title, body, folder_id, favorite, shared, created_at, updated_at,
+              deleted_at, trashed_with_folder_id, dirty)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+           ON CONFLICT(id) DO UPDATE SET
+             title = excluded.title, body = excluded.body, folder_id = excluded.folder_id,
+             favorite = excluded.favorite, shared = excluded.shared,
+             created_at = excluded.created_at, updated_at = excluded.updated_at,
+             deleted_at = excluded.deleted_at,
+             trashed_with_folder_id = excluded.trashed_with_folder_id, dirty = 0
+           WHERE excluded.updated_at >= notes.updated_at`,
+          [
+            n.id,
+            n.title,
+            n.body,
+            n.folder_id,
+            bit(n.favorite),
+            bit(n.shared),
+            n.created_at,
+            n.updated_at,
+            n.deleted_at,
+            n.trashed_with_folder_id,
+          ],
+        );
+        changed += r.changes;
+      }
+      for (const c of payload.copa_items) {
+        const r = await database.runAsync(
+          `INSERT INTO copa_items
+             (id, label, content, favorite, created_at, updated_at, deleted_at, dirty)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 0)
+           ON CONFLICT(id) DO UPDATE SET
+             label = excluded.label, content = excluded.content,
+             favorite = excluded.favorite, created_at = excluded.created_at,
+             updated_at = excluded.updated_at, deleted_at = excluded.deleted_at, dirty = 0
+           WHERE excluded.updated_at >= copa_items.updated_at`,
+          [c.id, c.label, c.content, bit(c.favorite), c.created_at, c.updated_at, c.deleted_at],
+        );
+        changed += r.changes;
+      }
+    });
+    return changed;
+  },
+
+  /**
+   * Marks every row dirty so the next sync re-pushes the whole local dataset.
+   * Used on first sign-in to claim anonymous notes into the account.
+   */
+  async markAllDirty(): Promise<void> {
+    const database = await getDb();
+    await database.execAsync(
+      'UPDATE folders SET dirty = 1; UPDATE notes SET dirty = 1; UPDATE copa_items SET dirty = 1;',
+    );
+  },
+
+  /**
+   * Removes all notes/folders/copa rows (not settings). Used on sign-out and
+   * when switching accounts, so one account's data never bleeds into another on
+   * the same device. The cursor is reset separately by the caller.
+   */
+  async clearAllData(): Promise<void> {
+    const database = await getDb();
+    await database.execAsync('DELETE FROM folders; DELETE FROM notes; DELETE FROM copa_items;');
+  },
+
+  /** The last server_seq this device has pulled (0 if it has never synced). */
+  async getCursor(): Promise<number> {
+    const database = await getDb();
+    const row = await database.getFirstAsync<{ value: string }>(
+      'SELECT value FROM settings WHERE key = ?',
+      ['sync_cursor'],
+    );
+    return row ? Number(row.value) : 0;
+  },
+
+  /** Advances the stored pull cursor. */
+  async setCursor(seq: number): Promise<void> {
+    const database = await getDb();
+    await database.runAsync(
+      'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+      ['sync_cursor', String(seq)],
+    );
   },
 
   /** Read a single key from the key-value settings table (null if unset). */

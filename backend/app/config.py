@@ -17,6 +17,10 @@ class Settings(BaseSettings):
     # Free-form environment tag attached to Sentry events.
     env: str = "development"
 
+    # Path to the Firebase service-account JSON used to verify ID tokens. Empty
+    # => Firebase auth is disabled and only anonymous device keys are accepted.
+    firebase_credentials: str = ""
+
 
 @lru_cache
 def get_settings() -> Settings:

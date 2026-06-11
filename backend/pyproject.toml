@@ -12,6 +12,7 @@ dependencies = [
     "pydantic>=2.9",
     "pydantic-settings>=2.6",
     "sentry-sdk[fastapi]>=2.18",
+    "firebase-admin>=6.5",
 ]
 
 [tool.setuptools.packages.find]

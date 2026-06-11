@@ -17,6 +17,9 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    # Global change-stamp sequence shared by every syncable table's server_seq.
+    op.execute("CREATE SEQUENCE IF NOT EXISTS sync_seq")
+
     op.create_table(
         "users",
         sa.Column("id", sa.String(), nullable=False),
@@ -46,7 +49,12 @@ def upgrade() -> None:
         sa.Column("updated_at", sa.BigInteger(), nullable=False),
         sa.Column("deleted_at", sa.BigInteger(), nullable=True),
         sa.Column("trashed_with_folder_id", sa.String(), nullable=True),
-        sa.Column("server_seq", sa.BigInteger(), sa.Identity(), nullable=False),
+        sa.Column(
+            "server_seq",
+            sa.BigInteger(),
+            server_default=sa.text("nextval('sync_seq')"),
+            nullable=False,
+        ),
         sa.ForeignKeyConstraint(["user_id"], ["users.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("user_id", "id"),
     )
@@ -66,7 +74,12 @@ def upgrade() -> None:
         sa.Column("updated_at", sa.BigInteger(), nullable=False),
         sa.Column("deleted_at", sa.BigInteger(), nullable=True),
         sa.Column("trashed_with_folder_id", sa.String(), nullable=True),
-        sa.Column("server_seq", sa.BigInteger(), sa.Identity(), nullable=False),
+        sa.Column(
+            "server_seq",
+            sa.BigInteger(),
+            server_default=sa.text("nextval('sync_seq')"),
+            nullable=False,
+        ),
         sa.ForeignKeyConstraint(["user_id"], ["users.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("user_id", "id"),
     )
@@ -83,7 +96,12 @@ def upgrade() -> None:
         sa.Column("created_at", sa.BigInteger(), nullable=False),
         sa.Column("updated_at", sa.BigInteger(), nullable=False),
         sa.Column("deleted_at", sa.BigInteger(), nullable=True),
-        sa.Column("server_seq", sa.BigInteger(), sa.Identity(), nullable=False),
+        sa.Column(
+            "server_seq",
+            sa.BigInteger(),
+            server_default=sa.text("nextval('sync_seq')"),
+            nullable=False,
+        ),
         sa.ForeignKeyConstraint(["user_id"], ["users.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("user_id", "id"),
     )
@@ -96,3 +114,4 @@ def downgrade() -> None:
     op.drop_table("folders")
     op.drop_index("ix_users_device_key", table_name="users")
     op.drop_table("users")
+    op.execute("DROP SEQUENCE IF EXISTS sync_seq")

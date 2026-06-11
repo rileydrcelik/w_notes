@@ -1,5 +1,14 @@
 import { Stack } from 'expo-router';
-import { Pressable, ScrollView, StyleSheet, View, useColorScheme as useDeviceScheme } from 'react-native';
+import { useState } from 'react';
+import {
+  ActivityIndicator,
+  Alert,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  View,
+  useColorScheme as useDeviceScheme,
+} from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { SwipeBackView } from '@/components/swipe-back-view';
@@ -7,6 +16,7 @@ import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Colors, Spacing, type Palette } from '@/constants/theme';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
+import { useAuth } from '@/lib/auth/auth-context';
 import { useThemePref, type ThemeKey } from '@/store/theme-store';
 
 const ACCENT = '#7a89b8';
@@ -40,6 +50,8 @@ export default function SettingsScreen() {
             <ThemedText type="subtitle" style={styles.title}>
               Settings
             </ThemedText>
+
+            <AccountSection />
 
             <ThemedText type="small" themeColor="textSecondary" style={styles.sectionLabel}>
               APPEARANCE
@@ -90,9 +102,122 @@ export default function SettingsScreen() {
   );
 }
 
+/**
+ * Account sign-in / sign-out. Signing in syncs notes across devices; signing out
+ * clears the local copy on this device. Hidden behaviour (merge of anonymous
+ * notes, account swap) lives in the sync layer.
+ */
+function AccountSection() {
+  const { user, enabled, initializing, appleAvailable, signInWithGoogle, signInWithApple, signOut } =
+    useAuth();
+  const [busy, setBusy] = useState(false);
+
+  const run = async (action: () => Promise<void>) => {
+    setBusy(true);
+    try {
+      await action();
+    } catch {
+      Alert.alert('Something went wrong', 'Please try again.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <>
+      <ThemedText type="small" themeColor="textSecondary" style={styles.sectionLabel}>
+        ACCOUNT
+      </ThemedText>
+      <View style={styles.options}>
+        {!enabled ? (
+          <ThemedView type="backgroundElement" style={styles.accountRow}>
+            <ThemedText type="small" themeColor="textSecondary">
+              Sign-in isn’t configured yet.
+            </ThemedText>
+          </ThemedView>
+        ) : initializing ? (
+          <ThemedView type="backgroundElement" style={[styles.accountRow, styles.center]}>
+            <ActivityIndicator color={ACCENT} />
+          </ThemedView>
+        ) : user ? (
+          <>
+            <ThemedView type="backgroundElement" style={styles.accountRow}>
+              <View style={styles.rowText}>
+                <ThemedText style={styles.optionLabel}>
+                  {user.displayName ?? 'Signed in'}
+                </ThemedText>
+                <ThemedText type="small" themeColor="textSecondary">
+                  {user.email ?? user.uid}
+                </ThemedText>
+              </View>
+            </ThemedView>
+            <Pressable
+              disabled={busy}
+              onPress={() => run(signOut)}
+              accessibilityRole="button"
+              accessibilityLabel="Sign out"
+              style={({ pressed }) => [pressed && styles.pressed]}>
+              <ThemedView type="backgroundElement" style={[styles.accountRow, styles.center]}>
+                <ThemedText style={styles.optionLabel}>Sign out</ThemedText>
+              </ThemedView>
+            </Pressable>
+          </>
+        ) : (
+          <>
+            <Pressable
+              disabled={busy}
+              onPress={() => run(signInWithGoogle)}
+              accessibilityRole="button"
+              accessibilityLabel="Continue with Google"
+              style={({ pressed }) => [pressed && styles.pressed]}>
+              <ThemedView
+                type="backgroundElement"
+                style={[styles.accountRow, styles.center, { borderColor: ACCENT }]}>
+                <ThemedText style={styles.optionLabel}>Continue with Google</ThemedText>
+              </ThemedView>
+            </Pressable>
+            {appleAvailable && (
+              <Pressable
+                disabled={busy}
+                onPress={() => run(signInWithApple)}
+                accessibilityRole="button"
+                accessibilityLabel="Continue with Apple"
+                style={({ pressed }) => [pressed && styles.pressed]}>
+                <ThemedView type="backgroundElement" style={[styles.accountRow, styles.center]}>
+                  <ThemedText style={styles.optionLabel}>Continue with Apple</ThemedText>
+                </ThemedView>
+              </Pressable>
+            )}
+            <ThemedText type="small" themeColor="textSecondary" style={styles.accountHint}>
+              Sign in to sync your notes across devices.
+            </ThemedText>
+          </>
+        )}
+      </View>
+    </>
+  );
+}
+
 const styles = StyleSheet.create({
   container: {
     flex: 1,
+  },
+  accountRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    minHeight: 56,
+    paddingHorizontal: Spacing.three,
+    paddingVertical: Spacing.three,
+    borderRadius: Spacing.three,
+    borderWidth: 2,
+    borderColor: 'transparent',
+  },
+  center: {
+    justifyContent: 'center',
+  },
+  accountHint: {
+    marginLeft: Spacing.one,
+    marginTop: Spacing.half,
   },
   safeArea: {
     flex: 1,

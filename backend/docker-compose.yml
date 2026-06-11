@@ -32,6 +32,10 @@ services:
       # Paste your Python-project DSN here (or via a .env file) to enable Sentry.
       SENTRY_DSN: ${SENTRY_DSN:-}
       ENV: ${ENV:-development}
+      # Path (inside the container) to the Firebase service-account JSON. Drop the
+      # file at backend/firebase-service-account.json and it appears here via the
+      # source mount. Empty => Firebase auth disabled, device keys only.
+      FIREBASE_CREDENTIALS: ${FIREBASE_CREDENTIALS:-}
     ports:
       - "8000:8000"
     # Live-reload during development: the source is mounted and uvicorn watches it.

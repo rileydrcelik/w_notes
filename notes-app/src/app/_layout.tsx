@@ -9,6 +9,7 @@ import { GestureHandlerRootView } from 'react-native-gesture-handler';
 // Side-effect import: initializes Sentry before anything renders (no-op until a
 // DSN is set in EXPO_PUBLIC_SENTRY_DSN). `Sentry` is re-exported for the wrap.
 import { Sentry } from '@/lib/sentry';
+import { AuthProvider } from '@/lib/auth/auth-context';
 import { AnimatedSplashOverlay } from '@/components/animated-icon';
 import { FloatingTabBar } from '@/components/floating-tab-bar';
 import { CopaOptionsProvider } from '@/components/copa-options-modal';
@@ -73,6 +74,7 @@ function AppShell() {
   return (
     <ThemeProvider value={scheme === 'dark' ? DarkTheme : DefaultTheme}>
       <StatusBar style={scheme === 'dark' ? 'light' : 'dark'} />
+      <AuthProvider>
       <NotesProvider>
         <CopaProvider>
         <SidebarProvider>
@@ -96,6 +98,7 @@ function AppShell() {
         </SidebarProvider>
         </CopaProvider>
       </NotesProvider>
+      </AuthProvider>
     </ThemeProvider>
   );
 }
