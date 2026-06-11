@@ -1,8 +1,9 @@
 # w_notes sync backend
 
-FastAPI + Postgres sync API. **Scaffold pass:** auth, schema, migrations, and
-`/health` are real; `/sync/push` and `/sync/pull` are stubbed (return 501) until
-the delta-sync merge pass.
+FastAPI + Postgres delta-sync API. Auth, schema, migrations, `/health`, and the
+`/sync/push` + `/sync/pull` delta-sync endpoints are all implemented. The
+on-device SQLite stays the source of truth; the server stores a per-user mirror
+and exchanges deltas keyed on a global `server_seq` cursor.
 
 ## Run
 
@@ -20,21 +21,24 @@ Migrations run automatically on container start (`alembic upgrade head`).
 
 ## Auth model
 
-No signup. The client sends `Authorization: Bearer <device-key>` (a UUID it
-generates and stores on-device). The server get-or-creates a `users` row for
-that key. Real email/password auth later attaches credentials to the same
-`users.id` — a migration, not a rewrite, so existing data never moves.
+The `Authorization: Bearer <token>` header carries one of two shapes, told apart
+by structure:
+
+- A **Firebase ID token** (a JWT) once the user has signed in with Google/Apple,
+  verified with the Firebase Admin SDK and mapped to a user by `uid`. Requires
+  `FIREBASE_CREDENTIALS` (service-account JSON path); unset → Firebase disabled.
+- An anonymous **device key** (a UUID the client generates and stores
+  on-device) before sign-in. The server get-or-creates a `users` row for it.
+
+On first sign-in the client claims the device-key user's data into the Firebase
+account, so a device's pre-login notes survive signing in.
 
 ## Sentry
 
 Set `SENTRY_DSN` in `.env` (your **Python** project DSN). Empty = disabled.
-Verify with `curl http://localhost:8000/sentry-debug` (raises on purpose) and
-check the event lands in Sentry, then it's safe to ignore/remove that route.
 
-## Next pass (not built yet)
+## Not built yet (deployment)
 
-- Implement `/sync/push` (upsert by `(user_id, id)`, last-writer-wins on
-  `updated_at`, honor soft deletes) and `/sync/pull` (rows with
-  `server_seq > since`, return new cursor).
-- Wire `syncNow()` into the client store mutation path + a background loop.
-- Real auth UI.
+- A production host + managed Postgres + public HTTPS URL (compose here is
+  local-dev only).
+- Platform secrets for `DATABASE_URL`, `SENTRY_DSN`, `FIREBASE_CREDENTIALS`.
