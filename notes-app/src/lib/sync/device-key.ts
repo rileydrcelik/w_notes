@@ -35,3 +35,15 @@ export async function getDeviceKey(): Promise<string> {
   cached = fresh;
   return fresh;
 }
+
+/**
+ * Replaces the device key with a fresh one. Used on sign-out so the next
+ * anonymous session starts as a clean, separate identity rather than reusing the
+ * key whose data was just claimed into an account.
+ */
+export async function rotateDeviceKey(): Promise<string> {
+  const fresh = uuidv4();
+  await db.setSetting(DEVICE_KEY_SETTING, fresh);
+  cached = fresh;
+  return fresh;
+}

@@ -17,11 +17,11 @@ from sqlalchemy import (
     BigInteger,
     Boolean,
     ForeignKey,
-    Identity,
     Index,
     String,
     Text,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import TIMESTAMP
 from sqlalchemy.orm import Mapped, mapped_column
@@ -33,6 +33,14 @@ def _new_uuid() -> str:
     return str(uuid.uuid4())
 
 
+# A single global sequence stamps every write (insert *and* update) with an
+# ever-increasing server_seq, so a client can pull "everything changed since
+# cursor N" with one indexed range scan. Gaps per-user are fine — only order
+# matters. The push handler advances it explicitly on updates (the column
+# default only fires on insert).
+SERVER_SEQ_DEFAULT = text("nextval('sync_seq')")
+
+
 class User(Base):
     """An account. Today it is reached only via an anonymous device key, but the
     row is the durable identity: real email/password credentials attach to this
@@ -42,10 +50,13 @@ class User(Base):
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
     # First-class credential for the anonymous-device phase. Unique, nullable so
-    # a future user could exist with only email/password.
+    # a signed-in user can exist without ever having had a device key.
     device_key: Mapped[str | None] = mapped_column(String, unique=True, index=True)
-    # Reserved for the future real-auth pass; unused for now.
+    # Firebase Auth subject (uid) once the user signs in with Google/Apple. The
+    # device-key user's data is merged into this account on first sign-in.
+    firebase_uid: Mapped[str | None] = mapped_column(String, unique=True, index=True)
     email: Mapped[str | None] = mapped_column(String, unique=True)
+    # Reserved; Firebase owns credentials so we never store password hashes.
     password_hash: Mapped[str | None] = mapped_column(String)
     created_at: Mapped[object] = mapped_column(
         TIMESTAMP(timezone=True), server_default=func.now()
@@ -70,7 +81,9 @@ class Folder(Base):
     trashed_with_folder_id: Mapped[str | None] = mapped_column(String)
 
     # Server-assigned, ever-increasing change stamp for cursor-based pulls.
-    server_seq: Mapped[int] = mapped_column(BigInteger, Identity(), nullable=False)
+    server_seq: Mapped[int] = mapped_column(
+        BigInteger, server_default=SERVER_SEQ_DEFAULT, nullable=False
+    )
 
     __table_args__ = (
         Index("idx_folders_user_seq", "user_id", "server_seq"),
@@ -97,7 +110,9 @@ class Note(Base):
     deleted_at: Mapped[int | None] = mapped_column(BigInteger)
     trashed_with_folder_id: Mapped[str | None] = mapped_column(String)
 
-    server_seq: Mapped[int] = mapped_column(BigInteger, Identity(), nullable=False)
+    server_seq: Mapped[int] = mapped_column(
+        BigInteger, server_default=SERVER_SEQ_DEFAULT, nullable=False
+    )
 
     __table_args__ = (
         Index("idx_notes_user_seq", "user_id", "server_seq"),
@@ -123,6 +138,8 @@ class CopaItem(Base):
     updated_at: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     deleted_at: Mapped[int | None] = mapped_column(BigInteger)
 
-    server_seq: Mapped[int] = mapped_column(BigInteger, Identity(), nullable=False)
+    server_seq: Mapped[int] = mapped_column(
+        BigInteger, server_default=SERVER_SEQ_DEFAULT, nullable=False
+    )
 
     __table_args__ = (Index("idx_copa_user_seq", "user_id", "server_seq"),)

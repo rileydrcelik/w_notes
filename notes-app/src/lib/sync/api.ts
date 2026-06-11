@@ -7,7 +7,7 @@
  * error rather than hitting a bogus host.
  */
 import { Sentry } from '@/lib/sentry';
-import { getDeviceKey } from './device-key';
+import { getAuthToken } from '@/lib/auth/token';
 
 const BASE_URL = process.env.EXPO_PUBLIC_API_URL?.replace(/\/$/, '') ?? '';
 
@@ -33,7 +33,7 @@ export async function apiFetch<T = unknown>(path: string, options: ApiOptions = 
   }
 
   const url = `${BASE_URL}${path.startsWith('/') ? path : `/${path}`}`;
-  const deviceKey = await getDeviceKey();
+  const token = await getAuthToken();
   const { body, headers, ...rest } = options;
 
   Sentry.addBreadcrumb({
@@ -47,7 +47,7 @@ export async function apiFetch<T = unknown>(path: string, options: ApiOptions = 
       ...rest,
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${deviceKey}`,
+        Authorization: `Bearer ${token}`,
         ...headers,
       },
       body: body === undefined ? undefined : JSON.stringify(body),

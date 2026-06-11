@@ -1,0 +1,39 @@
+{
+  "project_info": {
+    "project_number": "711378059243",
+    "project_id": "w-notes-7b47c",
+    "storage_bucket": "w-notes-7b47c.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:711378059243:android:84a1dd6d30c3e4ad12e3ae",
+        "android_client_info": {
+          "package_name": "com.rileydrcelik.wnotes"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "711378059243-58ova4brehlnv066nfndjevasq6cr953.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDS-vzTmJQ6Qqg8CwF4FzOkHzVxYNRs2Bk"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "711378059243-58ova4brehlnv066nfndjevasq6cr953.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

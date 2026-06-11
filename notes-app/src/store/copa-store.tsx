@@ -7,9 +7,11 @@ import {
   useState,
   type ReactNode,
 } from 'react';
+import { AppState } from 'react-native';
 
 import { Sentry } from '@/lib/sentry';
 import { db } from '@/lib/db';
+import { requestSync, subscribeSynced, syncNow } from '@/lib/sync/sync-engine';
 import type { CopaItem } from '@/data/copa';
 
 const rid = () => `copa-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -18,6 +20,12 @@ const rid = () => `copa-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 const syncFailed = (e: unknown) => {
   console.warn('[copa] background sync failed:', e);
   Sentry.captureException(e, { tags: { source: 'copa-store' } });
+};
+
+/** Persist a write optimistically + schedule a sync. Module-scoped (not a hook dep). */
+const persist = (write: Promise<unknown>) => {
+  write.catch(syncFailed);
+  requestSync();
 };
 
 type CopaContextValue = {
@@ -41,38 +49,49 @@ const CopaContext = createContext<CopaContextValue | null>(null);
 export function CopaProvider({ children }: { children: ReactNode }) {
   const [items, setItems] = useState<CopaItem[]>([]);
 
-  useEffect(() => {
-    let cancelled = false;
-    db
-      .listCopa()
-      .then((data) => {
-        if (!cancelled) setItems(data);
-      })
-      .catch((e) => {
-        console.warn('[copa] failed to load from device:', e);
-        Sentry.captureException(e, { tags: { source: 'copa-store', op: 'bootstrap' } });
-      });
-    return () => {
-      cancelled = true;
-    };
+  // Re-read the copa feed from SQLite (hydrate on mount + refresh after sync).
+  const reload = useCallback(async () => {
+    try {
+      setItems(await db.listCopa());
+    } catch (e) {
+      console.warn('[copa] failed to load from device:', e);
+      Sentry.captureException(e, { tags: { source: 'copa-store', op: 'bootstrap' } });
+    }
   }, []);
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- async hydrate
+    void reload().then(() => syncNow().catch(() => {}));
+  }, [reload]);
+
+  // Refresh when a sync applies remote changes, and sync on app foreground.
+  useEffect(() => {
+    const unsub = subscribeSynced(() => void reload());
+    const sub = AppState.addEventListener('change', (s) => {
+      if (s === 'active') void syncNow().catch(() => {});
+    });
+    return () => {
+      unsub();
+      sub.remove();
+    };
+  }, [reload]);
 
   const createCopa = useCallback<CopaContextValue['createCopa']>(() => {
     const id = rid();
     // Prepend so the new block surfaces first in the feed.
     setItems((prev) => [{ id, label: '', content: '' }, ...prev]);
-    db.createCopa({ id }).catch(syncFailed);
+    persist(db.createCopa({ id }));
     return id;
   }, []);
 
   const updateCopa = useCallback<CopaContextValue['updateCopa']>((id, patch) => {
     setItems((prev) => prev.map((item) => (item.id === id ? { ...item, ...patch } : item)));
-    db.updateCopa(id, patch).catch(syncFailed);
+    persist(db.updateCopa(id, patch));
   }, []);
 
   const deleteCopa = useCallback<CopaContextValue['deleteCopa']>((id) => {
     setItems((prev) => prev.filter((item) => item.id !== id));
-    db.deleteCopa(id).catch(syncFailed);
+    persist(db.deleteCopa(id));
   }, []);
 
   const toggleFavorite = useCallback<CopaContextValue['toggleFavorite']>(
@@ -81,7 +100,7 @@ export function CopaProvider({ children }: { children: ReactNode }) {
       setItems((prev) =>
         prev.map((item) => (item.id === id ? { ...item, favorite: next } : item)),
       );
-      db.updateCopa(id, { favorite: next }).catch(syncFailed);
+      persist(db.updateCopa(id, { favorite: next }));
     },
     [items],
   );
