@@ -1,0 +1,4 @@
+# Copy to backend.hcl and set the bucket name you created in bootstrap/.
+# Then: terraform init -backend-config=backend.hcl
+
+bucket = "wnotes-tfstate-CHANGE-ME"

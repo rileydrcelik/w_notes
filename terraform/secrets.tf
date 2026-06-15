@@ -1,0 +1,44 @@
+# Runtime secrets — SSM Parameter Store (SecureString).
+#
+# Parameter Store SecureStrings are free (standard tier) where Secrets Manager
+# bills $0.40/secret/month, so the app's secrets live here. The ECS task
+# references each by ARN and AWS injects the decrypted value as an env var at
+# start; the plaintext never sits in the task definition.
+#
+# The DB password is generated here (so no human ever picks it) and reused both as
+# the RDS master password and inside the DATABASE_URL connection string.
+
+resource "random_password" "db" {
+  length  = 32
+  special = false # keep it URL-safe so it drops cleanly into DATABASE_URL
+}
+
+# DATABASE_URL — the asyncpg connection string the app reads.
+resource "aws_ssm_parameter" "database_url" {
+  name  = "/${local.name}/database-url"
+  type  = "SecureString"
+  value = "postgresql+asyncpg://${var.db_username}:${random_password.db.result}@${aws_db_instance.main.address}:5432/${var.db_name}"
+}
+
+# TUNNEL_TOKEN — credential the cloudflared sidecar uses to connect the tunnel.
+resource "aws_ssm_parameter" "tunnel_token" {
+  name  = "/${local.name}/tunnel-token"
+  type  = "SecureString"
+  value = cloudflare_zero_trust_tunnel_cloudflared.api.tunnel_token
+}
+
+# SENTRY_DSN — only created when a DSN was provided.
+resource "aws_ssm_parameter" "sentry_dsn" {
+  count = local.sentry_enabled ? 1 : 0
+  name  = "/${local.name}/sentry-dsn"
+  type  = "SecureString"
+  value = var.sentry_dsn
+}
+
+# FIREBASE_CREDENTIALS — the service-account JSON; only created when provided.
+resource "aws_ssm_parameter" "firebase" {
+  count = local.firebase_enabled ? 1 : 0
+  name  = "/${local.name}/firebase-credentials"
+  type  = "SecureString"
+  value = var.firebase_credentials_json
+}

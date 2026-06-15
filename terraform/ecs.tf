@@ -1,0 +1,131 @@
+# ECS Fargate: the cluster, the task definition (what to run), and the service
+# (keep N copies running). The task runs two containers: the app, and a
+# `cloudflared` sidecar that connects the Cloudflare Tunnel for public ingress.
+
+resource "aws_ecs_cluster" "main" {
+  name = "${local.name}-cluster"
+  tags = { Name = "${local.name}-cluster" }
+}
+
+# Make both Fargate capacity providers available so the service can run on Spot.
+resource "aws_ecs_cluster_capacity_providers" "main" {
+  cluster_name       = aws_ecs_cluster.main.name
+  capacity_providers = ["FARGATE", "FARGATE_SPOT"]
+
+  default_capacity_provider_strategy {
+    capacity_provider = "FARGATE_SPOT"
+    weight            = 1
+  }
+}
+
+resource "aws_cloudwatch_log_group" "api" {
+  name              = "/ecs/${local.name}-api"
+  retention_in_days = 30
+}
+
+# App-container secrets, pulled from SSM by the execution role. Skip the optional
+# ones that weren't configured.
+locals {
+  container_secrets = concat(
+    [{ name = "DATABASE_URL", valueFrom = aws_ssm_parameter.database_url.arn }],
+    local.sentry_enabled ? [{ name = "SENTRY_DSN", valueFrom = aws_ssm_parameter.sentry_dsn[0].arn }] : [],
+    local.firebase_enabled ? [{ name = "FIREBASE_CREDENTIALS", valueFrom = aws_ssm_parameter.firebase[0].arn }] : [],
+  )
+}
+
+resource "aws_ecs_task_definition" "api" {
+  family                   = "${local.name}-api"
+  requires_compatibilities = ["FARGATE"]
+  network_mode             = "awsvpc"
+  cpu                      = var.task_cpu
+  memory                   = var.task_memory
+  execution_role_arn       = aws_iam_role.execution.arn
+  task_role_arn            = aws_iam_role.task.arn
+
+  container_definitions = jsonencode([
+    {
+      name      = "api"
+      image     = local.container_image
+      essential = true
+
+      portMappings = [{
+        containerPort = 8000
+        protocol      = "tcp"
+      }]
+
+      # Non-secret config. ENV drives Sentry sample rates + environment tag.
+      environment = [
+        { name = "ENV", value = "production" }
+      ]
+
+      # Secret config, pulled from SSM Parameter Store by the execution role.
+      secrets = local.container_secrets
+
+      # The image is python:slim (no curl), so health-check with python itself.
+      healthCheck = {
+        command     = ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\""]
+        interval    = 30
+        timeout     = 5
+        retries     = 3
+        startPeriod = 120 # room for `alembic upgrade head` on boot
+      }
+
+      logConfiguration = {
+        logDriver = "awslogs"
+        options = {
+          "awslogs-group"         = aws_cloudwatch_log_group.api.name
+          "awslogs-region"        = var.region
+          "awslogs-stream-prefix" = "api"
+        }
+      }
+    },
+    {
+      # Cloudflare Tunnel connector. Dials out to Cloudflare's edge and proxies
+      # api.<domain> to the app on localhost:8000. Token-only run (ingress rules
+      # are managed remotely; see tunnel.tf).
+      name      = "cloudflared"
+      image     = "cloudflare/cloudflared:latest"
+      essential = true
+      command   = ["tunnel", "--no-autoupdate", "run"]
+
+      secrets = [
+        { name = "TUNNEL_TOKEN", valueFrom = aws_ssm_parameter.tunnel_token.arn }
+      ]
+
+      logConfiguration = {
+        logDriver = "awslogs"
+        options = {
+          "awslogs-group"         = aws_cloudwatch_log_group.api.name
+          "awslogs-region"        = var.region
+          "awslogs-stream-prefix" = "cloudflared"
+        }
+      }
+    },
+  ])
+}
+
+resource "aws_ecs_service" "api" {
+  name            = "${local.name}-api"
+  cluster         = aws_ecs_cluster.main.id
+  task_definition = aws_ecs_task_definition.api.arn
+  desired_count   = var.desired_count
+
+  # Run on Fargate Spot (~70% cheaper). A reclaimed task is replaced; at
+  # desired_count = 1 that's brief downtime, acceptable for this stage.
+  capacity_provider_strategy {
+    capacity_provider = "FARGATE_SPOT"
+    weight            = 1
+  }
+
+  network_configuration {
+    # Public subnets + a public IP give the task free internet egress via the
+    # internet gateway (no NAT). The task is not reachable inbound: its security
+    # group has no ingress rules — public traffic arrives only via the tunnel's
+    # outbound connection.
+    subnets          = aws_subnet.public[*].id
+    security_groups  = [aws_security_group.ecs.id]
+    assign_public_ip = true
+  }
+
+  depends_on = [aws_ecs_cluster_capacity_providers.main]
+}

@@ -15,6 +15,7 @@ device keys are accepted.
 
 from __future__ import annotations
 
+import json
 import threading
 
 import firebase_admin
@@ -32,17 +33,28 @@ _firebase_app: firebase_admin.App | None = None
 _firebase_lock = threading.Lock()
 
 
+def _load_credential(raw: str) -> credentials.Certificate:
+    """Build a Firebase credential from either inline service-account JSON or a
+    path to the JSON file. Inline JSON (detected by a leading ``{``) is how the
+    deployed container receives it — injected as an env var from a secrets
+    manager — while a path stays convenient for local development."""
+    stripped = raw.strip()
+    if stripped.startswith("{"):
+        return credentials.Certificate(json.loads(stripped))
+    return credentials.Certificate(stripped)
+
+
 def _firebase() -> firebase_admin.App | None:
     """Returns the initialized Firebase app, or None if auth isn't configured."""
     global _firebase_app
     if _firebase_app is not None:
         return _firebase_app
-    path = get_settings().firebase_credentials
-    if not path:
+    raw = get_settings().firebase_credentials
+    if not raw:
         return None
     with _firebase_lock:
         if _firebase_app is None:
-            _firebase_app = firebase_admin.initialize_app(credentials.Certificate(path))
+            _firebase_app = firebase_admin.initialize_app(_load_credential(raw))
     return _firebase_app
 
 

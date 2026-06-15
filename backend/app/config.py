@@ -17,8 +17,10 @@ class Settings(BaseSettings):
     # Free-form environment tag attached to Sentry events.
     env: str = "development"
 
-    # Path to the Firebase service-account JSON used to verify ID tokens. Empty
-    # => Firebase auth is disabled and only anonymous device keys are accepted.
+    # Firebase service-account credential used to verify ID tokens: either a path
+    # to the JSON file (local dev) or the JSON content itself (deployed — injected
+    # from a secrets manager). Empty => Firebase auth is disabled and only
+    # anonymous device keys are accepted.
     firebase_credentials: str = ""
 
 

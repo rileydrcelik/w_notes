@@ -1,0 +1,28 @@
+# Copy to terraform.tfvars and fill in. terraform.tfvars is gitignored — it holds
+# your real values, including secrets.
+
+# --- DNS (Cloudflare) ---
+domain_name           = "example.com"        # your apex domain
+api_subdomain         = "api"                 # => api.example.com
+cloudflare_zone_id    = "your-zone-id"        # Cloudflare dashboard -> domain -> Overview
+cloudflare_account_id = "your-account-id"     # same Overview page, right sidebar (needed for the Tunnel)
+
+# Prefer setting the token via the environment instead of this file:
+#   $env:TF_VAR_cloudflare_api_token = "..."   (PowerShell)
+# Token needs Zone:DNS:Edit AND Account:Cloudflare Tunnel:Edit.
+# cloudflare_api_token = "your-cloudflare-token"
+
+# --- App secrets (optional; leave empty to disable that feature) ---
+# Backend Sentry DSN (the Python project DSN).
+# sentry_dsn = "https://...@oXXXX.ingest.sentry.io/XXXX"
+
+# Firebase service-account JSON. Easiest is to load it from the file at apply time
+# rather than pasting it here:
+#   terraform apply -var "firebase_credentials_json=$(Get-Content ..\backend\firebase-service-account.json -Raw)"
+# firebase_credentials_json = ""
+
+# --- Optional sizing overrides (defaults are fine to start) ---
+# region               = "us-east-1"
+# db_instance_class    = "db.t4g.micro"
+# desired_count        = 1
+# container_image      = ""   # empty => "<ecr-repo>:latest"

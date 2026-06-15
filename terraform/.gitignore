@@ -1,0 +1,10 @@
+# Never commit state (may contain secrets) or local provider binaries.
+# (.terraform.lock.hcl is intentionally NOT ignored — commit it to pin providers.)
+*.tfstate
+*.tfstate.*
+.terraform/
+
+# Real values (secrets) — only the .example templates are tracked.
+terraform.tfvars
+*.auto.tfvars
+backend.hcl
