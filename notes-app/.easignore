@@ -1,0 +1,46 @@
+# .easignore — controls what gets uploaded to EAS Build.
+# When present, this file REPLACES .gitignore for the EAS upload, so it must
+# list everything that should be excluded (not just the native folders).
+
+# Native projects: this is a CNG/managed app. EAS runs `expo prebuild` on the
+# server to regenerate android/ and ios/ with correct Linux paths. Uploading
+# the local (Windows) native folders ships stale autolinking.json files with
+# hardcoded D:\ paths and breaks the Gradle build.
+/android
+/ios
+
+# Dependencies (reinstalled on the builder)
+node_modules/
+
+# Expo / Metro / build output
+.expo/
+dist/
+web-build/
+expo-env.d.ts
+.metro-health-check*
+
+# Logs & debug
+*.log
+npm-debug.*
+yarn-debug.*
+yarn-error.*
+
+# Local env & secrets
+.env
+.env*.local
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+*.pem
+
+# Editor / OS cruft
+.vscode/
+.DS_Store
+*.tsbuildinfo
+*.orig.*
+
+# Local tooling not needed for the app build
+.claude/
+example
