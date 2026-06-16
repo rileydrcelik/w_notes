@@ -8,3 +8,10 @@
 terraform.tfvars
 *.auto.tfvars
 backend.hcl
+
+# Saved plan files are zip archives embedding the full resolved state
+# (every secret in plaintext). Never commit them. This gap leaked the
+# Firebase/RDS/Cloudflare secrets via terraform/tfplan{,2}.
+tfplan
+tfplan*
+*.tfplan
