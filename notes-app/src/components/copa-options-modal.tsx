@@ -17,6 +17,7 @@ import { ConfirmDialog } from '@/components/confirm-dialog';
 import { GlassSurface } from '@/components/glass-surface';
 import { ThemedText } from '@/components/themed-text';
 import { Spacing } from '@/constants/theme';
+import { openCopaFile } from '@/lib/copa-files';
 import { useTheme } from '@/hooks/use-theme';
 import { useCopa } from '@/store/copa-store';
 
@@ -25,6 +26,8 @@ type FeatherName = ComponentProps<typeof Feather>['name'];
 type CopaOptionsContextValue = {
   /** Opens the long-press options sheet for a copy block. */
   openOptions: (id: string) => void;
+  /** True while the options sheet, rename, or delete dialog is showing. */
+  optionsOpen: boolean;
 };
 
 const CopaOptionsContext = createContext<CopaOptionsContextValue | null>(null);
@@ -62,7 +65,13 @@ export function CopaOptionsProvider({ children }: { children: ReactNode }) {
     setDeleteId(null);
   }, [deleteId, deleteCopa]);
 
-  const value = useMemo<CopaOptionsContextValue>(() => ({ openOptions }), [openOptions]);
+  // Any open overlay should freeze the tab pager so a swipe can't flick screens
+  // out from under it.
+  const optionsOpen = targetId !== null || renameId !== null || deleteId !== null;
+  const value = useMemo<CopaOptionsContextValue>(
+    () => ({ openOptions, optionsOpen }),
+    [openOptions, optionsOpen],
+  );
 
   const deleteLabel = deleteId ? getCopa(deleteId)?.label : undefined;
 
@@ -154,7 +163,9 @@ function OptionsSheet({
         break;
       case 'share':
         onClose();
-        if (item?.content) await Share.share({ message: item.content });
+        // File blocks share the file itself; text blocks share their contents.
+        if (item?.fileUri) await openCopaFile(item);
+        else if (item?.content) await Share.share({ message: item.content });
         break;
       case 'delete':
         onDelete(targetId);

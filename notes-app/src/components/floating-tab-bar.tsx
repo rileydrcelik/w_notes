@@ -1,8 +1,15 @@
 import Feather from '@expo/vector-icons/Feather';
 import { type Href, usePathname, useRouter } from 'expo-router';
 import type { ComponentProps, RefObject } from 'react';
-import { useEffect, useState } from 'react';
-import { Keyboard, Platform, Pressable, StyleSheet, View } from 'react-native';
+import { useEffect, useRef, useState } from 'react';
+import {
+  Keyboard,
+  Platform,
+  Pressable,
+  StyleSheet,
+  useWindowDimensions,
+  View,
+} from 'react-native';
 import Animated, {
   FadeIn,
   FadeOut,
@@ -47,6 +54,9 @@ function useKeyboardVisible() {
 
 type FeatherName = ComponentProps<typeof Feather>['name'];
 
+/** On-screen rect of the create button, so the menu can anchor above it. */
+type Anchor = { x: number; y: number; width: number; height: number };
+
 /**
  * The fixed tab set. `menu` opens the side drawer and `copy` triggers the
  * copy/paste action (no route); the rest map to their screen. Order mirrors
@@ -69,8 +79,10 @@ export function FloatingTabBar({ blurTarget }: FloatingTabBarProps) {
   const pathname = usePathname();
   const insets = useSafeAreaInsets();
   const bottom = useTabBarBottom();
-  // Long-pressing the create button opens a small sheet to pick note vs folder.
-  const [createMenuOpen, setCreateMenuOpen] = useState(false);
+  // The create menu. `null` is closed; an `anchor` rect renders it as a popover
+  // above the + button (copa tab), while `null` anchor falls back to the bottom
+  // sheet (note/folder picker from a long-press elsewhere).
+  const [createMenu, setCreateMenu] = useState<{ anchor: Anchor | null } | null>(null);
   // The menu tab opens a side drawer instead of navigating to a screen. Its
   // open state is shared (via context) so the home screen's left-swipe can open
   // the same drawer.
@@ -174,29 +186,48 @@ export function FloatingTabBar({ blurTarget }: FloatingTabBarProps) {
               iconColor={colors.textSecondary}
               keyboardVisible={vertical}
               blurTarget={blurTarget}
-              onLongPress={() => setCreateMenuOpen(true)}
+              onOpenMenu={(anchor) => setCreateMenu({ anchor })}
             />
           </View>
         </View>
       </Animated.View>
       )}
-      {/* Note/folder picker from a long-press; stacks above the navbar. */}
-      <CreateMenu open={createMenuOpen} onClose={() => setCreateMenuOpen(false)} />
+      {/* Create picker: a popover above the + button on copa, a bottom sheet
+          (note/folder) from a long-press elsewhere. */}
+      <CreateMenu
+        open={createMenu !== null}
+        anchor={createMenu?.anchor ?? null}
+        onClose={() => setCreateMenu(null)}
+      />
     </>
   );
 }
 
 /**
- * Bottom sheet shown when the create button is long-pressed: pick between a new
- * note and a new folder. Both are created in the current location (the open
- * folder, or the root) and opened straight away.
+ * Create picker. When `anchor` is set (copa tab), it renders as a small popover
+ * floating just above the + button and offers a new copy block or a file block.
+ * Without an anchor it's the bottom sheet used elsewhere to pick a new note or
+ * folder (created in the current folder, or the root). Every choice opens its
+ * editor straight away.
  */
-function CreateMenu({ open, onClose }: { open: boolean; onClose: () => void }) {
+function CreateMenu({
+  open,
+  anchor,
+  onClose,
+}: {
+  open: boolean;
+  anchor: Anchor | null;
+  onClose: () => void;
+}) {
   const colors = useTheme();
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const pathname = usePathname();
+  const { width: winW, height: winH } = useWindowDimensions();
   const { createNote, createFolder, getNote } = useNotes();
+  const { createCopa, createFileCopa } = useCopa();
+
+  const onCopa = pathname === '/copa' || pathname.startsWith('/copa/');
 
   const onCreateNote = () => {
     onClose();
@@ -210,10 +241,47 @@ function CreateMenu({ open, onClose }: { open: boolean; onClose: () => void }) {
     router.push({ pathname: '/folder/[id]', params: { id } });
   };
 
-  const options: { key: string; label: string; icon: FeatherName; onPress: () => void }[] = [
-    { key: 'note', label: 'New note', icon: 'file-plus', onPress: onCreateNote },
-    { key: 'folder', label: 'New folder', icon: 'folder-plus', onPress: onCreateFolder },
-  ];
+  const onCreateBlock = () => {
+    onClose();
+    const id = createCopa();
+    router.push({ pathname: '/copa/[id]', params: { id } });
+  };
+
+  const onAddFile = async () => {
+    onClose();
+    const id = await createFileCopa();
+    // A cancelled picker returns null — leave the user where they were.
+    if (id) router.push({ pathname: '/copa/[id]', params: { id } });
+  };
+
+  const options: { key: string; label: string; icon: FeatherName; onPress: () => void }[] = onCopa
+    ? [
+        { key: 'block', label: 'New copy block', icon: 'clipboard', onPress: onCreateBlock },
+        { key: 'file', label: 'Add file', icon: 'paperclip', onPress: () => void onAddFile() },
+      ]
+    : [
+        { key: 'note', label: 'New note', icon: 'file-plus', onPress: onCreateNote },
+        { key: 'folder', label: 'New folder', icon: 'folder-plus', onPress: onCreateFolder },
+      ];
+
+  const card = (
+    <GlassSurface
+      intensity={75}
+      tintOpacity={0.85}
+      style={[styles.menuSheet, anchor && styles.menuSheetAnchored]}>
+      {options.map((option) => (
+        <Pressable
+          key={option.key}
+          onPress={option.onPress}
+          accessibilityRole="button"
+          accessibilityLabel={option.label}
+          style={({ pressed }) => [styles.menuRow, pressed && styles.menuRowPressed]}>
+          <Feather name={option.icon} size={20} color={colors.text} style={styles.menuIcon} />
+          <ThemedText style={[styles.menuLabel, { color: colors.text }]}>{option.label}</ThemedText>
+        </Pressable>
+      ))}
+    </GlassSurface>
+  );
 
   return (
     <View style={styles.menuOverlay} pointerEvents={open ? 'box-none' : 'none'}>
@@ -227,26 +295,29 @@ function CreateMenu({ open, onClose }: { open: boolean; onClose: () => void }) {
             accessibilityRole="button"
             accessibilityLabel="Dismiss"
           />
-          <Animated.View
-            entering={SlideInDown.duration(260)}
-            exiting={SlideOutDown.duration(220)}
-            style={[styles.menuHost, { paddingBottom: insets.bottom + Spacing.three }]}>
-            <GlassSurface intensity={75} tintOpacity={0.85} style={styles.menuSheet}>
-              {options.map((option) => (
-                <Pressable
-                  key={option.key}
-                  onPress={option.onPress}
-                  accessibilityRole="button"
-                  accessibilityLabel={option.label}
-                  style={({ pressed }) => [styles.menuRow, pressed && styles.menuRowPressed]}>
-                  <Feather name={option.icon} size={20} color={colors.text} style={styles.menuIcon} />
-                  <ThemedText style={[styles.menuLabel, { color: colors.text }]}>
-                    {option.label}
-                  </ThemedText>
-                </Pressable>
-              ))}
-            </GlassSurface>
-          </Animated.View>
+          {anchor ? (
+            // Popover anchored to the + button: its bottom-right corner sits a
+            // hair above the button's top-right corner.
+            <Animated.View
+              entering={FadeIn.duration(160)}
+              exiting={FadeOut.duration(140)}
+              style={[
+                styles.menuAnchored,
+                {
+                  bottom: winH - anchor.y + Spacing.two,
+                  right: Math.max(Spacing.three, winW - (anchor.x + anchor.width)),
+                },
+              ]}>
+              {card}
+            </Animated.View>
+          ) : (
+            <Animated.View
+              entering={SlideInDown.duration(260)}
+              exiting={SlideOutDown.duration(220)}
+              style={[styles.menuHost, { paddingBottom: insets.bottom + Spacing.three }]}>
+              {card}
+            </Animated.View>
+          )}
         </>
       )}
     </View>
@@ -268,29 +339,38 @@ function currentFolderId(pathname: string, getNote: (id: string) => Note | undef
 
 /**
  * Trailing action button. With the keyboard up it becomes a "done" affordance —
- * a check that dismisses the keyboard; otherwise it's the create (+) button that
- * adds a note in the current location (a folder, or the root) and opens it. A
- * long-press opens a menu to create a folder instead (handled by the parent).
+ * a check that dismisses the keyboard. Otherwise it's the create (+) button: on
+ * the copa tab a tap opens the create menu anchored above it (copy block vs
+ * file); elsewhere a tap adds a note in the current location and a long-press
+ * opens the note/folder menu. The button reports its on-screen rect so the menu
+ * can anchor to it.
  */
 function CreateButton({
   iconColor,
   keyboardVisible,
   blurTarget,
-  onLongPress,
+  onOpenMenu,
 }: {
   iconColor: string;
   keyboardVisible: boolean;
   blurTarget?: RefObject<View | null> | null;
-  onLongPress: () => void;
+  onOpenMenu: (anchor: Anchor | null) => void;
 }) {
   const router = useRouter();
   const pathname = usePathname();
   const { createNote, getNote } = useNotes();
-  const { createCopa } = useCopa();
+  const buttonRef = useRef<View>(null);
   const scale = useSharedValue(1);
   const animatedStyle = useAnimatedStyle(() => ({ transform: [{ scale: scale.value }] }));
 
   const onCopa = pathname === '/copa' || pathname.startsWith('/copa/');
+
+  // Open the menu anchored to this button's measured screen position.
+  const openAnchoredMenu = () => {
+    const node = buttonRef.current;
+    if (node) node.measureInWindow((x, y, width, height) => onOpenMenu({ x, y, width, height }));
+    else onOpenMenu(null);
+  };
 
   const onPress = () => {
     // Blur the native rich editor (Keyboard.dismiss can't) before dismissing.
@@ -298,10 +378,9 @@ function CreateButton({
     Keyboard.dismiss();
     // With the keyboard up this button just confirms/dismisses; otherwise create.
     if (keyboardVisible) return;
-    // On the copa tab the button creates a copy block; elsewhere, a note.
+    // On the copa tab a tap opens the anchored menu; elsewhere it creates a note.
     if (onCopa) {
-      const id = createCopa();
-      router.push({ pathname: '/copa/[id]', params: { id } });
+      openAnchoredMenu();
       return;
     }
     const id = createNote(currentFolderId(pathname, getNote));
@@ -309,17 +388,20 @@ function CreateButton({
   };
 
   const handleLongPress = () => {
-    // The folder option doesn't apply to copa, and the button is a "done" key
-    // while the keyboard is up — only offer the menu when plainly creating.
-    if (keyboardVisible || onCopa) return;
+    // The button is a "done" key while the keyboard is up — only offer the menu
+    // when plainly creating. Copa drives the menu from a tap, so long-press there
+    // just opens the same anchored menu; elsewhere it's the note/folder sheet.
+    if (keyboardVisible) return;
     dismissActiveEditor();
     Keyboard.dismiss();
-    onLongPress();
+    if (onCopa) openAnchoredMenu();
+    else onOpenMenu(null);
   };
 
   return (
     <Animated.View style={animatedStyle}>
       <Pressable
+        ref={buttonRef}
         accessibilityRole="button"
         accessibilityLabel={keyboardVisible ? 'Done' : 'Create'}
         onPressIn={() => {
@@ -436,6 +518,11 @@ const styles = StyleSheet.create({
   menuHost: {
     paddingHorizontal: Spacing.three,
   },
+  // Popover anchored above the + button; bottom/right are set inline from the
+  // measured button rect.
+  menuAnchored: {
+    position: 'absolute',
+  },
   menuSheet: {
     overflow: 'hidden',
     borderRadius: Spacing.four,
@@ -445,6 +532,10 @@ const styles = StyleSheet.create({
     shadowRadius: 24,
     shadowOffset: { width: 0, height: 8 },
     elevation: 24,
+  },
+  // The anchored popover sizes to its content, so give the rows room to breathe.
+  menuSheetAnchored: {
+    minWidth: 220,
   },
   menuRow: {
     flexDirection: 'row',

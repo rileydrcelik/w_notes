@@ -1,6 +1,7 @@
 import * as SQLite from 'expo-sqlite';
 
 import { Sentry } from '@/lib/sentry';
+import { removeCopaFiles } from '@/lib/copa-files';
 import type { Folder, Note } from '@/data/notes';
 import type { CopaItem } from '@/data/copa';
 
@@ -61,6 +62,12 @@ type CopaRow = {
   created_at: number;
   updated_at: number;
   deleted_at: number | null;
+  // Local-only file attachment columns (never synced).
+  file_uri: string | null;
+  file_name: string | null;
+  mime_type: string | null;
+  file_size: number | null;
+  thumb_uri: string | null;
 };
 
 // ---- Trash entry shape, shared with the store / trash screen ----
@@ -176,7 +183,12 @@ async function open(): Promise<SQLite.SQLiteDatabase> {
       created_at  INTEGER NOT NULL,
       updated_at  INTEGER NOT NULL DEFAULT 0,
       deleted_at  INTEGER,
-      dirty       INTEGER NOT NULL DEFAULT 1
+      dirty       INTEGER NOT NULL DEFAULT 1,
+      file_uri    TEXT,
+      file_name   TEXT,
+      mime_type   TEXT,
+      file_size   INTEGER,
+      thumb_uri   TEXT
     );
 
     CREATE TABLE IF NOT EXISTS settings (
@@ -253,6 +265,15 @@ async function ensureSyncColumns(database: SQLite.SQLiteDatabase): Promise<void>
   if (!copaCols.includes('dirty')) {
     await database.execAsync('ALTER TABLE copa_items ADD COLUMN dirty INTEGER NOT NULL DEFAULT 1');
   }
+  // File attachments were added later: backfill the local-only file columns on
+  // copa tables created before they existed.
+  if (!copaCols.includes('file_uri')) {
+    await database.execAsync('ALTER TABLE copa_items ADD COLUMN file_uri TEXT');
+    await database.execAsync('ALTER TABLE copa_items ADD COLUMN file_name TEXT');
+    await database.execAsync('ALTER TABLE copa_items ADD COLUMN mime_type TEXT');
+    await database.execAsync('ALTER TABLE copa_items ADD COLUMN file_size INTEGER');
+    await database.execAsync('ALTER TABLE copa_items ADD COLUMN thumb_uri TEXT');
+  }
 }
 
 // ---- Row -> app-shape converters ----
@@ -276,7 +297,17 @@ function toFolder(r: FolderRow): Folder {
 }
 
 function toCopa(r: CopaRow): CopaItem {
-  return { id: r.id, label: r.label, content: r.content, favorite: !!r.favorite };
+  return {
+    id: r.id,
+    label: r.label,
+    content: r.content,
+    favorite: !!r.favorite,
+    fileUri: r.file_uri ?? undefined,
+    fileName: r.file_name ?? undefined,
+    mimeType: r.mime_type ?? undefined,
+    fileSize: r.file_size ?? undefined,
+    thumbUri: r.thumb_uri ?? undefined,
+  };
 }
 
 async function buildTrash(database: SQLite.SQLiteDatabase): Promise<TrashEntry[]> {
@@ -512,13 +543,36 @@ export const db = {
     return rows.map(toCopa);
   },
 
-  async createCopa({ id }: { id: string }): Promise<void> {
-    dbCrumb('createCopa', { id });
+  async createCopa({
+    id,
+    label = '',
+    file,
+  }: {
+    id: string;
+    label?: string;
+    /** Local-only file attachment metadata; omitted for plain text blocks. */
+    file?: Pick<CopaItem, 'fileUri' | 'fileName' | 'mimeType' | 'fileSize' | 'thumbUri'>;
+  }): Promise<void> {
+    dbCrumb('createCopa', { id, file: !!file });
     const database = await getDb();
     const now = Date.now();
     await database.runAsync(
-      'INSERT INTO copa_items (id, label, content, created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
-      [id, '', '', now, now],
+      `INSERT INTO copa_items
+         (id, label, content, created_at, updated_at,
+          file_uri, file_name, mime_type, file_size, thumb_uri)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        id,
+        label,
+        '',
+        now,
+        now,
+        file?.fileUri ?? null,
+        file?.fileName ?? null,
+        file?.mimeType ?? null,
+        file?.fileSize ?? null,
+        file?.thumbUri ?? null,
+      ],
     );
   },
 
@@ -544,6 +598,13 @@ export const db = {
   async deleteCopa(id: string): Promise<void> {
     dbCrumb('deleteCopa', { id });
     const database = await getDb();
+    // Drop any attached file bytes from disk first — they're local-only, so the
+    // soft-deleted row would otherwise leave them orphaned forever.
+    const row = await database.getFirstAsync<{ file_uri: string | null; thumb_uri: string | null }>(
+      'SELECT file_uri, thumb_uri FROM copa_items WHERE id = ?',
+      [id],
+    );
+    if (row?.file_uri) removeCopaFiles({ fileUri: row.file_uri, thumbUri: row.thumb_uri ?? undefined });
     const now = Date.now();
     // Soft delete so the removal can sync to other devices (a hard DELETE would
     // be invisible to the server and the row would resurrect on the next pull).

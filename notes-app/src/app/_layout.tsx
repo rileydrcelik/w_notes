@@ -12,11 +12,11 @@ import { Sentry } from '@/lib/sentry';
 import { AuthProvider } from '@/lib/auth/auth-context';
 import { AnimatedSplashOverlay } from '@/components/animated-icon';
 import { FloatingTabBar } from '@/components/floating-tab-bar';
-import { CopaOptionsProvider } from '@/components/copa-options-modal';
+import { CopaOptionsProvider, useCopaOptions } from '@/components/copa-options-modal';
 import { ItemOptionsProvider } from '@/components/item-options-modal';
 import { CopaProvider } from '@/store/copa-store';
 import { NotesProvider } from '@/store/notes-store';
-import { SidebarProvider } from '@/store/sidebar-store';
+import { SidebarProvider, useSidebar } from '@/store/sidebar-store';
 import { AppThemeProvider, useThemePref } from '@/store/theme-store';
 
 // Top-level routes that the pager slides between. Everything else (a folder or
@@ -38,27 +38,23 @@ function RootLayout() {
 // It's a no-op passthrough when Sentry isn't initialized.
 export default Sentry.wrap(RootLayout);
 
-function AppShell() {
-  const { scheme } = useThemePref();
+/**
+ * The tab pager. Kept as its own component inside the provider tree so it can
+ * read which overlays are open and freeze its swipe accordingly.
+ */
+function Screens() {
   const pathname = usePathname();
+  const { optionsOpen } = useCopaOptions();
+  const { open: drawerOpen } = useSidebar();
 
   // The pager owns horizontal swipes only while on a top-level screen. On a
   // nested stack screen (folder/note) we hand the gesture back so the stack's
-  // edge swipe takes the user back instead of flicking to the other tab.
-  const swipeEnabled = SWIPEABLE_PATHS.includes(pathname);
+  // edge swipe takes the user back instead of flicking to the other tab. We also
+  // freeze it while an overlay (copa options sheet, drawer) is open so a swipe
+  // can't navigate out from under it.
+  const swipeEnabled = SWIPEABLE_PATHS.includes(pathname) && !optionsOpen && !drawerOpen;
 
-  // Android backdrop blur is capture-based: the navbar's BlurView blurs the
-  // content of a BlurTargetView, which must wrap the screens but NOT the navbar
-  // (a BlurView inside its own target recurses and crashes the renderer). So we
-  // host the target around the screens here and hand its ref to the navbar,
-  // which renders as a sibling overlay. iOS blurs natively and skips all this.
-  const [target, setTarget] = useState<View | null>(null);
-  const blurTarget = useMemo<RefObject<View | null> | null>(
-    () => (target ? { current: target } : null),
-    [target],
-  );
-
-  const screens = (
+  return (
     <TopTabs
       // The floating bar is the only visible navigation, so hide the pager's
       // built-in tab bar; the screens fill the whole pager.
@@ -69,6 +65,21 @@ function AppShell() {
       <TopTabs.Screen name="copa" />
       <TopTabs.Screen name="(home)" />
     </TopTabs>
+  );
+}
+
+function AppShell() {
+  const { scheme } = useThemePref();
+
+  // Android backdrop blur is capture-based: the navbar's BlurView blurs the
+  // content of a BlurTargetView, which must wrap the screens but NOT the navbar
+  // (a BlurView inside its own target recurses and crashes the renderer). So we
+  // host the target around the screens here and hand its ref to the navbar,
+  // which renders as a sibling overlay. iOS blurs natively and skips all this.
+  const [target, setTarget] = useState<View | null>(null);
+  const blurTarget = useMemo<RefObject<View | null> | null>(
+    () => (target ? { current: target } : null),
+    [target],
   );
 
   return (
@@ -87,10 +98,10 @@ function AppShell() {
               // ref to push the node into state once it mounts.
               ref={setTarget as unknown as RefObject<View | null>}
               style={StyleSheet.absoluteFill}>
-              {screens}
+              <Screens />
             </BlurTargetView>
           ) : (
-            screens
+            <Screens />
           )}
           <FloatingTabBar blurTarget={blurTarget} />
         </CopaOptionsProvider>

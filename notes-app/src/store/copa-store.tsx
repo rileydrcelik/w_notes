@@ -11,6 +11,7 @@ import { AppState } from 'react-native';
 
 import { Sentry } from '@/lib/sentry';
 import { db } from '@/lib/db';
+import { importPickedFile } from '@/lib/copa-files';
 import { requestSync, subscribeSynced, syncNow } from '@/lib/sync/sync-engine';
 import type { CopaItem } from '@/data/copa';
 
@@ -33,6 +34,11 @@ type CopaContextValue = {
   getCopa: (id: string) => CopaItem | undefined;
   /** Creates an empty copy block and returns its id. */
   createCopa: () => string;
+  /**
+   * Prompts to pick a file, imports it into a new file block, and returns the
+   * new block's id — or `null` if the user cancelled the picker.
+   */
+  createFileCopa: () => Promise<string | null>;
   updateCopa: (id: string, patch: Partial<Pick<CopaItem, 'label' | 'content'>>) => void;
   /** Removes a copy block permanently. */
   deleteCopa: (id: string) => void;
@@ -84,6 +90,18 @@ export function CopaProvider({ children }: { children: ReactNode }) {
     return id;
   }, []);
 
+  const createFileCopa = useCallback<CopaContextValue['createFileCopa']>(async () => {
+    const id = rid();
+    // Pick + copy the file into the document dir before touching state, so a
+    // cancel (null) leaves no empty block behind.
+    const file = await importPickedFile(id);
+    if (!file) return null;
+    const label = file.fileName ?? '';
+    setItems((prev) => [{ id, label, content: '', ...file }, ...prev]);
+    persist(db.createCopa({ id, label, file }));
+    return id;
+  }, []);
+
   const updateCopa = useCallback<CopaContextValue['updateCopa']>((id, patch) => {
     setItems((prev) => prev.map((item) => (item.id === id ? { ...item, ...patch } : item)));
     persist(db.updateCopa(id, patch));
@@ -110,11 +128,12 @@ export function CopaProvider({ children }: { children: ReactNode }) {
       items,
       getCopa: (id) => items.find((item) => item.id === id),
       createCopa,
+      createFileCopa,
       updateCopa,
       deleteCopa,
       toggleFavorite,
     }),
-    [items, createCopa, updateCopa, deleteCopa, toggleFavorite],
+    [items, createCopa, createFileCopa, updateCopa, deleteCopa, toggleFavorite],
   );
 
   return <CopaContext.Provider value={value}>{children}</CopaContext.Provider>;

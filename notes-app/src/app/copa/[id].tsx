@@ -1,13 +1,17 @@
+import Feather from '@expo/vector-icons/Feather';
+import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Stack, useLocalSearchParams } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
 import {
   KeyboardAvoidingView,
   Platform,
+  Pressable,
   ScrollView,
   StyleSheet,
   TextInput,
   useWindowDimensions,
+  View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { EnrichedTextInputInstance, OnChangeStateEvent } from 'react-native-enriched';
@@ -17,6 +21,16 @@ import { MarkdownEditor } from '@/components/markdown-editor';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Spacing } from '@/constants/theme';
+import { type CopaItem } from '@/data/copa';
+import {
+  downloadCopaFile,
+  fileIconFor,
+  formatBytes,
+  isImage,
+  isSaveableMedia,
+  isVideo,
+  openCopaFile,
+} from '@/lib/copa-files';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
 import { useTheme } from '@/hooks/use-theme';
 import { useCopa } from '@/store/copa-store';
@@ -113,15 +127,19 @@ export default function CopaBlockScreen() {
           ]}
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}>
-          <MarkdownEditor
-            key={id}
-            value={content}
-            onChangeText={setContent}
-            placeholder="Contents to copy…"
-            editorRef={editorRef}
-            onFocusChange={setEditing}
-            onStateChange={setFmtState}
-          />
+          {item.fileUri ? (
+            <FilePreview item={item} />
+          ) : (
+            <MarkdownEditor
+              key={id}
+              value={content}
+              onChangeText={setContent}
+              placeholder="Contents to copy…"
+              editorRef={editorRef}
+              onFocusChange={setEditing}
+              onStateChange={setFmtState}
+            />
+          )}
         </ScrollView>
         {/* Fades scrolling body text into the sticky title. */}
         <LinearGradient
@@ -130,15 +148,129 @@ export default function CopaBlockScreen() {
           style={[styles.fade, { top: titleHeight }]}
         />
       </KeyboardAvoidingView>
-      {/* Outside the KeyboardAvoidingView: it rides the keyboard inset itself. */}
-      <FormattingToolbar editorRef={editorRef} state={fmtState} visible={editing} />
+      {/* Outside the KeyboardAvoidingView: it rides the keyboard inset itself.
+          File blocks have no rich body, so the toolbar never applies to them. */}
+      {!item.fileUri && (
+        <FormattingToolbar editorRef={editorRef} state={fmtState} visible={editing} />
+      )}
     </ThemedView>
+  );
+}
+
+/**
+ * Read-only preview for a file block: a large thumbnail (image/video) or a
+ * file-type icon, the file's metadata, and an Open button that hands the file to
+ * the OS share/open sheet.
+ */
+function FilePreview({ item }: { item: CopaItem }) {
+  const theme = useTheme();
+  const showImage = isImage(item.mimeType) && !!item.fileUri;
+  const showVideo = isVideo(item.mimeType) && !!item.thumbUri;
+
+  return (
+    <View style={styles.preview}>
+      <View style={[styles.previewThumb, { backgroundColor: theme.backgroundElement }]}>
+        {showImage ? (
+          <Image source={{ uri: item.fileUri }} style={styles.previewImage} contentFit="contain" />
+        ) : showVideo ? (
+          <>
+            <Image source={{ uri: item.thumbUri }} style={styles.previewImage} contentFit="contain" />
+            <View style={styles.previewPlayBadge}>
+              <Feather name="play" size={28} color="#fff" />
+            </View>
+          </>
+        ) : (
+          <Feather name={fileIconFor(item.mimeType)} size={72} color={theme.textSecondary} />
+        )}
+      </View>
+
+      <ThemedText numberOfLines={2} style={styles.previewName}>
+        {item.fileName}
+      </ThemedText>
+      <ThemedText themeColor="textSecondary" style={styles.previewMeta}>
+        {[item.mimeType, formatBytes(item.fileSize)].filter(Boolean).join('  ·  ')}
+      </ThemedText>
+
+      {isSaveableMedia(item.mimeType) && (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Save to device"
+          onPress={() => void downloadCopaFile(item)}
+          style={({ pressed }) => [
+            styles.openButton,
+            { backgroundColor: theme.backgroundElement },
+            pressed && styles.openButtonPressed,
+          ]}>
+          <Feather name="download" size={18} color={theme.text} />
+          <ThemedText style={styles.openLabel}>Save to device</ThemedText>
+        </Pressable>
+      )}
+
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="Open file"
+        onPress={() => void openCopaFile(item)}
+        style={({ pressed }) => [
+          styles.openButton,
+          { backgroundColor: theme.backgroundElement },
+          pressed && styles.openButtonPressed,
+        ]}>
+        <Feather name="external-link" size={18} color={theme.text} />
+        <ThemedText style={styles.openLabel}>Open</ThemedText>
+      </Pressable>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
+  },
+  preview: {
+    gap: Spacing.two,
+  },
+  previewThumb: {
+    height: 260,
+    borderRadius: Spacing.three,
+    overflow: 'hidden',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  previewImage: {
+    width: '100%',
+    height: '100%',
+  },
+  previewPlayBadge: {
+    position: 'absolute',
+    width: 60,
+    height: 60,
+    borderRadius: Spacing.four,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(0,0,0,0.5)',
+  },
+  previewName: {
+    fontSize: 18,
+    fontWeight: '600',
+  },
+  previewMeta: {
+    fontSize: 14,
+  },
+  openButton: {
+    marginTop: Spacing.two,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: Spacing.two,
+    paddingVertical: Spacing.three,
+    borderRadius: Spacing.three,
+  },
+  openButtonPressed: {
+    opacity: 0.6,
+  },
+  openLabel: {
+    fontSize: 16,
+    fontWeight: '600',
   },
   content: {
     paddingHorizontal: Spacing.four,

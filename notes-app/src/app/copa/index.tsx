@@ -1,5 +1,6 @@
 import Feather from '@expo/vector-icons/Feather';
 import * as Clipboard from 'expo-clipboard';
+import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useMemo, useRef, useState } from 'react';
 import {
@@ -22,6 +23,7 @@ import { Spacing } from '@/constants/theme';
 import { type CopaItem } from '@/data/copa';
 import { useDoubleTap } from '@/hooks/use-double-tap';
 import { htmlToPlainText } from '@/lib/html-text';
+import { downloadCopaFile, fileIconFor, formatBytes, isImage, isVideo } from '@/lib/copa-files';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
 import { useTheme } from '@/hooks/use-theme';
 import { useCopa } from '@/store/copa-store';
@@ -121,6 +123,74 @@ function CopaCard({ item }: { item: CopaItem }) {
   );
 }
 
+/**
+ * A copa block backed by a file. Shows a thumbnail (image/video) or a file-type
+ * icon with the file's name and size. Tapping opens the OS share/open sheet
+ * instead of copying; double-tap favorites and long-press opens options, to
+ * match the text card.
+ */
+function FileCopaCard({ item }: { item: CopaItem }) {
+  const theme = useTheme();
+  const { openOptions } = useCopaOptions();
+  const { toggleFavorite } = useCopa();
+
+  const onPress = useDoubleTap(
+    () => {
+      void downloadCopaFile(item);
+    },
+    () => toggleFavorite(item.id),
+  );
+
+  const showImage = isImage(item.mimeType) && !!item.fileUri;
+  const showVideo = isVideo(item.mimeType) && !!item.thumbUri;
+  const meta = [item.fileName, formatBytes(item.fileSize)].filter(Boolean).join('  ·  ');
+
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={`Download ${item.label || item.fileName}`}
+      accessibilityHint="Saves the file to your device"
+      onPress={onPress}
+      onLongPress={() => openOptions(item.id)}>
+      {({ pressed }) => (
+        <ThemedView type="backgroundElement" style={[styles.fileCard, pressed && styles.pressed]}>
+          {showImage ? (
+            <Image source={{ uri: item.fileUri }} style={StyleSheet.absoluteFill} contentFit="cover" />
+          ) : showVideo ? (
+            <Image source={{ uri: item.thumbUri }} style={StyleSheet.absoluteFill} contentFit="cover" />
+          ) : (
+            <View style={styles.fileIconFill}>
+              <Feather name={fileIconFor(item.mimeType)} size={48} color={theme.textSecondary} />
+            </View>
+          )}
+
+          {showVideo && (
+            <View style={styles.fileBadgeCenter} pointerEvents="none">
+              <View style={styles.playBadge}>
+                <Feather name="play" size={20} color="#fff" />
+              </View>
+            </View>
+          )}
+
+          {/* Bottom-to-top scrim so the overlaid footer stays legible. */}
+          <LinearGradient
+            pointerEvents="none"
+            colors={['transparent', 'rgba(0,0,0,0.75)']}
+            style={styles.fileScrim}
+          />
+          <View style={styles.fileFooter}>
+            <ThemedText numberOfLines={1} style={styles.fileMeta}>
+              {meta}
+            </ThemedText>
+            {item.favorite && <FavoriteStar size={16} />}
+            <Feather name="download" size={18} color="#fff" />
+          </View>
+        </ThemedView>
+      )}
+    </Pressable>
+  );
+}
+
 export default function CopaScreen() {
   const tabBarInset = useTabBarInset();
   const insets = useSafeAreaInsets();
@@ -133,7 +203,9 @@ export default function CopaScreen() {
   const visible = searching
     ? items.filter(
         (item) =>
-          item.label.toLowerCase().includes(q) || item.content.toLowerCase().includes(q),
+          item.label.toLowerCase().includes(q) ||
+          item.content.toLowerCase().includes(q) ||
+          (item.fileName?.toLowerCase().includes(q) ?? false),
       )
     : items;
 
@@ -160,7 +232,9 @@ export default function CopaScreen() {
             </ThemedText>
           ) : null
         }
-        renderItem={({ item }) => <CopaCard item={item} />}
+        renderItem={({ item }) =>
+          item.fileUri ? <FileCopaCard item={item} /> : <CopaCard item={item} />
+        }
       />
       {/* Fades scrolling cards out behind the floating search field. */}
       <LinearGradient
@@ -219,5 +293,57 @@ const styles = StyleSheet.create({
   },
   pressed: {
     opacity: 0.6,
+  },
+  // File-block card: a full-bleed thumbnail with the footer overlaid on a scrim.
+  fileCard: {
+    height: 180,
+    borderRadius: Spacing.three,
+    overflow: 'hidden',
+    justifyContent: 'flex-end',
+  },
+  fileIconFill: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  fileBadgeCenter: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  playBadge: {
+    width: 44,
+    height: 44,
+    borderRadius: Spacing.three,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(0,0,0,0.5)',
+  },
+  fileScrim: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    height: 96,
+  },
+  fileFooter: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.two,
+    paddingHorizontal: Spacing.three,
+    paddingBottom: Spacing.three,
+  },
+  fileMeta: {
+    flex: 1,
+    fontSize: 13,
+    color: '#fff',
   },
 });
