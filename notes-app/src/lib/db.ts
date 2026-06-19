@@ -685,6 +685,20 @@ export const db = {
     ]);
   },
 
+  /**
+   * Clears `file_uri`/`thumb_uri` for blocks whose path is a browser object URL
+   * (`blob:`). Those URLs only live for one page session, so a persisted one is
+   * dead after a reload. Nulling it lets the sync engine re-download the bytes
+   * from S3 (rows that still carry a `remote_key`) into a fresh URL. No-op on
+   * native, where paths are durable `file://` URIs. Device-local, so not dirty.
+   */
+  async resetEphemeralFiles(): Promise<void> {
+    const database = await getDb();
+    await database.runAsync(
+      "UPDATE copa_items SET file_uri = NULL, thumb_uri = NULL WHERE file_uri LIKE 'blob:%'",
+    );
+  },
+
   // ---- Sync support ----
 
   /** All rows with un-pushed local changes, in the backend's wire shape. */

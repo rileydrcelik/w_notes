@@ -29,6 +29,24 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "attachments" {
   }
 }
 
+# CORS so the web client can transfer bytes straight to/from S3 via presigned
+# URLs. The browser blocks a cross-origin PUT/GET (and its preflight) unless the
+# bucket returns these headers; native apps don't enforce CORS, so this only
+# matters for web. Access stays gated by the presigned signature — CORS only
+# governs which page origins the browser will let read the response. ExposeHeaders
+# surfaces ETag so the upload can be confirmed client-side.
+resource "aws_s3_bucket_cors_configuration" "attachments" {
+  bucket = aws_s3_bucket.attachments.id
+
+  cors_rule {
+    allowed_methods = ["GET", "PUT", "HEAD"]
+    allowed_origins = var.web_origins
+    allowed_headers = ["*"]
+    expose_headers  = ["ETag"]
+    max_age_seconds = 3000
+  }
+}
+
 # Reclaim storage from uploads that were started but never completed.
 resource "aws_s3_bucket_lifecycle_configuration" "attachments" {
   bucket = aws_s3_bucket.attachments.id

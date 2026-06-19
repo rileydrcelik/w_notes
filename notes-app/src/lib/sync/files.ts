@@ -13,6 +13,12 @@ import { copaDestination, extensionOf, generateVideoThumbnail, isVideo } from '@
 import { apiFetch } from './api';
 
 /**
+ * Per-session prep before the file passes. Native bytes live durably on disk, so
+ * there's nothing to reconcile — the web counterpart clears stale object URLs.
+ */
+export async function prepareLocalFiles(): Promise<void> {}
+
+/**
  * Uploads a local file to S3 and returns the object key to store on the row.
  * Throws on failure so the caller can leave the row pending for the next pass.
  */

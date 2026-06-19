@@ -1,20 +1,29 @@
 /**
  * Web sign-in providers. The native build drives Google Sign-In / Apple
- * Authentication through native modules; on web those don't exist, so Google
- * goes through Firebase's popup flow (the JS SDK's web-native path) and Apple is
- * unavailable for now. When Firebase isn't configured (`auth` is null — the
- * default in this local-only pass) the app simply stays anonymous.
+ * Authentication through native modules; on web those don't exist.
+ *
+ * Google uses Firebase's **redirect** flow, not the popup flow. The web SQLite
+ * engine (wa-sqlite/OPFS) needs the page to be cross-origin isolated, which
+ * requires `Cross-Origin-Opener-Policy: same-origin` (see metro.config.js). That
+ * COOP value severs `window.opener`, which `signInWithPopup` depends on to hand
+ * the result back — so the popup completes but the SDK never receives it. A
+ * full-page redirect sidesteps the opener entirely: the result is delivered to
+ * `onAuthStateChanged` on the return trip, with `completeRedirectSignIn`
+ * surfacing any error from that round trip.
+ *
+ * Apple is unavailable on web for now. When Firebase isn't configured (`auth` is
+ * null) the app simply stays anonymous.
  */
 import {
   GoogleAuthProvider,
-  signInWithPopup,
+  getRedirectResult,
+  signInWithRedirect,
   signOut as firebaseSignOut,
-  type UserCredential,
 } from 'firebase/auth';
 
 import { auth } from './firebase';
 
-/** Thrown when the user dismisses the sign-in popup (not an error). */
+/** Thrown when the user dismisses the sign-in flow (not an error). */
 export class SignInCancelled extends Error {
   constructor() {
     super('Sign-in cancelled');
@@ -22,26 +31,31 @@ export class SignInCancelled extends Error {
   }
 }
 
-export async function signInWithGoogle(): Promise<UserCredential> {
+export async function signInWithGoogle(): Promise<void> {
   if (!auth) throw new Error('Firebase is not configured');
-  try {
-    return await signInWithPopup(auth, new GoogleAuthProvider());
-  } catch (e) {
-    const code = (e as { code?: string }).code;
-    if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') {
-      throw new SignInCancelled();
-    }
-    throw e;
-  }
+  // Navigates away; control returns to the app (and onAuthStateChanged /
+  // completeRedirectSignIn) after the provider round trip.
+  await signInWithRedirect(auth, new GoogleAuthProvider());
 }
 
-export async function signInWithApple(): Promise<UserCredential> {
+export async function signInWithApple(): Promise<never> {
   throw new Error('Apple sign-in is not available on web yet.');
 }
 
 /** Apple sign-in isn't offered on web. */
 export async function isAppleAuthAvailable(): Promise<boolean> {
   return false;
+}
+
+/**
+ * Completes a pending redirect sign-in when the page loads back from the
+ * provider. On success `onAuthStateChanged` also fires, so this exists mainly to
+ * surface redirect *errors* (e.g. `auth/unauthorized-domain`); a user who backed
+ * out resolves to `null` here and is treated as a no-op.
+ */
+export async function completeRedirectSignIn(): Promise<void> {
+  if (!auth) return;
+  await getRedirectResult(auth);
 }
 
 export async function signOutProviders(): Promise<void> {

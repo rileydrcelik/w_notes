@@ -15,7 +15,7 @@ import { Sentry } from '@/lib/sentry';
 import { db, type SyncPayload } from '@/lib/db';
 import { ApiError, apiFetch, syncConfigured } from './api';
 import { getDeviceKey, rotateDeviceKey } from './device-key';
-import { downloadCopaFile, uploadCopaFile } from './files';
+import { downloadCopaFile, prepareLocalFiles, uploadCopaFile } from './files';
 
 const SYNCED_UID = 'synced_uid';
 
@@ -49,6 +49,9 @@ function emitSynced(): void {
 
 let inflight: Promise<SyncResult> | null = null;
 
+// One-time per-session reconciliation of local file paths (see prepareLocalFiles).
+let filesPrepared = false;
+
 /**
  * Runs one sync pass. Safe to call from anywhere and as often as you like:
  * concurrent calls return the same in-flight promise, and it no-ops cleanly when
@@ -70,6 +73,13 @@ async function runSync(): Promise<SyncResult> {
   try {
     // Ensure the device key exists + is persisted before the first request.
     await getDeviceKey();
+
+    // Once per session, reconcile local file paths before any file pass (web
+    // clears stale object URLs so their bytes re-download; native no-ops).
+    if (!filesPrepared) {
+      await prepareLocalFiles();
+      filesPrepared = true;
+    }
 
     // 0) Upload bytes for any file blocks not yet in S3, stamping each row with
     //    its remote_key so the push below carries it across to other devices.

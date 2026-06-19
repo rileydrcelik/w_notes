@@ -59,6 +59,9 @@ resource "aws_ecs_task_definition" "api" {
         { name = "ENV", value = "production" },
         { name = "S3_BUCKET", value = aws_s3_bucket.attachments.bucket },
         { name = "AWS_REGION", value = var.region },
+        # CORS allow-list for the web client (comma-separated). The S3 bucket
+        # CORS in s3.tf must allow the same origins for byte transfers.
+        { name = "CORS_ORIGINS", value = join(",", var.web_origins) },
       ]
 
       # Secret config, pulled from SSM Parameter Store by the execution role.

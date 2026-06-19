@@ -1,0 +1,4 @@
+# SPA fallback: app.json sets web.output "single", so the export is a
+# single-page app whose routing happens client-side. Serve index.html for any
+# path that isn't a real asset so deep links / reloads resolve instead of 404ing.
+/*    /index.html    200

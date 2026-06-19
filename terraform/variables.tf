@@ -109,3 +109,16 @@ variable "firebase_credentials_json" {
   sensitive   = true
   description = "Firebase service-account JSON (the whole file's contents). Empty => Firebase auth disabled."
 }
+
+# ---- Web client (CORS) ----
+
+variable "web_origins" {
+  type        = list(string)
+  default     = ["*"]
+  description = <<-EOT
+    Browser origins allowed to call the API and to transfer attachment bytes
+    to/from S3 (CORS). Native apps don't enforce CORS, so this only affects the
+    web client. Defaults to ["*"] so the web app works before its host is known;
+    tighten to the deployed origin(s) (e.g. ["https://app.example.com"]) later.
+  EOT
+}

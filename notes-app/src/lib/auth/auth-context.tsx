@@ -24,6 +24,7 @@ import { onSignIn, onSignOut } from '@/lib/sync/sync-engine';
 import { auth, firebaseEnabled } from './firebase';
 import {
   SignInCancelled,
+  completeRedirectSignIn,
   isAppleAuthAvailable,
   signInWithApple as appleSignIn,
   signInWithGoogle as googleSignIn,
@@ -55,6 +56,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     isAppleAuthAvailable()
       .then(setAppleAvailable)
       .catch(() => {});
+  }, []);
+
+  // Resolve a pending web redirect sign-in on load (no-op on native). Success is
+  // also picked up by onAuthStateChanged below; this surfaces redirect errors.
+  useEffect(() => {
+    completeRedirectSignIn().catch((e) =>
+      Sentry.captureException(e, { tags: { source: 'auth', op: 'redirectResult' } }),
+    );
   }, []);
 
   useEffect(() => {

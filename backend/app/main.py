@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sentry_sdk
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from sentry_sdk.integrations.fastapi import FastApiIntegration
 from sentry_sdk.integrations.sqlalchemy import SqlalchemyIntegration
 
@@ -24,6 +25,19 @@ if settings.sentry_dsn:
     )
 
 app = FastAPI(title="w_notes sync", version="0.1.0")
+
+# CORS for the web client. The browser blocks cross-origin fetches (and their
+# preflight OPTIONS) unless the API echoes these headers; native apps don't
+# enforce CORS, so this is purely what unblocks web sync. allow_credentials stays
+# False — auth rides an Authorization bearer header, not cookies — which also
+# lets a "*" origin list work (the two are mutually exclusive in the spec).
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.cors_origin_list,
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 app.include_router(health.router)
 app.include_router(sync.router)

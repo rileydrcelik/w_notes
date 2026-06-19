@@ -88,6 +88,13 @@ export async function isAppleAuthAvailable(): Promise<boolean> {
   return AppleAuthentication.isAvailableAsync();
 }
 
+/**
+ * No-op on native: sign-in resolves inline via `signInWithCredential`, so there's
+ * no redirect round trip to complete. Exists to match the web provider's surface
+ * so the shared auth context can call it on both platforms.
+ */
+export async function completeRedirectSignIn(): Promise<void> {}
+
 export async function signOutProviders(): Promise<void> {
   if (auth) await firebaseSignOut(auth);
   try {

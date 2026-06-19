@@ -1,0 +1,13 @@
+# Cloudflare Pages response headers for the production web build.
+#
+# The web SQLite engine (wa-sqlite/OPFS) talks to its worker over a
+# SharedArrayBuffer, which browsers only expose to cross-origin-isolated pages.
+# Isolation requires these two headers on the document — the metro.config.js
+# headers only cover the dev server, so the production host must send its own.
+#
+# COEP is `credentialless` (not `require-corp`) so Firebase's cross-origin auth
+# resources load without a CORP header while isolation is preserved; COOP stays
+# `same-origin` because web sign-in uses the redirect flow, not a popup.
+/*
+  Cross-Origin-Opener-Policy: same-origin
+  Cross-Origin-Embedder-Policy: credentialless

@@ -33,6 +33,17 @@ class Settings(BaseSettings):
     # presigned PUT can't hard-enforce this, so the client checks size too.
     max_upload_bytes: int = 2 * 1024 * 1024 * 1024
 
+    # Browser origins allowed to call the API (CORS). Native apps don't enforce
+    # CORS so this only matters for the web client. Comma-separated list, or "*"
+    # to allow any origin — safe here because auth is a bearer token, not a
+    # cookie, so there are no ambient credentials to protect.
+    cors_origins: str = "*"
+
+    @property
+    def cors_origin_list(self) -> list[str]:
+        """`cors_origins` parsed into the list CORSMiddleware expects."""
+        return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+
 
 @lru_cache
 def get_settings() -> Settings:
