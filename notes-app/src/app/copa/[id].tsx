@@ -13,6 +13,7 @@ import {
   useWindowDimensions,
   View,
 } from 'react-native';
+import Animated from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { EnrichedTextInputInstance, OnChangeStateEvent } from 'react-native-enriched';
 
@@ -31,8 +32,10 @@ import {
   isVideo,
   openCopaFile,
 } from '@/lib/copa-files';
+import { useScreenFadeStyle } from '@/hooks/use-screen-fade';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
 import { useTheme } from '@/hooks/use-theme';
+import { noFocusOutline } from '@/lib/web-style';
 import { useCopa } from '@/store/copa-store';
 
 export default function CopaBlockScreen() {
@@ -42,6 +45,7 @@ export default function CopaBlockScreen() {
   const tabBarInset = useTabBarInset();
   const insets = useSafeAreaInsets();
   const { height } = useWindowDimensions();
+  const fadeStyle = useScreenFadeStyle();
 
   // Measured height of the sticky title block, so the fade gradient sits right
   // beneath it regardless of how many lines the title wraps to.
@@ -102,6 +106,7 @@ export default function CopaBlockScreen() {
   }
 
   return (
+    <Animated.View style={[styles.container, fadeStyle]}>
     <ThemedView style={styles.container}>
       <Stack.Screen options={{ headerShown: false }} />
       <KeyboardAvoidingView
@@ -113,7 +118,11 @@ export default function CopaBlockScreen() {
           onLayout={(e) => setTitleHeight(e.nativeEvent.layout.height)}
           placeholder="Title"
           placeholderTextColor={theme.textSecondary}
-          style={[styles.title, { color: theme.text, paddingTop: insets.top + Spacing.two }]}
+          style={[
+            styles.title,
+            noFocusOutline,
+            { color: theme.text, paddingTop: insets.top + Spacing.two },
+          ]}
           multiline
         />
         <ScrollView
@@ -154,6 +163,7 @@ export default function CopaBlockScreen() {
         <FormattingToolbar editorRef={editorRef} state={fmtState} visible={editing} />
       )}
     </ThemedView>
+    </Animated.View>
   );
 }
 

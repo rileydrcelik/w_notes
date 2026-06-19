@@ -7,3 +7,53 @@
   --font-rounded: 'SF Pro Rounded', 'Hiragino Maru Gothic ProN', Meiryo, 'MS PGothic', sans-serif;
   --font-serif: Georgia, 'Times New Roman', serif;
 }
+
+/* No blue focus ring on web text fields — the editing surfaces are meant to be
+   chromeless to match the app's minimalist look. */
+input:focus,
+textarea:focus {
+  outline: none;
+}
+
+/* Read-only rendered note/copa body on web (see markdown-editor.web.tsx). Tame
+   the browser's default block margins so the formatted view reads tightly, in
+   the app's voice rather than a document's. */
+.md-view {
+  white-space: pre-wrap;
+  word-break: break-word;
+  text-align: left;
+}
+.md-view > :first-child {
+  margin-top: 0;
+}
+.md-view > :last-child {
+  margin-bottom: 0;
+}
+.md-view h1,
+.md-view h2,
+.md-view h3 {
+  margin: 0.6em 0 0.3em;
+  line-height: 1.25;
+}
+.md-view p,
+.md-view ul,
+.md-view ol,
+.md-view blockquote,
+.md-view pre {
+  margin: 0.4em 0;
+}
+.md-view ul,
+.md-view ol {
+  padding-left: 1.4em;
+}
+.md-view blockquote {
+  padding-left: 0.8em;
+  border-left: 3px solid currentColor;
+  opacity: 0.8;
+}
+.md-view code {
+  font-family: var(--font-mono);
+}
+.md-view a {
+  color: #3c87f7;
+}

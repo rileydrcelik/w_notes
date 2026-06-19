@@ -62,12 +62,14 @@ type CopaRow = {
   created_at: number;
   updated_at: number;
   deleted_at: number | null;
-  // Local-only file attachment columns (never synced).
+  // File attachment columns. file_name/mime_type/file_size/remote_key sync;
+  // file_uri/thumb_uri are device-local paths and never leave the device.
   file_uri: string | null;
   file_name: string | null;
   mime_type: string | null;
   file_size: number | null;
   thumb_uri: string | null;
+  remote_key: string | null;
 };
 
 // ---- Trash entry shape, shared with the store / trash screen ----
@@ -127,6 +129,11 @@ export type CopaSync = {
   created_at: number;
   updated_at: number;
   deleted_at: number | null;
+  // Synced file-attachment metadata (bytes live in S3 under remote_key).
+  file_name: string | null;
+  mime_type: string | null;
+  file_size: number | null;
+  remote_key: string | null;
 };
 
 export type SyncPayload = {
@@ -188,7 +195,8 @@ async function open(): Promise<SQLite.SQLiteDatabase> {
       file_name   TEXT,
       mime_type   TEXT,
       file_size   INTEGER,
-      thumb_uri   TEXT
+      thumb_uri   TEXT,
+      remote_key  TEXT
     );
 
     CREATE TABLE IF NOT EXISTS settings (
@@ -265,14 +273,18 @@ async function ensureSyncColumns(database: SQLite.SQLiteDatabase): Promise<void>
   if (!copaCols.includes('dirty')) {
     await database.execAsync('ALTER TABLE copa_items ADD COLUMN dirty INTEGER NOT NULL DEFAULT 1');
   }
-  // File attachments were added later: backfill the local-only file columns on
-  // copa tables created before they existed.
+  // File attachments were added later: backfill the file columns on copa tables
+  // created before they existed.
   if (!copaCols.includes('file_uri')) {
     await database.execAsync('ALTER TABLE copa_items ADD COLUMN file_uri TEXT');
     await database.execAsync('ALTER TABLE copa_items ADD COLUMN file_name TEXT');
     await database.execAsync('ALTER TABLE copa_items ADD COLUMN mime_type TEXT');
     await database.execAsync('ALTER TABLE copa_items ADD COLUMN file_size INTEGER');
     await database.execAsync('ALTER TABLE copa_items ADD COLUMN thumb_uri TEXT');
+  }
+  // Cross-device file sync added `remote_key` (the S3 object key) after that.
+  if (!copaCols.includes('remote_key')) {
+    await database.execAsync('ALTER TABLE copa_items ADD COLUMN remote_key TEXT');
   }
 }
 
@@ -614,6 +626,65 @@ export const db = {
     );
   },
 
+  // ---- File attachment sync (bytes live in S3; see lib/sync/files.ts) ----
+
+  /** Live file blocks whose bytes haven't been uploaded yet (no remote_key). */
+  async getCopaUploads(): Promise<{ id: string; fileUri: string; mimeType: string | null }[]> {
+    const database = await getDb();
+    const rows = await database.getAllAsync<{ id: string; file_uri: string; mime_type: string | null }>(
+      `SELECT id, file_uri, mime_type FROM copa_items
+       WHERE file_uri IS NOT NULL AND remote_key IS NULL AND deleted_at IS NULL`,
+    );
+    return rows.map((r) => ({ id: r.id, fileUri: r.file_uri, mimeType: r.mime_type }));
+  },
+
+  /** Record the S3 key after a successful upload, and queue it to push. */
+  async setCopaRemoteKey(id: string, remoteKey: string): Promise<void> {
+    dbCrumb('setCopaRemoteKey', { id });
+    const database = await getDb();
+    const now = Date.now();
+    await database.runAsync(
+      'UPDATE copa_items SET remote_key = ?, updated_at = ?, dirty = 1 WHERE id = ?',
+      [remoteKey, now, id],
+    );
+  },
+
+  /** Live file blocks with bytes in S3 but no local copy yet (need download). */
+  async getCopaDownloads(): Promise<
+    { id: string; remoteKey: string; mimeType: string | null; fileName: string | null }[]
+  > {
+    const database = await getDb();
+    const rows = await database.getAllAsync<{
+      id: string;
+      remote_key: string;
+      mime_type: string | null;
+      file_name: string | null;
+    }>(
+      `SELECT id, remote_key, mime_type, file_name FROM copa_items
+       WHERE remote_key IS NOT NULL AND file_uri IS NULL AND deleted_at IS NULL`,
+    );
+    return rows.map((r) => ({
+      id: r.id,
+      remoteKey: r.remote_key,
+      mimeType: r.mime_type,
+      fileName: r.file_name,
+    }));
+  },
+
+  /**
+   * Point a block at its freshly-downloaded local bytes. These paths are
+   * device-specific, so this deliberately does NOT mark the row dirty.
+   */
+  async setCopaLocalFile(id: string, fileUri: string, thumbUri: string | null): Promise<void> {
+    dbCrumb('setCopaLocalFile', { id });
+    const database = await getDb();
+    await database.runAsync('UPDATE copa_items SET file_uri = ?, thumb_uri = ? WHERE id = ?', [
+      fileUri,
+      thumbUri,
+      id,
+    ]);
+  },
+
   // ---- Sync support ----
 
   /** All rows with un-pushed local changes, in the backend's wire shape. */
@@ -631,7 +702,8 @@ export const db = {
          FROM notes WHERE dirty = 1`,
       ),
       database.getAllAsync<CopaSync>(
-        `SELECT id, label, content, favorite, created_at, updated_at, deleted_at
+        `SELECT id, label, content, favorite, created_at, updated_at, deleted_at,
+                file_name, mime_type, file_size, remote_key
          FROM copa_items WHERE dirty = 1`,
       ),
     ]);
@@ -735,14 +807,29 @@ export const db = {
       for (const c of payload.copa_items) {
         const r = await database.runAsync(
           `INSERT INTO copa_items
-             (id, label, content, favorite, created_at, updated_at, deleted_at, dirty)
-           VALUES (?, ?, ?, ?, ?, ?, ?, 0)
+             (id, label, content, favorite, created_at, updated_at, deleted_at,
+              file_name, mime_type, file_size, remote_key, dirty)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
            ON CONFLICT(id) DO UPDATE SET
              label = excluded.label, content = excluded.content,
              favorite = excluded.favorite, created_at = excluded.created_at,
-             updated_at = excluded.updated_at, deleted_at = excluded.deleted_at, dirty = 0
+             updated_at = excluded.updated_at, deleted_at = excluded.deleted_at,
+             file_name = excluded.file_name, mime_type = excluded.mime_type,
+             file_size = excluded.file_size, remote_key = excluded.remote_key, dirty = 0
            WHERE excluded.updated_at >= copa_items.updated_at`,
-          [c.id, c.label, c.content, bit(c.favorite), c.created_at, c.updated_at, c.deleted_at],
+          [
+            c.id,
+            c.label,
+            c.content,
+            bit(c.favorite),
+            c.created_at,
+            c.updated_at,
+            c.deleted_at,
+            c.file_name,
+            c.mime_type,
+            c.file_size,
+            c.remote_key,
+          ],
         );
         changed += r.changes;
       }

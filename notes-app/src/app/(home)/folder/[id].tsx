@@ -8,6 +8,7 @@ import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Spacing } from '@/constants/theme';
 import type { Folder, Note } from '@/data/notes';
+import { GRID_COLUMNS, gridEdgePadding, trailingSpacers } from '@/lib/grid';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
 import { useTheme } from '@/hooks/use-theme';
 import { useNotes } from '@/store/notes-store';
@@ -32,8 +33,8 @@ export default function FolderScreen() {
     ...subfolders.map((sub) => ({ kind: 'folder' as const, folder: sub })),
     ...notes.map((note) => ({ kind: 'note' as const, note })),
   ];
-  // Keep a lone/odd last card to a single column instead of spanning both.
-  if (items.length % 2 === 1) items.push({ kind: 'spacer' });
+  // Keep a partial last row at single-card width instead of stretching it.
+  for (let i = 0; i < trailingSpacers(items.length); i++) items.push({ kind: 'spacer' });
 
   const header = (
     <View style={styles.header}>
@@ -61,10 +62,11 @@ export default function FolderScreen() {
                 ? item.folder.id
                 : `spacer-${index}`
           }
-          numColumns={2}
+          numColumns={GRID_COLUMNS}
           columnWrapperStyle={styles.row}
           contentContainerStyle={[
             styles.content,
+            gridEdgePadding,
             { paddingTop: insets.top + Spacing.two, paddingBottom: tabBarInset },
           ]}
           ListHeaderComponent={header}

@@ -53,9 +53,12 @@ resource "aws_ecs_task_definition" "api" {
         protocol      = "tcp"
       }]
 
-      # Non-secret config. ENV drives Sentry sample rates + environment tag.
+      # Non-secret config. ENV drives Sentry sample rates + environment tag;
+      # S3_BUCKET/AWS_REGION point boto3 at the attachments bucket for presigning.
       environment = [
-        { name = "ENV", value = "production" }
+        { name = "ENV", value = "production" },
+        { name = "S3_BUCKET", value = aws_s3_bucket.attachments.bucket },
+        { name = "AWS_REGION", value = var.region },
       ]
 
       # Secret config, pulled from SSM Parameter Store by the execution role.

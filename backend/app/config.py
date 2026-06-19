@@ -23,6 +23,16 @@ class Settings(BaseSettings):
     # anonymous device keys are accepted.
     firebase_credentials: str = ""
 
+    # S3 bucket holding copa file-attachment bytes, and the region to sign for.
+    # Empty bucket => the file endpoints return 503 (attachments stay local-only).
+    # boto3 picks up credentials from the ECS task role automatically.
+    s3_bucket: str = ""
+    aws_region: str = ""
+
+    # Largest attachment we hand out an upload URL for (2 GB). Advisory: the v1
+    # presigned PUT can't hard-enforce this, so the client checks size too.
+    max_upload_bytes: int = 2 * 1024 * 1024 * 1024
+
 
 @lru_cache
 def get_settings() -> Settings:

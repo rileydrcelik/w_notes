@@ -63,15 +63,44 @@ export function formatBytes(bytes?: number): string {
 }
 
 /** Extracts a lowercase extension (with dot) from a name, or '' if none. */
-function extensionOf(name: string): string {
+export function extensionOf(name: string): string {
   const dot = name.lastIndexOf('.');
   return dot > 0 ? name.slice(dot).toLowerCase() : '';
 }
 
 /**
+ * Ensures the copa attachments directory exists and returns a fresh destination
+ * `File` for a block id (deleting any existing file at that path first). Shared
+ * by the picker import and the sync download so both write to the same place.
+ */
+export function copaDestination(id: string, ext: string): File {
+  const dir = new Directory(Paths.document, COPA_DIR);
+  if (!dir.exists) dir.create({ intermediates: true });
+  const dest = new File(dir, `${id}${ext}`);
+  if (dest.exists) dest.delete();
+  return dest;
+}
+
+/** Generates a video frame thumbnail uri, or `undefined` if it can't. */
+export async function generateVideoThumbnail(fileUri: string): Promise<string | undefined> {
+  try {
+    const thumb = await VideoThumbnails.getThumbnailAsync(fileUri, { time: 0, quality: 0.6 });
+    return thumb.uri;
+  } catch (e) {
+    // A missing thumbnail just falls back to the file-type icon — not fatal.
+    console.warn('[copa] video thumbnail failed:', e);
+    Sentry.captureException(e, { tags: { source: 'copa-files', op: 'thumbnail' } });
+    return undefined;
+  }
+}
+
+/** Largest file we'll import/upload (2 GB). Matches the backend's advisory cap. */
+export const MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024;
+
+/**
  * Prompts the user to pick a file of any type and imports it for the given block
- * id. Returns the persistent file metadata, or `null` if the user cancelled.
- * Throws only on an unexpected native/filesystem failure.
+ * id. Returns the persistent file metadata, or `null` if the user cancelled (or
+ * the file is over the size cap). Throws only on an unexpected native failure.
  */
 export async function importPickedFile(id: string): Promise<ImportedFile | null> {
   const result = await DocumentPicker.getDocumentAsync({
@@ -82,26 +111,17 @@ export async function importPickedFile(id: string): Promise<ImportedFile | null>
   if (result.canceled || !result.assets?.length) return null;
   const asset = result.assets[0];
 
+  if (asset.size && asset.size > MAX_UPLOAD_BYTES) {
+    Alert.alert('File too large', 'Files must be under 2 GB to add and sync.');
+    return null;
+  }
+
   // Keep the bytes around permanently: the picker's copy lives in the cache and
   // can be reclaimed by the OS at any time.
-  const dir = new Directory(Paths.document, COPA_DIR);
-  if (!dir.exists) dir.create({ intermediates: true });
-
-  const dest = new File(dir, `${id}${extensionOf(asset.name)}`);
-  if (dest.exists) dest.delete();
+  const dest = copaDestination(id, extensionOf(asset.name));
   await new File(asset.uri).copy(dest);
 
-  let thumbUri: string | undefined;
-  if (isVideo(asset.mimeType)) {
-    try {
-      const thumb = await VideoThumbnails.getThumbnailAsync(dest.uri, { time: 0, quality: 0.6 });
-      thumbUri = thumb.uri;
-    } catch (e) {
-      // A missing thumbnail just falls back to the file-type icon — not fatal.
-      console.warn('[copa] video thumbnail failed:', e);
-      Sentry.captureException(e, { tags: { source: 'copa-files', op: 'thumbnail' } });
-    }
-  }
+  const thumbUri = isVideo(asset.mimeType) ? await generateVideoThumbnail(dest.uri) : undefined;
 
   return {
     fileUri: dest.uri,

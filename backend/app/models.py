@@ -132,6 +132,13 @@ class CopaItem(Base):
     content: Mapped[str] = mapped_column(Text, nullable=False, default="")
     favorite: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
+    # File attachment metadata. The bytes live in S3 under ``remote_key``; the
+    # client's device-local paths (file_uri/thumb_uri) are never synced.
+    file_name: Mapped[str | None] = mapped_column(String)
+    mime_type: Mapped[str | None] = mapped_column(String)
+    file_size: Mapped[int | None] = mapped_column(BigInteger)
+    remote_key: Mapped[str | None] = mapped_column(String)
+
     created_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
     # The client's copa table has no updated_at/deleted_at today, but sync needs
     # both; defaulting keeps the columns harmless until the client sends them.

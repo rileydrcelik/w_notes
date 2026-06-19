@@ -8,6 +8,7 @@ import Animated, {
   withTiming,
 } from 'react-native-reanimated';
 
+import { useScreenFadeStyle } from '@/hooks/use-screen-fade';
 import { useSidebar } from '@/store/sidebar-store';
 
 // How far / fast a rightward drag must go before it commits to navigating back.
@@ -35,6 +36,8 @@ type Props = {
  */
 export function SwipeBackView({ children, style }: Props) {
   const { openSidebar } = useSidebar();
+  // Web has no native stack transition; fade/slide the screen in on focus.
+  const fadeStyle = useScreenFadeStyle();
 
   // Claim only leftward drags so a rightward swipe still reaches the back
   // gesture, and bail on vertical movement so lists keep scrolling.
@@ -50,7 +53,7 @@ export function SwipeBackView({ children, style }: Props) {
   if (Platform.OS !== 'android') {
     return (
       <GestureDetector gesture={openDrawer}>
-        <Animated.View style={[styles.fill, style]}>{children}</Animated.View>
+        <Animated.View style={[styles.fill, style, fadeStyle]}>{children}</Animated.View>
       </GestureDetector>
     );
   }

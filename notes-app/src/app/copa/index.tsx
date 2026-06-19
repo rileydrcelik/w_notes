@@ -6,11 +6,13 @@ import { useMemo, useRef, useState } from 'react';
 import {
   FlatList,
   type LayoutChangeEvent,
+  Platform,
   Pressable,
   StyleSheet,
   type TextLayoutEventData,
   View,
 } from 'react-native';
+import Animated from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { BottomFade } from '@/components/bottom-fade';
@@ -22,7 +24,9 @@ import { ThemedView } from '@/components/themed-view';
 import { Spacing } from '@/constants/theme';
 import { type CopaItem } from '@/data/copa';
 import { useDoubleTap } from '@/hooks/use-double-tap';
+import { useScreenFadeStyle } from '@/hooks/use-screen-fade';
 import { htmlToPlainText } from '@/lib/html-text';
+import { gridEdgePadding } from '@/lib/grid';
 import { downloadCopaFile, fileIconFor, formatBytes, isImage, isVideo } from '@/lib/copa-files';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
 import { useTheme } from '@/hooks/use-theme';
@@ -33,6 +37,10 @@ const CARD_PADDING = Spacing.three;
 const LABEL_BLOCK = 20 + Spacing.half; // label lineHeight + gap to content
 const FOOTER_BLOCK = 18 + Spacing.two; // copy icon height + gap above it
 const CONTENT_LINE_HEIGHT = 24; // default ThemedText lineHeight
+
+// One column on phones (full-width cards read fine there); a multi-column grid
+// on web, where a single column would stretch each card into a wide ribbon.
+const COPA_COLUMNS = Platform.OS === 'web' ? 4 : 1;
 
 function CopaCard({ item }: { item: CopaItem }) {
   const theme = useTheme();
@@ -197,6 +205,7 @@ export default function CopaScreen() {
   const theme = useTheme();
   const { items } = useCopa();
   const [query, setQuery] = useState('');
+  const fadeStyle = useScreenFadeStyle();
 
   const q = query.trim().toLowerCase();
   const searching = q.length > 0;
@@ -209,18 +218,34 @@ export default function CopaScreen() {
       )
     : items;
 
+  // In the web grid, pad the final row with transparent cells so its cards stay
+  // at single-column width instead of stretching to fill the row.
+  type Row = CopaItem | { id: string; spacer: true };
+  const data: Row[] = [...visible];
+  if (COPA_COLUMNS > 1) {
+    const pad = (COPA_COLUMNS - (visible.length % COPA_COLUMNS)) % COPA_COLUMNS;
+    for (let i = 0; i < pad; i++) data.push({ id: `spacer-${i}`, spacer: true });
+  }
+
   // The search field floats; the list scrolls beneath it. Reserve enough top
   // padding that the first card clears the bar, and fade content out behind it.
   const barTop = insets.top + Spacing.two;
   const contentTop = barTop + SEARCH_BAR_HEIGHT + Spacing.three;
 
   return (
+    <Animated.View style={[styles.container, fadeStyle]}>
     <ThemedView style={styles.container}>
       <FlatList
-        data={visible}
+        data={data}
         keyExtractor={(item) => item.id}
+        numColumns={COPA_COLUMNS}
+        // numColumns must change with a fresh key, and a row wrapper is only
+        // valid for multi-column lists.
+        key={COPA_COLUMNS}
+        columnWrapperStyle={COPA_COLUMNS > 1 ? styles.row : undefined}
         contentContainerStyle={[
           styles.content,
+          gridEdgePadding,
           { paddingTop: contentTop, paddingBottom: tabBarInset },
         ]}
         keyboardShouldPersistTaps="handled"
@@ -232,9 +257,11 @@ export default function CopaScreen() {
             </ThemedText>
           ) : null
         }
-        renderItem={({ item }) =>
-          item.fileUri ? <FileCopaCard item={item} /> : <CopaCard item={item} />
-        }
+        renderItem={({ item }) => {
+          if ('spacer' in item) return <View style={styles.cardCell} />;
+          const card = item.fileUri ? <FileCopaCard item={item} /> : <CopaCard item={item} />;
+          return COPA_COLUMNS > 1 ? <View style={styles.cardCell}>{card}</View> : card;
+        }}
       />
       {/* Fades scrolling cards out behind the floating search field. */}
       <LinearGradient
@@ -247,6 +274,7 @@ export default function CopaScreen() {
       </View>
       <BottomFade />
     </ThemedView>
+    </Animated.View>
   );
 }
 
@@ -257,6 +285,15 @@ const styles = StyleSheet.create({
   content: {
     paddingHorizontal: Spacing.three,
     gap: Spacing.three,
+  },
+  // Web grid: even gaps between columns and a flexible cell so each card fills
+  // its column width (and the trailing spacer keeps the last row aligned).
+  row: {
+    gap: Spacing.three,
+    alignItems: 'flex-start',
+  },
+  cardCell: {
+    flex: 1,
   },
   searchFloat: {
     position: 'absolute',

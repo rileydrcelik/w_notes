@@ -4,4 +4,26 @@ const { getSentryExpoConfig } = require('@sentry/react-native/metro');
 
 const config = getSentryExpoConfig(__dirname);
 
+// --- Web SQLite support -----------------------------------------------------
+// On web, expo-sqlite runs SQLite (wa-sqlite) inside a worker that loads a
+// `.wasm` engine, so Metro must bundle `.wasm` as an asset.
+config.resolver.assetExts.push('wasm');
+
+// That worker talks to the main thread over a SharedArrayBuffer, which browsers
+// only expose to cross-origin-isolated pages. Send the COOP/COEP headers on the
+// web dev server so SharedArrayBuffer is available and the database initializes
+// (and persists to OPFS). The static export's host must send the same headers.
+config.server = config.server || {};
+const previousEnhanceMiddleware = config.server.enhanceMiddleware;
+config.server.enhanceMiddleware = (metroMiddleware, metroServer) => {
+  const base = previousEnhanceMiddleware
+    ? previousEnhanceMiddleware(metroMiddleware, metroServer)
+    : metroMiddleware;
+  return (req, res, next) => {
+    res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+    res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp');
+    return base(req, res, next);
+  };
+};
+
 module.exports = config;

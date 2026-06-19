@@ -8,6 +8,7 @@ import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Spacing } from '@/constants/theme';
 import type { Note } from '@/data/notes';
+import { GRID_COLUMNS, gridEdgePadding, trailingSpacers } from '@/lib/grid';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
 import { useTheme } from '@/hooks/use-theme';
 import { useNotes } from '@/store/notes-store';
@@ -24,7 +25,7 @@ export default function SharedScreen() {
   const items: GridItem[] = notes
     .filter((note) => note.shared)
     .map((note) => ({ kind: 'note' as const, note }));
-  if (items.length % 2 === 1) items.push({ kind: 'spacer' });
+  for (let i = 0; i < trailingSpacers(items.length); i++) items.push({ kind: 'spacer' });
 
   return (
     <SwipeBackView>
@@ -33,10 +34,11 @@ export default function SharedScreen() {
         <FlatList
           data={items}
           keyExtractor={(item, index) => (item.kind === 'note' ? item.note.id : `spacer-${index}`)}
-          numColumns={2}
+          numColumns={GRID_COLUMNS}
           columnWrapperStyle={styles.row}
           contentContainerStyle={[
             styles.content,
+            gridEdgePadding,
             { paddingTop: insets.top + Spacing.two, paddingBottom: tabBarInset },
           ]}
           ListHeaderComponent={<ThemedText type="subtitle" style={styles.title}>Shared</ThemedText>}

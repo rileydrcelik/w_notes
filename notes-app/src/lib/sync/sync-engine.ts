@@ -15,6 +15,7 @@ import { Sentry } from '@/lib/sentry';
 import { db, type SyncPayload } from '@/lib/db';
 import { ApiError, apiFetch, syncConfigured } from './api';
 import { getDeviceKey, rotateDeviceKey } from './device-key';
+import { downloadCopaFile, uploadCopaFile } from './files';
 
 const SYNCED_UID = 'synced_uid';
 
@@ -70,6 +71,10 @@ async function runSync(): Promise<SyncResult> {
     // Ensure the device key exists + is persisted before the first request.
     await getDeviceKey();
 
+    // 0) Upload bytes for any file blocks not yet in S3, stamping each row with
+    //    its remote_key so the push below carries it across to other devices.
+    await uploadPendingFiles();
+
     // 1) Push local changes. The server takes them last-writer-wins; on success
     //    we clear the dirty flags for exactly what we sent.
     const dirty = await db.getDirty();
@@ -85,7 +90,11 @@ async function runSync(): Promise<SyncResult> {
     const changed = await db.applyServerRows(pulled);
     await db.setCursor(pulled.server_seq);
 
-    if (changed > 0) emitSynced();
+    // 3) Download bytes for any file blocks we now know about but don't hold
+    //    locally yet (e.g. created on another device).
+    const downloaded = await downloadMissingFiles();
+
+    if (changed > 0 || downloaded > 0) emitSynced();
     return { status: 'ok', cursor: pulled.server_seq, pushed, pulled: changed };
   } catch (e) {
     // 501 = endpoints not wired (shouldn't happen now, but stays graceful).
@@ -95,6 +104,44 @@ async function runSync(): Promise<SyncResult> {
     Sentry.captureException(e, { tags: { source: 'sync-engine' } });
     throw e;
   }
+}
+
+/**
+ * Uploads bytes for every file block that isn't in S3 yet, recording the
+ * returned object key on the row (which re-queues it to push). Each file is
+ * best-effort: a failure is logged and left pending for the next pass.
+ */
+async function uploadPendingFiles(): Promise<void> {
+  const uploads = await db.getCopaUploads();
+  for (const u of uploads) {
+    try {
+      const key = await uploadCopaFile(u.fileUri, u.mimeType);
+      await db.setCopaRemoteKey(u.id, key);
+    } catch (e) {
+      console.warn('[sync] file upload failed:', e);
+      Sentry.captureException(e, { tags: { source: 'sync-engine', op: 'upload' } });
+    }
+  }
+}
+
+/**
+ * Downloads bytes for every file block we know of (has a remote_key) but don't
+ * hold locally. Returns how many landed, so the caller can refresh the UI.
+ */
+async function downloadMissingFiles(): Promise<number> {
+  const downloads = await db.getCopaDownloads();
+  let landed = 0;
+  for (const d of downloads) {
+    try {
+      const { fileUri, thumbUri } = await downloadCopaFile(d);
+      await db.setCopaLocalFile(d.id, fileUri, thumbUri);
+      landed += 1;
+    } catch (e) {
+      console.warn('[sync] file download failed:', e);
+      Sentry.captureException(e, { tags: { source: 'sync-engine', op: 'download' } });
+    }
+  }
+  return landed;
 }
 
 // ---- Account transitions (merge on sign-in, clean swap on sign-out) ----

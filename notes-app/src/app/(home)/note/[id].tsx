@@ -20,6 +20,7 @@ import { ThemedView } from '@/components/themed-view';
 import { Spacing } from '@/constants/theme';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
 import { useTheme } from '@/hooks/use-theme';
+import { noFocusOutline } from '@/lib/web-style';
 import { useNotes } from '@/store/notes-store';
 
 export default function NoteScreen() {
@@ -101,7 +102,11 @@ export default function NoteScreen() {
             onLayout={(e) => setTitleHeight(e.nativeEvent.layout.height)}
             placeholder="Title"
             placeholderTextColor={theme.textSecondary}
-            style={[styles.title, { color: theme.text, paddingTop: insets.top + Spacing.two }]}
+            style={[
+              styles.title,
+              noFocusOutline,
+              { color: theme.text, paddingTop: insets.top + Spacing.two },
+            ]}
             multiline
           />
           <ScrollView

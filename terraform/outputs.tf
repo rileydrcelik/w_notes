@@ -27,3 +27,8 @@ output "ecs_service" {
   description = "ECS service name."
   value       = aws_ecs_service.api.name
 }
+
+output "attachments_bucket" {
+  description = "S3 bucket holding copa file attachments."
+  value       = aws_s3_bucket.attachments.bucket
+}

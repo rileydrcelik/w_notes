@@ -7,6 +7,7 @@ import { SwipeBackView } from '@/components/swipe-back-view';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Spacing } from '@/constants/theme';
+import { GRID_COLUMNS, gridEdgePadding, trailingSpacers } from '@/lib/grid';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
 import { useNotes } from '@/store/notes-store';
 
@@ -23,8 +24,10 @@ export default function FavoritesScreen() {
     ...favoriteFolders.map((folder) => ({ type: 'folder' as const, id: folder.id })),
     ...favoriteNotes.map((note) => ({ type: 'note' as const, id: note.id })),
   ];
-  // Keep a lone/odd last card to a single column instead of spanning both.
-  if (items.length % 2 === 1) items.push({ type: 'spacer', id: 'spacer' });
+  // Keep a partial last row at single-card width instead of stretching it.
+  for (let i = 0; i < trailingSpacers(items.length); i++) {
+    items.push({ type: 'spacer', id: `spacer-${i}` });
+  }
 
   return (
     <SwipeBackView>
@@ -33,9 +36,9 @@ export default function FavoritesScreen() {
         <FlatList
           data={items}
           keyExtractor={(item) => `${item.type}-${item.id}`}
-          numColumns={2}
+          numColumns={GRID_COLUMNS}
           columnWrapperStyle={styles.row}
-          contentContainerStyle={[styles.content, { paddingBottom: tabBarInset }]}
+          contentContainerStyle={[styles.content, gridEdgePadding, { paddingBottom: tabBarInset }]}
           ListHeaderComponent={
             <ThemedText type="subtitle" style={[styles.title, { paddingTop: insets.top + Spacing.two }]}>
               Favorites

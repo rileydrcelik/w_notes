@@ -8,7 +8,7 @@ from sentry_sdk.integrations.fastapi import FastApiIntegration
 from sentry_sdk.integrations.sqlalchemy import SqlalchemyIntegration
 
 from app.config import get_settings
-from app.routers import health, sync
+from app.routers import files, health, sync
 
 settings = get_settings()
 
@@ -27,3 +27,4 @@ app = FastAPI(title="w_notes sync", version="0.1.0")
 
 app.include_router(health.router)
 app.include_router(sync.router)
+app.include_router(files.router)

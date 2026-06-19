@@ -2,7 +2,7 @@ import Feather from '@expo/vector-icons/Feather';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter, type Href } from 'expo-router';
 import { useState, type ComponentProps, type ReactNode } from 'react';
-import { Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import { Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import Animated, {
   FadeIn,
   FadeOut,
@@ -27,8 +27,9 @@ const INDENT = Spacing.four;
 type FeatherName = ComponentProps<typeof Feather>['name'];
 
 /**
- * Right-hand drawer (73.75% width) listing quick-access shortcuts and the full
- * note hierarchy. Rendered from inside the floating tab bar so the navbar
+ * Right-hand drawer (73.75% width on phones, 33% on web) listing quick-access
+ * shortcuts and the full note hierarchy. Rendered from inside the floating tab
+ * bar so the navbar
  * always stacks above it. Always mounted; the inner content mounts/unmounts on
  * `open` so the slide/fade exit animations get a chance to play.
  */
@@ -305,7 +306,8 @@ const styles = StyleSheet.create({
     top: 0,
     bottom: 0,
     right: 0,
-    width: '73.75%',
+    // Narrower on web's wider viewport; the phone drawer stays at 73.75%.
+    width: Platform.select({ web: '33%', default: '73.75%' }),
   },
   safeArea: {
     flex: 1,

@@ -39,6 +39,11 @@ class CopaItemIn(_Syncable):
     label: str = ""
     content: str = ""
     favorite: bool = False
+    # File attachment metadata; the bytes live in S3 under ``remote_key``.
+    file_name: str | None = None
+    mime_type: str | None = None
+    file_size: int | None = None
+    remote_key: str | None = None
 
 
 class PushRequest(BaseModel):

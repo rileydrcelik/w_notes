@@ -1,5 +1,5 @@
 import Feather from '@expo/vector-icons/Feather';
-import { Pressable, StyleSheet, TextInput } from 'react-native';
+import { Platform, Pressable, StyleSheet, TextInput } from 'react-native';
 
 import { ThemedView } from '@/components/themed-view';
 import { Spacing } from '@/constants/theme';
@@ -24,7 +24,9 @@ export function SearchBar({
   const theme = useTheme();
 
   return (
-    <ThemedView type="backgroundElement" style={styles.bar}>
+    <ThemedView
+      type="backgroundElement"
+      style={[styles.bar, Platform.OS === 'web' && styles.barWeb]}>
       <Feather name="search" size={18} color={theme.textSecondary} />
       <TextInput
         value={value}
@@ -58,6 +60,14 @@ const styles = StyleSheet.create({
     height: SEARCH_BAR_HEIGHT,
     paddingHorizontal: Spacing.three,
     borderRadius: Spacing.three,
+  },
+  // On web the bar would otherwise stretch the full window width; cap it and
+  // center it. The cap is wider than the sidebar's search field, so the in-
+  // drawer search bar still fills its (narrower) column unaffected.
+  barWeb: {
+    maxWidth: 560,
+    width: '100%',
+    alignSelf: 'center',
   },
   input: {
     flex: 1,

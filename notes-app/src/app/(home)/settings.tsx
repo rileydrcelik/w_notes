@@ -47,6 +47,9 @@ export default function SettingsScreen() {
         <Stack.Screen options={{ headerShown: false }} />
         <SafeAreaView style={styles.safeArea} edges={['top']}>
           <ScrollView contentContainerStyle={[styles.content, { paddingBottom: tabBarInset }]}>
+            {/* Centered, width-capped column so rows don't stretch edge-to-edge
+                on web's wide viewport (a no-op on narrower phone screens). */}
+            <View style={styles.inner}>
             <ThemedText type="subtitle" style={styles.title}>
               Settings
             </ThemedText>
@@ -94,6 +97,7 @@ export default function SettingsScreen() {
                   </Pressable>
                 );
               })}
+            </View>
             </View>
           </ScrollView>
         </SafeAreaView>
@@ -224,6 +228,13 @@ const styles = StyleSheet.create({
   },
   content: {
     padding: Spacing.four,
+    alignItems: 'center',
+  },
+  // The actual settings column: full width on phones, capped and centered on
+  // wider screens so rows keep a sensible width.
+  inner: {
+    width: '100%',
+    maxWidth: 600,
     gap: Spacing.two,
   },
   title: {

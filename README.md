@@ -33,6 +33,30 @@ npx expo start         # press a / i to open on the dev build
 
 > Re-run `npx expo run:android` again only when native deps change.
 
+## Running on the web
+
+The same app runs in the browser via `react-native-web`:
+
+```bash
+cd notes-app
+npm run web            # expo start --web
+```
+
+The web build mirrors the mobile UI but swaps a few native-only pieces for web
+equivalents (resolved through `*.web.tsx` / `*.web.ts` files):
+
+- **Markdown instead of rich text.** Bodies are stored as the rich editor's HTML
+  everywhere (the canonical, cross-device format); on web the editor edits plain
+  **markdown** and converts to/from that HTML (`src/lib/markdown.ts`), so a
+  web-edited note still renders in the native rich editor and vice-versa.
+- **SQLite in the browser.** `expo-sqlite` runs SQLite (wasm) in a worker and
+  persists to OPFS — which needs the page cross-origin-isolated, so
+  `metro.config.js` sends `Cross-Origin-Opener-Policy` / `-Embedder-Policy`
+  headers on the web dev server. A static export (`npx expo export --platform
+  web`) must be served with those same two headers.
+- **Local-only first pass.** No sign-in/sync on web yet; copa file attachments
+  are session-only (object URLs don't survive a reload).
+
 ## Where the data lives
 
 The database is a file (`wnotes.db`) inside the app's own sandbox on the

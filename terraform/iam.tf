@@ -55,3 +55,18 @@ resource "aws_iam_role" "task" {
   name               = "${local.name}-ecs-task"
   assume_role_policy = data.aws_iam_policy_document.ecs_assume.json
 }
+
+# The app presigns S3 upload/download URLs as this role, so it must hold the
+# operations it signs. Scoped to the attachments bucket's objects only.
+data "aws_iam_policy_document" "task_s3" {
+  statement {
+    actions   = ["s3:GetObject", "s3:PutObject"]
+    resources = ["${aws_s3_bucket.attachments.arn}/*"]
+  }
+}
+
+resource "aws_iam_role_policy" "task_s3" {
+  name   = "${local.name}-attachments-s3"
+  role   = aws_iam_role.task.id
+  policy = data.aws_iam_policy_document.task_s3.json
+}

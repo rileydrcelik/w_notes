@@ -2,7 +2,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { useState } from 'react';
 import { FlatList, StyleSheet, View } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
-import { runOnJS } from 'react-native-reanimated';
+import Animated, { runOnJS } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { BottomFade } from '@/components/bottom-fade';
@@ -11,6 +11,8 @@ import { SearchBar, SEARCH_BAR_HEIGHT } from '@/components/search-bar';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Spacing } from '@/constants/theme';
+import { GRID_COLUMNS, gridEdgePadding, trailingSpacers } from '@/lib/grid';
+import { useScreenFadeStyle } from '@/hooks/use-screen-fade';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
 import { useTheme } from '@/hooks/use-theme';
 import { useNotes } from '@/store/notes-store';
@@ -32,6 +34,9 @@ export default function HomeScreen() {
   const theme = useTheme();
   const { openSidebar } = useSidebar();
   const [query, setQuery] = useState('');
+  // Web has no native stack transition; fade/slide the screen in when it gains
+  // focus (incl. when revealed by backing out of a note).
+  const fadeStyle = useScreenFadeStyle();
 
   // The search field floats; the grid scrolls beneath it. Reserve enough top
   // padding that the first row clears the bar, and fade content out behind it.
@@ -57,9 +62,11 @@ export default function HomeScreen() {
     ...matchedFolders.map((folder) => ({ type: 'folder' as const, id: folder.id })),
     ...matchedNotes.map((note) => ({ type: 'note' as const, id: note.id })),
   ];
-  // An odd count would leave the last card stretching across both columns;
-  // a transparent spacer keeps it to a single column instead.
-  if (items.length % 2 === 1) items.push({ type: 'spacer', id: 'spacer' });
+  // A partial last row would stretch its cards to fill the width; transparent
+  // spacers keep them at single-column width instead.
+  for (let i = 0; i < trailingSpacers(items.length); i++) {
+    items.push({ type: 'spacer', id: `spacer-${i}` });
+  }
 
   // A leftward swipe (right-to-left) reveals the right-hand drawer. Claim only
   // leftward drags so a rightward swipe still pages over to copa, and bail on
@@ -75,14 +82,16 @@ export default function HomeScreen() {
 
   return (
     <GestureDetector gesture={swipeOpen}>
+      <Animated.View style={[styles.container, fadeStyle]}>
       <ThemedView style={styles.container}>
         <FlatList
           data={items}
           keyExtractor={(item) => `${item.type}-${item.id}`}
-          numColumns={2}
+          numColumns={GRID_COLUMNS}
           columnWrapperStyle={styles.row}
           contentContainerStyle={[
             styles.content,
+            gridEdgePadding,
             { paddingTop: contentTop, paddingBottom: tabBarInset },
           ]}
           keyboardShouldPersistTaps="handled"
@@ -115,6 +124,7 @@ export default function HomeScreen() {
         </View>
         <BottomFade />
       </ThemedView>
+      </Animated.View>
     </GestureDetector>
   );
 }

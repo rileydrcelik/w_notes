@@ -9,6 +9,7 @@ import { SwipeBackView } from '@/components/swipe-back-view';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Spacing } from '@/constants/theme';
+import { GRID_COLUMNS, gridEdgePadding, trailingSpacers } from '@/lib/grid';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
 import { useTheme } from '@/hooks/use-theme';
 import { useNotes, type TrashEntry } from '@/store/notes-store';
@@ -35,7 +36,7 @@ export default function TrashScreen() {
   const [restoreTarget, setRestoreTarget] = useState<TrashEntry | null>(null);
 
   const items: GridItem[] = trash.map((entry) => ({ kind: 'entry' as const, entry }));
-  if (items.length % 2 === 1) items.push({ kind: 'spacer' });
+  for (let i = 0; i < trailingSpacers(items.length); i++) items.push({ kind: 'spacer' });
 
   const restoreName =
     restoreTarget?.kind === 'note' ? restoreTarget.note.title : restoreTarget?.folder.name;
@@ -52,10 +53,11 @@ export default function TrashScreen() {
         <FlatList
           data={items}
           keyExtractor={(it, index) => (it.kind === 'entry' ? it.entry.id : `spacer-${index}`)}
-          numColumns={2}
+          numColumns={GRID_COLUMNS}
           columnWrapperStyle={styles.row}
           contentContainerStyle={[
             styles.content,
+            gridEdgePadding,
             { paddingTop: insets.top + Spacing.two, paddingBottom: tabBarInset },
           ]}
           ListHeaderComponent={<ThemedText type="subtitle" style={styles.title}>Trash</ThemedText>}
