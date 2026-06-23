@@ -58,5 +58,9 @@ export function markdownToHtml(md: string): string {
     );
     return `<ul data-type="checkbox">${items}</ul>`;
   });
-  return html;
+  // The native rich editor (react-native-enriched) only parses a body as rich
+  // text when it's wrapped in <html>…</html> — that's the canonical format it
+  // emits and syncs. Without the wrapper, a web-edited note shows up as raw HTML
+  // on mobile. Match the native wrapper exactly.
+  return `<html>\n${html}\n</html>`;
 }

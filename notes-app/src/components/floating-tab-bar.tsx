@@ -1,7 +1,7 @@
 import Feather from '@expo/vector-icons/Feather';
 import { type Href, usePathname, useRouter } from 'expo-router';
 import type { ComponentProps, RefObject } from 'react';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import {
   Keyboard,
   Platform,
@@ -26,7 +26,12 @@ import { GlassSurface } from '@/components/glass-surface';
 import { RightSidebar } from '@/components/right-sidebar';
 import { ThemedText } from '@/components/themed-text';
 import type { Note } from '@/data/notes';
-import { dismissActiveEditor } from '@/lib/active-editor';
+import {
+  dismissActiveEditor,
+  editorJustDismissed,
+  isEditorActive,
+  subscribeActiveEditor,
+} from '@/lib/active-editor';
 import { Spacing, TabBar } from '@/constants/theme';
 import { useTabBarBottom } from '@/hooks/use-tab-bar-inset';
 import { useTheme } from '@/hooks/use-theme';
@@ -50,6 +55,11 @@ function useKeyboardVisible() {
     };
   }, []);
   return visible;
+}
+
+/** Tracks whether a body editor is in edit mode (web has no keyboard to watch). */
+function useEditorActive() {
+  return useSyncExternalStore(subscribeActiveEditor, isEditorActive, () => false);
 }
 
 type FeatherName = ComponentProps<typeof Feather>['name'];
@@ -93,6 +103,11 @@ export function FloatingTabBar({ blurTarget }: FloatingTabBarProps) {
   // While the keyboard is up, the bar relocates to the top-right and stacks
   // vertically so it never sits over the keyboard.
   const vertical = useKeyboardVisible();
+  // The trailing button becomes a "done" check while editing. On native that's
+  // driven by the keyboard; web has no on-screen keyboard, so an active editor
+  // surfaces the same check (tapping it returns to the read view).
+  const editorActive = useEditorActive();
+  const doneMode = vertical || (Platform.OS === 'web' && editorActive);
   // Show back on every page except the home screen (which lives at "/").
   const showBack = pathname !== '/';
 
@@ -184,7 +199,7 @@ export function FloatingTabBar({ blurTarget }: FloatingTabBarProps) {
           <View pointerEvents="box-none" style={[styles.sideSlot, slotStyle]}>
             <CreateButton
               iconColor={colors.textSecondary}
-              keyboardVisible={vertical}
+              keyboardVisible={doneMode}
               blurTarget={blurTarget}
               onOpenMenu={(anchor) => setCreateMenu({ anchor })}
             />
@@ -374,10 +389,13 @@ function CreateButton({
 
   const onPress = () => {
     // Blur the native rich editor (Keyboard.dismiss can't) before dismissing.
-    dismissActiveEditor();
+    const dismissed = dismissActiveEditor();
     Keyboard.dismiss();
-    // With the keyboard up this button just confirms/dismisses; otherwise create.
-    if (keyboardVisible) return;
+    // This button just confirms/dismisses while editing — whether the keyboard is
+    // up (native) or an editor was active when the press began. On web the press
+    // blurs the editor first, so `dismissActiveEditor` is already a no-op by now;
+    // `editorJustDismissed` catches that so we don't fall through to "create".
+    if (keyboardVisible || dismissed || editorJustDismissed()) return;
     // On the copa tab a tap opens the anchored menu; elsewhere it creates a note.
     if (onCopa) {
       openAnchoredMenu();

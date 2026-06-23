@@ -1,9 +1,10 @@
-import { useState, type RefObject } from 'react';
+import { useEffect, useState, type RefObject } from 'react';
 import { Pressable, StyleSheet, TextInput } from 'react-native';
 import type { EnrichedTextInputInstance, OnChangeStateEvent } from 'react-native-enriched';
 
 import { ThemedText } from '@/components/themed-text';
 import { useTheme } from '@/hooks/use-theme';
+import { setActiveEditorDismiss } from '@/lib/active-editor';
 import { htmlToMarkdown, markdownToHtml } from '@/lib/markdown';
 import { noFocusOutline } from '@/lib/web-style';
 
@@ -46,6 +47,18 @@ export function MarkdownEditor({ value, onChangeText, placeholder, onFocusChange
   // Grow the field to fit its content (instead of scrolling inside a fixed box),
   // so the whole note is visible and the page scroll handles overflow.
   const [height, setHeight] = useState(MIN_HEIGHT);
+
+  // Register with the active-editor bridge while editing so the navbar's "done"
+  // check (web has no keyboard to track) can return us to the rendered view —
+  // mirroring how the native editor exposes a blur.
+  useEffect(() => {
+    if (!editing) return;
+    setActiveEditorDismiss(() => {
+      setEditing(false);
+      onFocusChange?.(false);
+    });
+    return () => setActiveEditorDismiss(null);
+  }, [editing, onFocusChange]);
 
   // ---- View mode: rendered, read-only; tap to edit. ----
   if (!editing) {

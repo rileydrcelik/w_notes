@@ -12,6 +12,7 @@ import { Sentry } from '@/lib/sentry';
 import { AuthProvider } from '@/lib/auth/auth-context';
 import { AnimatedSplashOverlay } from '@/components/animated-icon';
 import { FloatingTabBar } from '@/components/floating-tab-bar';
+import { MarkdownHelp } from '@/components/markdown-help';
 import { CopaOptionsProvider, useCopaOptions } from '@/components/copa-options-modal';
 import { ItemOptionsProvider } from '@/components/item-options-modal';
 import { CopaProvider } from '@/store/copa-store';
@@ -104,6 +105,7 @@ function AppShell() {
             <Screens />
           )}
           <FloatingTabBar blurTarget={blurTarget} />
+          <MarkdownHelp />
         </CopaOptionsProvider>
         </ItemOptionsProvider>
         </SidebarProvider>
