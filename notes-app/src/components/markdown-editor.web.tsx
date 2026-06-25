@@ -1,11 +1,16 @@
-import { useEffect, useState, type RefObject } from 'react';
+import { useEffect, useState, type MouseEvent as ReactMouseEvent, type RefObject } from 'react';
 import { Pressable, StyleSheet, TextInput } from 'react-native';
 import type { EnrichedTextInputInstance, OnChangeStateEvent } from 'react-native-enriched';
 
 import { ThemedText } from '@/components/themed-text';
 import { useTheme } from '@/hooks/use-theme';
 import { setActiveEditorDismiss } from '@/lib/active-editor';
-import { htmlToMarkdown, markdownToHtml } from '@/lib/markdown';
+import {
+  htmlToMarkdown,
+  markdownToHtml,
+  markdownToViewHtml,
+  toggleTaskAt,
+} from '@/lib/markdown';
 import { noFocusOutline } from '@/lib/web-style';
 
 /** Tall starting height so there's room to write before the field grows. */
@@ -62,7 +67,24 @@ export function MarkdownEditor({ value, onChangeText, placeholder, onFocusChange
 
   // ---- View mode: rendered, read-only; tap to edit. ----
   if (!editing) {
-    const html = markdownToHtml(text);
+    const html = markdownToViewHtml(text);
+    // Toggle a checkbox in place instead of entering edit mode. Map the clicked
+    // box to its source-order index among all checkboxes, flip that task item,
+    // and persist — the re-render reflects the new checked state.
+    const onViewClick = (e: ReactMouseEvent<HTMLDivElement>) => {
+      const target = e.target as HTMLElement;
+      if (!(target instanceof HTMLInputElement) || target.type !== 'checkbox') return;
+      e.preventDefault();
+      e.stopPropagation();
+      const boxes = Array.from(
+        e.currentTarget.querySelectorAll<HTMLInputElement>('input[type="checkbox"]'),
+      );
+      const index = boxes.indexOf(target);
+      if (index < 0) return;
+      const next = toggleTaskAt(text, index);
+      setText(next);
+      onChangeText(markdownToHtml(next));
+    };
     return (
       <Pressable
         onPress={() => {
@@ -75,6 +97,7 @@ export function MarkdownEditor({ value, onChangeText, placeholder, onFocusChange
         {html ? (
           <div
             className="md-view"
+            onClick={onViewClick}
             style={{ color: theme.text, fontSize: 16, lineHeight: 1.5 }}
             // Body HTML is the user's own local content; rendering it is the point.
             dangerouslySetInnerHTML={{ __html: html }}

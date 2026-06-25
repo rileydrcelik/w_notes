@@ -43,6 +43,35 @@ export function htmlToMarkdown(html: string): string {
   return turndown.turndown(html).trim();
 }
 
+/**
+ * Markdown source → HTML for the read-only web view. Unlike `markdownToHtml`
+ * (which reshapes task lists into the native `<ul data-type="checkbox">` format
+ * for storage), this keeps GFM's `<input type="checkbox">` so the browser
+ * actually renders checkboxes instead of plain bullets.
+ */
+export function markdownToViewHtml(md: string): string {
+  if (!md.trim()) return '';
+  // marked emits task-list checkboxes as `disabled`; drop that so the view can
+  // make them clickable (the editor toggles them in place — see markdown-editor.web).
+  return (marked.parse(md, { async: false }) as string)
+    .trim()
+    .replace(/(<input\b[^>]*?)\s+disabled=""/gi, '$1');
+}
+
+/**
+ * Toggle the Nth GFM task-list checkbox (0-based, in source order) in a markdown
+ * string and return the updated markdown. Used by the read-only web view so a
+ * checkbox click flips `- [ ]` ↔ `- [x]` without opening the editor.
+ */
+export function toggleTaskAt(md: string, index: number): string {
+  let i = -1;
+  return md.replace(/^(\s*[-*+]\s+)\[([ xX])\]/gm, (whole, prefix: string, mark: string) => {
+    i += 1;
+    if (i !== index) return whole;
+    return `${prefix}[${mark.toLowerCase() === 'x' ? ' ' : 'x'}]`;
+  });
+}
+
 /** Markdown source from the web editor → HTML body to store/sync. */
 export function markdownToHtml(md: string): string {
   if (!md.trim()) return '';

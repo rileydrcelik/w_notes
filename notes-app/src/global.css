@@ -51,6 +51,16 @@ textarea:focus {
   border-left: 3px solid currentColor;
   opacity: 0.8;
 }
+/* GFM task lists render with a real <input type="checkbox">; drop the list
+   bullet so they read as checkboxes, not bulleted boxes. */
+.md-view li:has(> input[type='checkbox']) {
+  list-style: none;
+}
+.md-view li > input[type='checkbox'] {
+  margin: 0 0.4em 0 0;
+  vertical-align: middle;
+  cursor: pointer;
+}
 .md-view code {
   font-family: var(--font-mono);
 }

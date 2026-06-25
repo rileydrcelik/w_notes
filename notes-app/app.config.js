@@ -15,7 +15,10 @@ function variantConfig() {
   if (IS_PROD) {
     return {
       name: 'notes-app',
-      package: BASE_PACKAGE,
+      // New Play app entry: the old `com.rileydrcelik.wnotes` listing is locked to
+      // a lost upload key, and Play won't let a package name be reused — so prod
+      // moves to `.app`. Dev/preview keep deriving from BASE_PACKAGE below.
+      package: `${BASE_PACKAGE}.app`,
       scheme: 'notesapp',
     };
   }
