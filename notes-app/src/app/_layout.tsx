@@ -2,7 +2,7 @@ import { BlurTargetView } from 'expo-blur';
 import { DarkTheme, DefaultTheme, ThemeProvider, usePathname } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { TopTabs } from 'expo-router/js-top-tabs';
-import { useMemo, useState, type RefObject } from 'react';
+import { useEffect, useMemo, useState, type RefObject } from 'react';
 import { Platform, StyleSheet, type View } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 
@@ -19,6 +19,7 @@ import { CopaProvider } from '@/store/copa-store';
 import { NotesProvider } from '@/store/notes-store';
 import { SidebarProvider, useSidebar } from '@/store/sidebar-store';
 import { AppThemeProvider, useThemePref } from '@/store/theme-store';
+import { installSyncFlush } from '@/lib/sync/flush-on-hide';
 
 // Top-level routes that the pager slides between. Everything else (a folder or
 // note) lives inside the home group's stack, which keeps its own back-swipe.
@@ -71,6 +72,10 @@ function Screens() {
 
 function AppShell() {
   const { scheme } = useThemePref();
+
+  // Web: push pending local edits before the tab is hidden/closed so a quick
+  // edit-then-leave isn't stranded until the next sync trigger (native no-op).
+  useEffect(() => installSyncFlush(), []);
 
   // Android backdrop blur is capture-based: the navbar's BlurView blurs the
   // content of a BlurTargetView, which must wrap the screens but NOT the navbar

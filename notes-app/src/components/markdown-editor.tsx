@@ -100,6 +100,13 @@ export function MarkdownEditor({
       cursorColor={theme.text}
       selectionColor={hexToRgba(theme.textSecondary, 0.3)}
       scrollEnabled={false}
+      // Run incoming HTML through the library's Gumbo normalizer before applying
+      // it. Web-edited bodies arrive as standard HTML (e.g. marked emits
+      // `<ul>\n<li>…`, `<strong>`, `<pre>`); without normalization the strict
+      // parser rejects those — on iOS it throws and falls back to showing the raw
+      // tags as text. The normalizer canonicalizes them into the editor's tag
+      // subset (`<ul><li>`, `<b>`, `<codeblock>`, …) so lists & co. render.
+      useHtmlNormalizer
       // Android: apply size updates synchronously so a newline (which grows the
       // input) doesn't flicker the layout and bounce the caret back up.
       androidExperimentalSynchronousEvents

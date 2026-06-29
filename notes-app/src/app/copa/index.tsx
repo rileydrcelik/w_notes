@@ -8,6 +8,7 @@ import {
   type LayoutChangeEvent,
   Platform,
   Pressable,
+  RefreshControl,
   StyleSheet,
   type TextLayoutEventData,
   View,
@@ -25,6 +26,7 @@ import { Spacing } from '@/constants/theme';
 import { type CopaItem } from '@/data/copa';
 import { useDoubleTap } from '@/hooks/use-double-tap';
 import { useScreenFadeStyle } from '@/hooks/use-screen-fade';
+import { useSyncRefresh } from '@/hooks/use-sync-refresh';
 import { htmlToPlainText } from '@/lib/html-text';
 import { gridEdgePadding } from '@/lib/grid';
 import { downloadCopaFile, fileIconFor, formatBytes, isImage, isVideo } from '@/lib/copa-files';
@@ -204,6 +206,7 @@ export default function CopaScreen() {
   const insets = useSafeAreaInsets();
   const theme = useTheme();
   const { items } = useCopa();
+  const { refreshing, onRefresh } = useSyncRefresh();
   const [query, setQuery] = useState('');
   const fadeStyle = useScreenFadeStyle();
 
@@ -250,6 +253,14 @@ export default function CopaScreen() {
         ]}
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="on-drag"
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            tintColor={theme.textSecondary}
+            colors={[theme.textSecondary]}
+          />
+        }
         ListEmptyComponent={
           searching ? (
             <ThemedText themeColor="textSecondary" style={styles.empty}>

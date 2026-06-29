@@ -1,4 +1,4 @@
-import { useEffect, useState, type MouseEvent as ReactMouseEvent, type RefObject } from 'react';
+import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent, type RefObject } from 'react';
 import { Pressable, StyleSheet, TextInput } from 'react-native';
 import type { EnrichedTextInputInstance, OnChangeStateEvent } from 'react-native-enriched';
 
@@ -11,7 +11,11 @@ import {
   markdownToViewHtml,
   toggleTaskAt,
 } from '@/lib/markdown';
+import { markdownToStoredHtml } from '@/lib/markdown-convert.web';
 import { noFocusOutline } from '@/lib/web-style';
+
+/** Debounce before asking the backend to convert — coalesces a burst of typing. */
+const CONVERT_DEBOUNCE_MS = 400;
 
 /** Tall starting height so there's room to write before the field grows. */
 const MIN_HEIGHT = 360;
@@ -53,6 +57,27 @@ export function MarkdownEditor({ value, onChangeText, placeholder, onFocusChange
   // so the whole note is visible and the page scroll handles overflow.
   const [height, setHeight] = useState(MIN_HEIGHT);
 
+  // Conversion is owned by the backend, but it's async — so on every edit we
+  // persist the local JS conversion immediately (keeps the parent's body fresh
+  // for its debounced save and the leave-screen flush, and works offline), then
+  // shortly after replace it with the authoritative backend HTML. A ref tracks
+  // the latest markdown so a slow conversion can't clobber a newer edit.
+  const latestText = useRef(text);
+  const convertTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const commit = (md: string) => {
+    latestText.current = md;
+    onChangeText(markdownToHtml(md)); // immediate, offline-safe
+    if (convertTimer.current) clearTimeout(convertTimer.current);
+    convertTimer.current = setTimeout(() => {
+      void markdownToStoredHtml(md).then((html) => {
+        if (latestText.current === md) onChangeText(html);
+      });
+    }, CONVERT_DEBOUNCE_MS);
+  };
+  useEffect(() => () => {
+    if (convertTimer.current) clearTimeout(convertTimer.current);
+  }, []);
+
   // Register with the active-editor bridge while editing so the navbar's "done"
   // check (web has no keyboard to track) can return us to the rendered view —
   // mirroring how the native editor exposes a blur.
@@ -83,7 +108,7 @@ export function MarkdownEditor({ value, onChangeText, placeholder, onFocusChange
       if (index < 0) return;
       const next = toggleTaskAt(text, index);
       setText(next);
-      onChangeText(markdownToHtml(next));
+      commit(next);
     };
     return (
       <Pressable
@@ -122,7 +147,7 @@ export function MarkdownEditor({ value, onChangeText, placeholder, onFocusChange
       value={text}
       onChangeText={(next) => {
         setText(next);
-        onChangeText(markdownToHtml(next));
+        commit(next);
       }}
       placeholder={placeholder}
       placeholderTextColor={theme.textSecondary}

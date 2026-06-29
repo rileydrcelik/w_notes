@@ -1,6 +1,6 @@
 import { LinearGradient } from 'expo-linear-gradient';
 import { useState } from 'react';
-import { FlatList, StyleSheet, View } from 'react-native';
+import { FlatList, RefreshControl, StyleSheet, View } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, { runOnJS } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -13,6 +13,7 @@ import { ThemedView } from '@/components/themed-view';
 import { Spacing } from '@/constants/theme';
 import { GRID_COLUMNS, gridEdgePadding, trailingSpacers } from '@/lib/grid';
 import { useScreenFadeStyle } from '@/hooks/use-screen-fade';
+import { useSyncRefresh } from '@/hooks/use-sync-refresh';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
 import { useTheme } from '@/hooks/use-theme';
 import { useNotes } from '@/store/notes-store';
@@ -33,6 +34,7 @@ export default function HomeScreen() {
   const insets = useSafeAreaInsets();
   const theme = useTheme();
   const { openSidebar } = useSidebar();
+  const { refreshing, onRefresh } = useSyncRefresh();
   const [query, setQuery] = useState('');
   // Web has no native stack transition; fade/slide the screen in when it gains
   // focus (incl. when revealed by backing out of a note).
@@ -96,6 +98,14 @@ export default function HomeScreen() {
           ]}
           keyboardShouldPersistTaps="handled"
           keyboardDismissMode="on-drag"
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={onRefresh}
+              tintColor={theme.textSecondary}
+              colors={[theme.textSecondary]}
+            />
+          }
           ListEmptyComponent={
             searching ? (
               <ThemedText themeColor="textSecondary" style={styles.empty}>
