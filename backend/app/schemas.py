@@ -66,15 +66,3 @@ class PullResponse(BaseModel):
     notes: list[NoteIn] = []
     copa_items: list[CopaItemIn] = []
     server_seq: int
-
-
-class ToHtmlRequest(BaseModel):
-    """Markdown from the web editor to convert into a stored rich-text body."""
-
-    markdown: str = ""
-
-
-class ToHtmlResponse(BaseModel):
-    # The native rich editor's HTML (wrapped in <html>…</html>), ready to store
-    # and sync. Empty string for empty input.
-    html: str = ""
