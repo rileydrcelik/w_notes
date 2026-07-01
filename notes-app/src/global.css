@@ -6,6 +6,15 @@
     ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, Courier New, monospace;
   --font-rounded: 'SF Pro Rounded', 'Hiragino Maru Gothic ProN', Meiryo, 'MS PGothic', sans-serif;
   --font-serif: Georgia, 'Times New Roman', serif;
+  --font-sans: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+}
+
+/* Base font for raw-HTML surfaces on web (e.g. the rich editor's contenteditable
+   and any rendered body). React Native Web sets its own font on RN text
+   components inline; this only catches plain HTML, which would otherwise fall
+   back to the browser default serif (Times New Roman). */
+body {
+  font-family: var(--font-sans);
 }
 
 /* No blue focus ring on web text fields — the editing surfaces are meant to be

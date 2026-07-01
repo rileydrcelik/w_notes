@@ -8,11 +8,14 @@ type Props = {
 };
 
 /**
- * No-op on web: the formatting toolbar drives the native rich editor's
- * imperative commands, which don't exist for the markdown textarea. The web
- * editor edits raw markdown, so there's nothing to format. Kept as a matching
- * export so the note/copa screens can render `<FormattingToolbar>` unchanged.
+ * No formatting toolbar on web. The web editor (`markdown-editor.web.tsx`) is a
+ * TipTap editor with markdown-style keyboard input (`**bold**`, `# `, `- `,
+ * `1. `, `> `, `[ ] `, `` ` ``) and undo/redo, so formatting is applied by typing
+ * rather than tapping a bar. The screens still render `<FormattingToolbar>`
+ * unconditionally with the same props as native; this platform variant just
+ * renders nothing.
  */
-export function FormattingToolbar(_props: Props) {
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+export function FormattingToolbar(_props: Props): null {
   return null;
 }
