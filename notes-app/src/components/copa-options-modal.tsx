@@ -4,6 +4,7 @@ import type { ComponentProps, ReactNode } from 'react';
 import { createContext, useCallback, useContext, useMemo, useState } from 'react';
 import {
   Keyboard,
+  Platform,
   Pressable,
   Share,
   StyleSheet,
@@ -334,7 +335,10 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0,0,0,0.35)',
   },
   sheetHost: {
+    width: '100%',
     paddingHorizontal: Spacing.three,
+    // Full-width bottom sheet on mobile; capped and centred on wide web windows.
+    ...(Platform.OS === 'web' ? { maxWidth: 360, alignSelf: 'center' as const } : null),
   },
   sheet: {
     overflow: 'hidden',
