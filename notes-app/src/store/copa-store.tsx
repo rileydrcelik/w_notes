@@ -11,6 +11,7 @@ import { AppState } from 'react-native';
 
 import { Sentry } from '@/lib/sentry';
 import { db } from '@/lib/db';
+import { isDbLockedError } from '@/lib/web-db-lock';
 import { importPickedFile } from '@/lib/copa-files';
 import { requestSync, subscribeSynced, syncNow } from '@/lib/sync/sync-engine';
 import type { CopaItem } from '@/data/copa';
@@ -60,6 +61,8 @@ export function CopaProvider({ children }: { children: ReactNode }) {
     try {
       setItems(await db.listCopa());
     } catch (e) {
+      // Follower tab without DB access (DbTabGuard covers this); not an error.
+      if (isDbLockedError(e)) return;
       console.warn('[copa] failed to load from device:', e);
       Sentry.captureException(e, { tags: { source: 'copa-store', op: 'bootstrap' } });
     }

@@ -11,6 +11,7 @@ import { AppState } from 'react-native';
 
 import { Sentry } from '@/lib/sentry';
 import { db, type TrashEntry } from '@/lib/db';
+import { isDbLockedError } from '@/lib/web-db-lock';
 import { requestSync, subscribeSynced, syncNow } from '@/lib/sync/sync-engine';
 import type { Folder, Note } from '@/data/notes';
 
@@ -101,6 +102,9 @@ export function NotesProvider({ children }: { children: ReactNode }) {
       setFolders(data.folders);
       setTrash(data.trash);
     } catch (e) {
+      // A follower browser tab can't open the OPFS database (another tab owns it);
+      // the DbTabGuard handles that case, so don't report it as an error.
+      if (isDbLockedError(e)) return;
       console.warn('[notes] failed to load from device:', e);
       Sentry.captureException(e, { tags: { source: 'notes-store', op: 'bootstrap' } });
     }

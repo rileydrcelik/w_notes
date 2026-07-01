@@ -147,7 +147,16 @@ export type SyncPayload = {
 let dbPromise: Promise<SQLite.SQLiteDatabase> | null = null;
 
 function getDb(): Promise<SQLite.SQLiteDatabase> {
-  if (!dbPromise) dbPromise = open();
+  if (!dbPromise) {
+    // Don't cache a rejected open: on web the first attempt can fail because
+    // another tab holds the OPFS lock (see lib/web-db-lock.ts), and caching that
+    // rejection would brick every later query in this tab. Clearing it lets a
+    // retry succeed once this tab takes ownership.
+    dbPromise = open().catch((e) => {
+      dbPromise = null;
+      throw e;
+    });
+  }
   return dbPromise;
 }
 

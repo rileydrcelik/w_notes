@@ -13,6 +13,7 @@
  */
 import { Sentry } from '@/lib/sentry';
 import { db, type SyncPayload } from '@/lib/db';
+import { isDbLockedError } from '@/lib/web-db-lock';
 import { ApiError, apiFetch, syncConfigured } from './api';
 import { getDeviceKey, rotateDeviceKey } from './device-key';
 import { downloadCopaFile, prepareLocalFiles, uploadCopaFile } from './files';
@@ -110,6 +111,11 @@ async function runSync(): Promise<SyncResult> {
     // 501 = endpoints not wired (shouldn't happen now, but stays graceful).
     if (e instanceof ApiError && e.status === 501) {
       return { status: 'skipped', reason: 'sync endpoints not implemented' };
+    }
+    // A follower browser tab can't reach the OPFS database (another tab owns it);
+    // the DbTabGuard handles that, so skip rather than report it as an error.
+    if (isDbLockedError(e)) {
+      return { status: 'skipped', reason: 'database owned by another tab' };
     }
     Sentry.captureException(e, { tags: { source: 'sync-engine' } });
     throw e;

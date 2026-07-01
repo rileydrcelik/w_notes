@@ -11,6 +11,7 @@ import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { Sentry } from '@/lib/sentry';
 import { AuthProvider } from '@/lib/auth/auth-context';
 import { AnimatedSplashOverlay } from '@/components/animated-icon';
+import { DbTabGuard } from '@/components/db-tab-guard';
 import { FloatingTabBar } from '@/components/floating-tab-bar';
 import { MarkdownHelp } from '@/components/markdown-help';
 import { CopaOptionsProvider, useCopaOptions } from '@/components/copa-options-modal';
@@ -123,6 +124,9 @@ function AppShell() {
           {/* Web-only markdown cheatsheet button, docked bottom-left on the
               note/copa editor screens. Native renders nothing regardless. */}
           {formattingHints && <MarkdownHelp />}
+          {/* Web-only: covers extra browser tabs, which can't hold the SQLite
+              database (OPFS is single-owner). Native renders nothing. */}
+          <DbTabGuard />
         </CopaOptionsProvider>
         </ItemOptionsProvider>
         </SidebarProvider>
