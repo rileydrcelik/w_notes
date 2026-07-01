@@ -58,6 +58,12 @@ type NotesContextValue = {
   getSubfolders: (parentId: string) => Folder[];
   /** Creates an empty note in the given folder (null = root) and returns its id. */
   createNote: (folderId: string | null) => string;
+  /**
+   * Creates a Sentry plugin note bound to an org/project (null folder = root)
+   * and returns its id. It renders that project's live issues, not an editable
+   * body — only the marker + config sync.
+   */
+  createSentryNote: (config: { org: string; project: string }, folderId: string | null) => string;
   /** Creates an unnamed folder inside the given parent (null = root); returns its id. */
   createFolder: (parentId: string | null) => string;
   updateNote: (id: string, patch: Partial<Pick<Note, 'title' | 'body'>>) => void;
@@ -137,6 +143,28 @@ export function NotesProvider({ children }: { children: ReactNode }) {
     persist(db.createNote({ id, folderId }));
     return id;
   }, []);
+
+  const createSentryNote = useCallback<NotesContextValue['createSentryNote']>(
+    (config, folderId) => {
+      const id = rid('note');
+      const pluginConfig = JSON.stringify(config);
+      // The card/screen derive their label from pluginConfig, so title stays
+      // empty — a Sentry note carries no user-authored content.
+      const note: Note = {
+        id,
+        title: '',
+        body: '',
+        folderId,
+        updatedAt: today(),
+        pluginType: 'sentry',
+        pluginConfig,
+      };
+      setNotes((prev) => [note, ...prev]);
+      persist(db.createNote({ id, folderId, pluginType: 'sentry', pluginConfig }));
+      return id;
+    },
+    [],
+  );
 
   const createFolder = useCallback<NotesContextValue['createFolder']>((parentId) => {
     const id = rid('folder');
@@ -277,6 +305,7 @@ export function NotesProvider({ children }: { children: ReactNode }) {
       getRootFolders: () => folders.filter((folder) => folder.parentId == null),
       getSubfolders: (parentId) => folders.filter((folder) => folder.parentId === parentId),
       createNote,
+      createSentryNote,
       createFolder,
       updateNote,
       updateFolder,
@@ -294,6 +323,7 @@ export function NotesProvider({ children }: { children: ReactNode }) {
       notes,
       trash,
       createNote,
+      createSentryNote,
       createFolder,
       updateNote,
       updateFolder,

@@ -14,6 +14,14 @@ export type Note = {
   updatedAt: string;
   favorite?: boolean;
   shared?: boolean;
+  /**
+   * Plugin-note marker. When set, the note renders live plugin content (e.g. a
+   * Sentry project's issues) instead of an editable body. Ordinary notes leave
+   * it undefined.
+   */
+  pluginType?: 'sentry';
+  /** Opaque per-plugin JSON config; for Sentry: `{"org","project"}`. */
+  pluginConfig?: string;
 };
 
 export type Folder = {

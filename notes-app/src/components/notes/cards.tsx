@@ -1,3 +1,4 @@
+import Feather from '@expo/vector-icons/Feather';
 import { useRouter } from 'expo-router';
 import { useMemo } from 'react';
 import { Pressable, StyleSheet, View } from 'react-native';
@@ -9,11 +10,13 @@ import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Spacing, type Palette } from '@/constants/theme';
 import type { Folder, Note } from '@/data/notes';
+import { sentryTarget } from '@/lib/sentry-note';
 import { useDoubleTap } from '@/hooks/use-double-tap';
 import { useTheme } from '@/hooks/use-theme';
 import { useNotes } from '@/store/notes-store';
 
 const LINK_COLOR = '#3c87f7';
+const SENTRY_ACCENT = '#7553FF';
 const PREVIEW_TEXT = { fontSize: 14, lineHeight: 20, fontWeight: '500' } as const;
 
 /** Compact rich-text styling for the card preview — small headings, tight lists. */
@@ -80,6 +83,10 @@ export function NoteCard({ note }: { note: Note }) {
   const { openOptions } = useItemOptions();
   const theme = useTheme();
 
+  // A Sentry plugin note renders as a distinct card that opens the live issues
+  // screen rather than the text editor.
+  if (note.pluginType === 'sentry') return <SentryNoteCard note={note} />;
+
   // Tap opens the note; double-tap favorites it.
   const onPress = useDoubleTap(
     () => router.push({ pathname: '/note/[id]', params: { id: note.id } }),
@@ -112,6 +119,40 @@ export function NoteCard({ note }: { note: Note }) {
             {note.body}
           </EnrichedText>
         )}
+      </ThemedView>
+    </Pressable>
+  );
+}
+
+/** A Sentry plugin note: a distinct card that opens the live issues screen. */
+function SentryNoteCard({ note }: { note: Note }) {
+  const router = useRouter();
+  const { toggleNoteFavorite } = useNotes();
+  const { openOptions } = useItemOptions();
+
+  const target = sentryTarget(note);
+
+  const onPress = useDoubleTap(
+    () => router.push({ pathname: '/sentry/[id]', params: { id: note.id } }),
+    () => toggleNoteFavorite(note.id),
+  );
+
+  return (
+    <Pressable
+      style={({ pressed }) => [styles.cardWrapper, pressed && styles.pressed]}
+      onPress={onPress}
+      onLongPress={() => openOptions({ type: 'note', id: note.id })}>
+      <ThemedView type="backgroundElementAlt" style={styles.card}>
+        <View style={styles.titleRow}>
+          <Feather name="alert-triangle" size={15} color={SENTRY_ACCENT} />
+          <ThemedText type="smallBold" numberOfLines={1} style={styles.titleText}>
+            {target?.project ?? 'Sentry'}
+          </ThemedText>
+          {note.favorite && <FavoriteStar size={13} />}
+        </View>
+        <ThemedText type="small" themeColor="textSecondary" numberOfLines={1}>
+          Live issues{target?.org ? ` · ${target.org}` : ''}
+        </ThemedText>
       </ThemedView>
     </Pressable>
   );

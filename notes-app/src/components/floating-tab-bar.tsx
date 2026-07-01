@@ -1,7 +1,7 @@
 import Feather from '@expo/vector-icons/Feather';
 import { type Href, usePathname, useRouter } from 'expo-router';
 import type { ComponentProps, RefObject } from 'react';
-import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import {
   Keyboard,
   Platform,
@@ -33,6 +33,7 @@ import {
   subscribeActiveEditor,
 } from '@/lib/active-editor';
 import { Spacing, TabBar } from '@/constants/theme';
+import { useContextMenu } from '@/hooks/use-context-menu';
 import { useTabBarBottom } from '@/hooks/use-tab-bar-inset';
 import { useTheme } from '@/hooks/use-theme';
 import { useCopa } from '@/store/copa-store';
@@ -239,7 +240,7 @@ function CreateMenu({
   const router = useRouter();
   const pathname = usePathname();
   const { width: winW, height: winH } = useWindowDimensions();
-  const { createNote, createFolder, getNote } = useNotes();
+  const { createNote, createSentryNote, createFolder, getNote } = useNotes();
   const { createCopa, createFileCopa } = useCopa();
 
   const onCopa = pathname === '/copa' || pathname.startsWith('/copa/');
@@ -248,6 +249,16 @@ function CreateMenu({
     onClose();
     const id = createNote(currentFolderId(pathname, getNote));
     router.push({ pathname: '/note/[id]', params: { id } });
+  };
+
+  const onCreateSentry = () => {
+    onClose();
+    // Default target for now; a per-note org/project picker comes later.
+    const id = createSentryNote(
+      { org: 'aiko-6q', project: 'python-fastapi' },
+      currentFolderId(pathname, getNote),
+    );
+    router.push({ pathname: '/sentry/[id]', params: { id } });
   };
 
   const onCreateFolder = () => {
@@ -277,6 +288,7 @@ function CreateMenu({
     : [
         { key: 'note', label: 'New note', icon: 'file-plus', onPress: onCreateNote },
         { key: 'folder', label: 'New folder', icon: 'folder-plus', onPress: onCreateFolder },
+        { key: 'sentry', label: 'New Sentry view', icon: 'alert-triangle', onPress: onCreateSentry },
       ];
 
   const card = (
@@ -374,7 +386,7 @@ function CreateButton({
   const router = useRouter();
   const pathname = usePathname();
   const { createNote, getNote } = useNotes();
-  const buttonRef = useRef<View>(null);
+  const buttonRef = useRef<View | null>(null);
   const scale = useSharedValue(1);
   const animatedStyle = useAnimatedStyle(() => ({ transform: [{ scale: scale.value }] }));
 
@@ -416,10 +428,22 @@ function CreateButton({
     else onOpenMenu(null);
   };
 
+  // Web: right-clicking the button opens the same create menu that a long-press
+  // opens on mobile (no-op on native). Compose it with `buttonRef` — which the
+  // anchored menu measures against — so a single ref both measures and listens.
+  const contextMenuRef = useContextMenu(handleLongPress);
+  const setButtonRef = useCallback(
+    (node: View | null) => {
+      buttonRef.current = node;
+      contextMenuRef?.(node);
+    },
+    [contextMenuRef],
+  );
+
   return (
     <Animated.View style={animatedStyle}>
       <Pressable
-        ref={buttonRef}
+        ref={setButtonRef}
         accessibilityRole="button"
         accessibilityLabel={keyboardVisible ? 'Done' : 'Create'}
         onPressIn={() => {
@@ -534,6 +558,11 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0,0,0,0.35)',
   },
   menuHost: {
+    // Cap the sheet's width and center it so it doesn't span a wide (web) window;
+    // on a phone `width: '100%'` keeps it near-full-width under the cap.
+    width: '100%',
+    maxWidth: 420,
+    alignSelf: 'center',
     paddingHorizontal: Spacing.three,
   },
   // Popover anchored above the + button; bottom/right are set inline from the

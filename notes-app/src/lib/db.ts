@@ -41,6 +41,10 @@ type NoteRow = {
   updated_at: number;
   deleted_at: number | null;
   trashed_with_folder_id: string | null;
+  // Plugin-note marker: non-null flags a note whose content renders live (e.g.
+  // 'sentry') instead of from `body`. plugin_config is opaque per-plugin JSON.
+  plugin_type: string | null;
+  plugin_config: string | null;
 };
 
 type FolderRow = {
@@ -119,6 +123,8 @@ export type NoteSync = {
   updated_at: number;
   deleted_at: number | null;
   trashed_with_folder_id: string | null;
+  plugin_type: string | null;
+  plugin_config: string | null;
 };
 
 export type CopaSync = {
@@ -188,6 +194,8 @@ async function open(): Promise<SQLite.SQLiteDatabase> {
       updated_at             INTEGER NOT NULL,
       deleted_at             INTEGER,
       trashed_with_folder_id TEXT,
+      plugin_type            TEXT,
+      plugin_config          TEXT,
       dirty                  INTEGER NOT NULL DEFAULT 1
     );
 
@@ -270,6 +278,12 @@ async function ensureSyncColumns(database: SQLite.SQLiteDatabase): Promise<void>
   if (!noteCols.includes('dirty')) {
     await database.execAsync('ALTER TABLE notes ADD COLUMN dirty INTEGER NOT NULL DEFAULT 1');
   }
+  // Plugin notes (e.g. Sentry) were added later: backfill the marker columns on
+  // notes tables created before they existed.
+  if (!noteCols.includes('plugin_type')) {
+    await database.execAsync('ALTER TABLE notes ADD COLUMN plugin_type TEXT');
+    await database.execAsync('ALTER TABLE notes ADD COLUMN plugin_config TEXT');
+  }
 
   const copaCols = await colsOf('copa_items');
   if (!copaCols.includes('updated_at')) {
@@ -310,6 +324,8 @@ function toNote(r: NoteRow): Note {
     updatedAt: ymd(r.updated_at),
     favorite: !!r.favorite,
     shared: !!r.shared,
+    pluginType: (r.plugin_type ?? undefined) as Note['pluginType'],
+    pluginConfig: r.plugin_config ?? undefined,
   };
 }
 
@@ -377,13 +393,25 @@ export const db = {
     return { notes: noteRows.map(toNote), folders: folderRows.map(toFolder), trash };
   },
 
-  async createNote({ id, folderId }: { id: string; folderId: string | null }): Promise<void> {
-    dbCrumb('createNote', { id, folderId });
+  async createNote({
+    id,
+    folderId,
+    pluginType,
+    pluginConfig,
+  }: {
+    id: string;
+    folderId: string | null;
+    /** Marks a plugin note (e.g. 'sentry') that renders live content, not a body. */
+    pluginType?: string;
+    /** Opaque per-plugin JSON config (e.g. Sentry org/project). */
+    pluginConfig?: string;
+  }): Promise<void> {
+    dbCrumb('createNote', { id, folderId, pluginType });
     const database = await getDb();
     const now = Date.now();
     await database.runAsync(
-      'INSERT INTO notes (id, title, body, folder_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
-      [id, '', '', folderId, now, now],
+      'INSERT INTO notes (id, title, body, folder_id, created_at, updated_at, plugin_type, plugin_config) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      [id, '', '', folderId, now, now, pluginType ?? null, pluginConfig ?? null],
     );
   },
 
@@ -721,7 +749,7 @@ export const db = {
       ),
       database.getAllAsync<NoteSync>(
         `SELECT id, title, body, folder_id, favorite, shared, created_at, updated_at,
-                deleted_at, trashed_with_folder_id
+                deleted_at, trashed_with_folder_id, plugin_type, plugin_config
          FROM notes WHERE dirty = 1`,
       ),
       database.getAllAsync<CopaSync>(
@@ -803,14 +831,16 @@ export const db = {
         const r = await database.runAsync(
           `INSERT INTO notes
              (id, title, body, folder_id, favorite, shared, created_at, updated_at,
-              deleted_at, trashed_with_folder_id, dirty)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+              deleted_at, trashed_with_folder_id, plugin_type, plugin_config, dirty)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
            ON CONFLICT(id) DO UPDATE SET
              title = excluded.title, body = excluded.body, folder_id = excluded.folder_id,
              favorite = excluded.favorite, shared = excluded.shared,
              created_at = excluded.created_at, updated_at = excluded.updated_at,
              deleted_at = excluded.deleted_at,
-             trashed_with_folder_id = excluded.trashed_with_folder_id, dirty = 0
+             trashed_with_folder_id = excluded.trashed_with_folder_id,
+             plugin_type = excluded.plugin_type, plugin_config = excluded.plugin_config,
+             dirty = 0
            WHERE excluded.updated_at >= notes.updated_at`,
           [
             n.id,
@@ -823,6 +853,8 @@ export const db = {
             n.updated_at,
             n.deleted_at,
             n.trashed_with_folder_id,
+            n.plugin_type ?? null,
+            n.plugin_config ?? null,
           ],
         );
         changed += r.changes;

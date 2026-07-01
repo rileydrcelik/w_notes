@@ -17,6 +17,17 @@ class Settings(BaseSettings):
     # Free-form environment tag attached to Sentry events.
     env: str = "development"
 
+    # Auth token for the Sentry *REST API* (an internal-integration token) used by
+    # the /sentry proxy to read a project's issues on the client's behalf. Kept
+    # server-side and never shipped in the app bundle. Empty => the proxy returns
+    # 503. This is unrelated to `sentry_dsn` (which is for error *reporting*). The
+    # org/project a note targets travel per-request, so one token can serve many
+    # projects it has access to.
+    sentry_api_token: str = ""
+
+    # Base URL of the Sentry REST API. Overridable for self-hosted Sentry.
+    sentry_api_base: str = "https://sentry.io/api/0"
+
     # Firebase service-account credential used to verify ID tokens: either a path
     # to the JSON file (local dev) or the JSON content itself (deployed — injected
     # from a secrets manager). Empty => Firebase auth is disabled and only

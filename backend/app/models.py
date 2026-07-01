@@ -110,6 +110,14 @@ class Note(Base):
     deleted_at: Mapped[int | None] = mapped_column(BigInteger)
     trashed_with_folder_id: Mapped[str | None] = mapped_column(String)
 
+    # Marks a note as a "plugin" note whose content is rendered live rather than
+    # from ``body`` (e.g. ``plugin_type='sentry'``). ``plugin_config`` is an
+    # opaque JSON string the plugin owns — for Sentry, which org/project the note
+    # watches. Both are null for ordinary notes. Only this tiny marker syncs; the
+    # live data (issues) is fetched on demand and never enters the pipeline.
+    plugin_type: Mapped[str | None] = mapped_column(String)
+    plugin_config: Mapped[str | None] = mapped_column(Text)
+
     server_seq: Mapped[int] = mapped_column(
         BigInteger, server_default=SERVER_SEQ_DEFAULT, nullable=False
     )

@@ -33,6 +33,11 @@ class NoteIn(_Syncable):
     favorite: bool = False
     shared: bool = False
     trashed_with_folder_id: str | None = None
+    # Plugin-note marker + opaque per-plugin config (e.g. Sentry org/project).
+    # None for ordinary notes; the live plugin data is fetched separately, not
+    # carried here.
+    plugin_type: str | None = None
+    plugin_config: str | None = None
 
 
 class CopaItemIn(_Syncable):

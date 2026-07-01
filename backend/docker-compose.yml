@@ -31,6 +31,9 @@ services:
       DATABASE_URL: postgresql+asyncpg://wnotes:wnotes@db:5432/wnotes
       # Paste your Python-project DSN here (or via a .env file) to enable Sentry.
       SENTRY_DSN: ${SENTRY_DSN:-}
+      # Sentry REST API token for the /sentry issue-proxy (internal integration).
+      # Read from backend/.env; empty => /sentry endpoints return 503.
+      SENTRY_API_TOKEN: ${SENTRY_API_TOKEN:-}
       ENV: ${ENV:-development}
       # Path (inside the container) to the Firebase service-account JSON. Drop the
       # file at backend/firebase-service-account.json and it appears here via the
