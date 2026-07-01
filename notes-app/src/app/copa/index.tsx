@@ -24,6 +24,7 @@ import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Spacing } from '@/constants/theme';
 import { type CopaItem } from '@/data/copa';
+import { useContextMenu } from '@/hooks/use-context-menu';
 import { useDoubleTap } from '@/hooks/use-double-tap';
 import { useScreenFadeStyle } from '@/hooks/use-screen-fade';
 import { useSyncRefresh } from '@/hooks/use-sync-refresh';
@@ -90,8 +91,12 @@ function CopaCard({ item }: { item: CopaItem }) {
     () => toggleFavorite(item.id),
   );
 
+  // Right-click (web) mirrors the mobile long-press (opens the options menu).
+  const contextMenuRef = useContextMenu(() => openOptions(item.id));
+
   return (
     <Pressable
+      ref={contextMenuRef}
       accessibilityRole="button"
       accessibilityLabel={`Copy ${item.label}`}
       accessibilityHint="Copies the contents to the clipboard"
@@ -151,12 +156,16 @@ function FileCopaCard({ item }: { item: CopaItem }) {
     () => toggleFavorite(item.id),
   );
 
+  // Right-click (web) mirrors the mobile long-press (opens the options menu).
+  const contextMenuRef = useContextMenu(() => openOptions(item.id));
+
   const showImage = isImage(item.mimeType) && !!item.fileUri;
   const showVideo = isVideo(item.mimeType) && !!item.thumbUri;
   const meta = [item.fileName, formatBytes(item.fileSize)].filter(Boolean).join('  ·  ');
 
   return (
     <Pressable
+      ref={contextMenuRef}
       accessibilityRole="button"
       accessibilityLabel={`Download ${item.label || item.fileName}`}
       accessibilityHint="Saves the file to your device"

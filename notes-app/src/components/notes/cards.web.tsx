@@ -7,6 +7,7 @@ import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Spacing } from '@/constants/theme';
 import type { Folder, Note } from '@/data/notes';
+import { useContextMenu } from '@/hooks/use-context-menu';
 import { useDoubleTap } from '@/hooks/use-double-tap';
 import { useTheme } from '@/hooks/use-theme';
 import { htmlToPlainText } from '@/lib/html-text';
@@ -27,8 +28,12 @@ export function FolderCard({ folder }: { folder: Folder }) {
     () => toggleFolderFavorite(folder.id),
   );
 
+  // Right-click mirrors the mobile long-press (opens the options menu).
+  const contextMenuRef = useContextMenu(() => openOptions({ type: 'folder', id: folder.id }));
+
   return (
     <Pressable
+      ref={contextMenuRef}
       style={({ pressed }) => [styles.cardWrapper, pressed && styles.pressed]}
       onPress={onPress}
       onLongPress={() => openOptions({ type: 'folder', id: folder.id })}>
@@ -67,12 +72,16 @@ export function NoteCard({ note }: { note: Note }) {
     () => toggleNoteFavorite(note.id),
   );
 
+  // Right-click mirrors the mobile long-press (opens the options menu).
+  const contextMenuRef = useContextMenu(() => openOptions({ type: 'note', id: note.id }));
+
   // No native rich-text renderer on web — flatten the HTML body to plain text
   // for the preview (same helper the copa list uses).
   const preview = note.body.trim().length > 0 ? htmlToPlainText(note.body) : '';
 
   return (
     <Pressable
+      ref={contextMenuRef}
       style={({ pressed }) => [styles.cardWrapper, pressed && styles.pressed]}
       onPress={onPress}
       onLongPress={() => openOptions({ type: 'note', id: note.id })}>
