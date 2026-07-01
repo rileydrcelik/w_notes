@@ -1,6 +1,6 @@
 import { LinearGradient } from 'expo-linear-gradient';
 import { useState } from 'react';
-import { FlatList, RefreshControl, StyleSheet, View } from 'react-native';
+import { FlatList, Platform, RefreshControl, StyleSheet, View } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, { runOnJS } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -82,9 +82,8 @@ export default function HomeScreen() {
       }
     });
 
-  return (
-    <GestureDetector gesture={swipeOpen}>
-      <Animated.View style={[styles.container, fadeStyle]}>
+  const content = (
+    <Animated.View style={[styles.container, fadeStyle]}>
       <ThemedView style={styles.container}>
         <FlatList
           data={items}
@@ -134,9 +133,15 @@ export default function HomeScreen() {
         </View>
         <BottomFade />
       </ThemedView>
-      </Animated.View>
-    </GestureDetector>
+    </Animated.View>
   );
+
+  // Web has no swipe gestures: a mouse drag is text selection, and a live Pan
+  // lets gesture-handler track and steal it. Pointer users open the drawer via
+  // the menu button / backdrop.
+  if (Platform.OS === 'web') return content;
+
+  return <GestureDetector gesture={swipeOpen}>{content}</GestureDetector>;
 }
 
 const styles = StyleSheet.create({

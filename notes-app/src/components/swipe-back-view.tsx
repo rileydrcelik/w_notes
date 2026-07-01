@@ -39,6 +39,16 @@ export function SwipeBackView({ children, style }: Props) {
   // Web has no native stack transition; fade/slide the screen in on focus.
   const fadeStyle = useScreenFadeStyle();
 
+  // Web has no swipe gestures at all: there a "drag" is a mouse drag, which is
+  // also how you select text. A live Pan lets gesture-handler track every drag
+  // to decide whether it's a swipe, and that tracking intermittently collapses
+  // the browser's native text selection (and makes it jump to adjacent lines)
+  // in the note editor. Pointer users open the drawer via the menu button /
+  // backdrop and go back via the navbar, so the swipes are redundant here.
+  if (Platform.OS === 'web') {
+    return <Animated.View style={[styles.fill, style, fadeStyle]}>{children}</Animated.View>;
+  }
+
   // Claim only leftward drags so a rightward swipe still reaches the back
   // gesture, and bail on vertical movement so lists keep scrolling.
   const openDrawer = Gesture.Pan()
