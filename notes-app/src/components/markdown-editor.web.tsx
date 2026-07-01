@@ -89,6 +89,12 @@ function editorCss(theme: Palette): string {
   min-height: 120px;
   white-space: pre-wrap;
   word-wrap: break-word;
+  /* The swipe-back GestureDetector wraps the screen and react-native-gesture-
+     handler sets user-select:none on it (to suppress selection during drags),
+     which cascades in and breaks dragging a selection across lines here. Force
+     the editable content back to selectable. */
+  user-select: text;
+  -webkit-user-select: text;
 }
 .wn-rich .ProseMirror > * { margin: 0 0 4px; }
 .wn-rich .ProseMirror h1 { font-size: 28px; font-weight: 700; }
