@@ -55,6 +55,21 @@ export default function CopaBlockScreen() {
   const [label, setLabel] = useState(item?.label ?? '');
   const [content, setContent] = useState(item?.content ?? '');
 
+  // True once the user has actually typed in this block. Commits are gated on it
+  // so a *remote* update to an open block (from another device via sync) never
+  // makes this screen re-push its own stale local copy — that echo, bouncing
+  // between two open clients, is what made conflicting values flip back and
+  // forth. Seeding on navigation does not set it; only the input handlers do.
+  const editedRef = useRef(false);
+  const onChangeLabel = (t: string) => {
+    editedRef.current = true;
+    setLabel(t);
+  };
+  const onChangeContent = (html: string) => {
+    editedRef.current = true;
+    setContent(html);
+  };
+
   // Rich-editor handle + live state, so the floating toolbar can drive and
   // reflect formatting while the body is focused.
   const editorRef = useRef<EnrichedTextInputInstance>(null);
@@ -68,26 +83,41 @@ export default function CopaBlockScreen() {
     snapshot.current = { id, label, content, stored: item };
   });
 
-  // Load the block's text when navigating to a different block.
+  // Load the block's text when navigating to a different block. Resets the edited
+  // flag so the freshly-seeded values aren't mistaken for user input.
   useEffect(() => {
     const current = snapshot.current.stored;
     if (current) {
       setLabel(current.label);
       setContent(current.content);
     }
+    editedRef.current = false;
     // Re-run only on a different block, not on every keystroke.
   }, [id]);
 
   // Debounced commit so typing stays smooth and storage isn't hit per keystroke.
+  // Driven only by user edits (via the local label/content state) — deliberately
+  // NOT by `item`, so a remote sync landing while this block is open can't
+  // trigger a write-back of our stale copy.
   useEffect(() => {
-    if (!item || (item.label === label && item.content === content)) return;
-    const timer = setTimeout(() => updateCopa(id, { label, content }), 350);
+    if (!editedRef.current) return;
+    const timer = setTimeout(() => {
+      // Skip a no-op write (e.g. typed then reverted) so we don't needlessly
+      // bump updated_at and re-trigger sync. Compares against the latest stored
+      // value via the snapshot, avoiding an `item` dependency here.
+      const stored = snapshot.current.stored;
+      if (stored && stored.label === label && stored.content === content) return;
+      updateCopa(id, { label, content });
+    }, 350);
     return () => clearTimeout(timer);
-  }, [label, content, id, item, updateCopa]);
+  }, [label, content, id, updateCopa]);
 
-  // Flush any pending edit when leaving the screen.
+  // Flush any pending edit when leaving the screen — but only if the user
+  // actually edited, so leaving a block that changed underneath us (remote)
+  // never clobbers that remote change with our stale local copy.
   useEffect(
     () => () => {
+      if (!editedRef.current) return;
       const { id: sid, label: sl, content: sc, stored } = snapshot.current;
       if (stored && (stored.label !== sl || stored.content !== sc)) {
         updateCopa(sid, { label: sl, content: sc });
@@ -114,7 +144,7 @@ export default function CopaBlockScreen() {
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
         <TextInput
           value={label}
-          onChangeText={setLabel}
+          onChangeText={onChangeLabel}
           onLayout={(e) => setTitleHeight(e.nativeEvent.layout.height)}
           placeholder="Title"
           placeholderTextColor={theme.textSecondary}
@@ -142,7 +172,7 @@ export default function CopaBlockScreen() {
             <MarkdownEditor
               key={id}
               value={content}
-              onChangeText={setContent}
+              onChangeText={onChangeContent}
               placeholder="Contents to copy…"
               editorRef={editorRef}
               onFocusChange={setEditing}

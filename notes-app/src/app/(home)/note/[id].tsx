@@ -39,6 +39,21 @@ export default function NoteScreen() {
   const [title, setTitle] = useState(note?.title ?? '');
   const [body, setBody] = useState(note?.body ?? '');
 
+  // True once the user has actually typed in this note. Commits are gated on it
+  // so a *remote* update to an open note (from another device via sync) never
+  // makes this screen re-push its own stale local copy — that echo, bouncing
+  // between two open clients, is what made conflicting titles flip back and
+  // forth. Seeding on navigation does not set it; only the input handlers do.
+  const editedRef = useRef(false);
+  const onChangeTitle = (t: string) => {
+    editedRef.current = true;
+    setTitle(t);
+  };
+  const onChangeBody = (html: string) => {
+    editedRef.current = true;
+    setBody(html);
+  };
+
   // Rich-editor handle + live state, so the floating toolbar can drive and
   // reflect formatting while the body is focused.
   const editorRef = useRef<EnrichedTextInputInstance>(null);
@@ -52,26 +67,41 @@ export default function NoteScreen() {
     snapshot.current = { id, title, body, stored: note };
   });
 
-  // Load the note's text when navigating to a different note.
+  // Load the note's text when navigating to a different note. Resets the edited
+  // flag so the freshly-seeded values aren't mistaken for user input.
   useEffect(() => {
     const current = snapshot.current.stored;
     if (current) {
       setTitle(current.title);
       setBody(current.body);
     }
+    editedRef.current = false;
     // Re-run only on a different note, not on every keystroke.
   }, [id]);
 
   // Debounced commit so typing stays smooth and storage isn't hit per keystroke.
+  // Driven only by user edits (via the local title/body state) — deliberately
+  // NOT by `note`, so a remote sync landing while this note is open can't trigger
+  // a write-back of our stale copy.
   useEffect(() => {
-    if (!note || (note.title === title && note.body === body)) return;
-    const timer = setTimeout(() => updateNote(id, { title, body }), 350);
+    if (!editedRef.current) return;
+    const timer = setTimeout(() => {
+      // Skip a no-op write (e.g. typed then reverted) so we don't needlessly
+      // bump updated_at and re-trigger sync. Compares against the latest stored
+      // value via the snapshot, avoiding a `note` dependency here.
+      const stored = snapshot.current.stored;
+      if (stored && stored.title === title && stored.body === body) return;
+      updateNote(id, { title, body });
+    }, 350);
     return () => clearTimeout(timer);
-  }, [title, body, id, note, updateNote]);
+  }, [title, body, id, updateNote]);
 
-  // Flush any pending edit when leaving the screen.
+  // Flush any pending edit when leaving the screen — but only if the user
+  // actually edited, so leaving a note that changed underneath us (remote) never
+  // clobbers that remote change with our stale local copy.
   useEffect(
     () => () => {
+      if (!editedRef.current) return;
       const { id: sid, title: st, body: sb, stored } = snapshot.current;
       if (stored && (stored.title !== st || stored.body !== sb)) {
         updateNote(sid, { title: st, body: sb });
@@ -98,7 +128,7 @@ export default function NoteScreen() {
           behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
           <TextInput
             value={title}
-            onChangeText={setTitle}
+            onChangeText={onChangeTitle}
             onLayout={(e) => setTitleHeight(e.nativeEvent.layout.height)}
             placeholder="Title"
             placeholderTextColor={theme.textSecondary}
@@ -123,7 +153,7 @@ export default function NoteScreen() {
             <MarkdownEditor
               key={id}
               value={body}
-              onChangeText={setBody}
+              onChangeText={onChangeBody}
               placeholder="Start typing…"
               editorRef={editorRef}
               onFocusChange={setEditing}
