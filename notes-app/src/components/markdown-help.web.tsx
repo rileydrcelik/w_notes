@@ -12,7 +12,7 @@ import { useTheme } from '@/hooks/use-theme';
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
-/** The markdown the web editor round-trips, paired with a plain-language label. */
+/** The markdown keyboard shortcuts the web editor supports, each with a label. */
 const CHEATSHEET: { syntax: string; label: string }[] = [
   { syntax: '# Heading', label: 'Heading (## and ### for smaller)' },
   { syntax: '**bold**', label: 'Bold' },
@@ -20,17 +20,17 @@ const CHEATSHEET: { syntax: string; label: string }[] = [
   { syntax: '~~strike~~', label: 'Strikethrough' },
   { syntax: '- item', label: 'Bulleted list' },
   { syntax: '1. item', label: 'Numbered list' },
-  { syntax: '- [ ] task', label: 'Checklist ([x] when done)' },
+  { syntax: '[ ] task', label: 'Checklist ([x] when done)' },
   { syntax: '> quote', label: 'Blockquote' },
-  { syntax: '[text](url)', label: 'Link' },
   { syntax: '`code`', label: 'Inline code' },
-  { syntax: '```\ncode\n```', label: 'Code block' },
 ];
 
 /**
  * A small glass button docked at the bottom-left of the note/copa editor screens
- * (web only — the body is edited as raw markdown there). Tapping it opens a
- * modal cheatsheet of the supported markdown syntax.
+ * (web only). The web editor is a rich TipTap editor with markdown-style keyboard
+ * input; tapping this opens a modal cheatsheet of those shortcuts. Visibility is
+ * gated by the `formattingHints` preference (toggled in Settings) at the call
+ * site in `_layout.tsx`.
  */
 export function MarkdownHelp() {
   const theme = useTheme();

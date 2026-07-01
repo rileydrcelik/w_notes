@@ -18,8 +18,10 @@ import { ItemOptionsProvider } from '@/components/item-options-modal';
 import { CopaProvider } from '@/store/copa-store';
 import { NotesProvider } from '@/store/notes-store';
 import { SidebarProvider, useSidebar } from '@/store/sidebar-store';
+import { EditorPrefsProvider, useEditorPrefs } from '@/store/editor-prefs-store';
 import { AppThemeProvider, useThemePref } from '@/store/theme-store';
 import { installSyncFlush } from '@/lib/sync/flush-on-hide';
+import { installSyncPoll } from '@/lib/sync/poll';
 
 // Top-level routes that the pager slides between. Everything else (a folder or
 // note) lives inside the home group's stack, which keeps its own back-swipe.
@@ -30,7 +32,9 @@ function RootLayout() {
   return (
     <GestureHandlerRootView style={styles.root}>
       <AppThemeProvider>
-        <AppShell />
+        <EditorPrefsProvider>
+          <AppShell />
+        </EditorPrefsProvider>
       </AppThemeProvider>
     </GestureHandlerRootView>
   );
@@ -72,10 +76,16 @@ function Screens() {
 
 function AppShell() {
   const { scheme } = useThemePref();
+  const { formattingHints } = useEditorPrefs();
 
   // Web: push pending local edits before the tab is hidden/closed so a quick
   // edit-then-leave isn't stranded until the next sync trigger (native no-op).
   useEffect(() => installSyncFlush(), []);
+
+  // Periodically pull remote changes while the client is active so edits made on
+  // another device (e.g. the web client) land without needing a local edit or an
+  // app-foreground transition. Pauses when backgrounded/hidden.
+  useEffect(() => installSyncPoll(), []);
 
   // Android backdrop blur is capture-based: the navbar's BlurView blurs the
   // content of a BlurTargetView, which must wrap the screens but NOT the navbar
@@ -110,7 +120,9 @@ function AppShell() {
             <Screens />
           )}
           <FloatingTabBar blurTarget={blurTarget} />
-          <MarkdownHelp />
+          {/* Web-only markdown cheatsheet button, docked bottom-left on the
+              note/copa editor screens. Native renders nothing regardless. */}
+          {formattingHints && <MarkdownHelp />}
         </CopaOptionsProvider>
         </ItemOptionsProvider>
         </SidebarProvider>

@@ -1,8 +1,10 @@
+import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { Stack } from 'expo-router';
 import { useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -14,9 +16,11 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { SwipeBackView } from '@/components/swipe-back-view';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
-import { Colors, Spacing, type Palette } from '@/constants/theme';
+import { Colors, hexToRgba, Spacing, type Palette } from '@/constants/theme';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
+import { useTheme } from '@/hooks/use-theme';
 import { useAuth } from '@/lib/auth/auth-context';
+import { useEditorPrefs } from '@/store/editor-prefs-store';
 import { useThemePref, type ThemeKey } from '@/store/theme-store';
 
 const ACCENT = '#7a89b8';
@@ -98,6 +102,11 @@ export default function SettingsScreen() {
                 );
               })}
             </View>
+
+            {/* Web edits the body with a rich editor that accepts markdown-style
+                keystrokes; the hints button reminds you of them. It's web-only,
+                so the toggle is too. */}
+            {Platform.OS === 'web' && <EditorSection />}
             </View>
           </ScrollView>
         </SafeAreaView>
@@ -202,9 +211,65 @@ function AccountSection() {
   );
 }
 
+/**
+ * Editor preferences. Currently just the web formatting-hints toggle — the
+ * bottom-left cheatsheet button on the note/copa editor screens. Rendered only
+ * on web (the caller gates it), since native has no such hint.
+ */
+function EditorSection() {
+  const theme = useTheme();
+  const { formattingHints, setFormattingHints } = useEditorPrefs();
+
+  return (
+    <>
+      <ThemedText type="small" themeColor="textSecondary" style={styles.sectionLabel}>
+        EDITOR
+      </ThemedText>
+      <View style={styles.options}>
+        <Pressable
+          onPress={() => setFormattingHints(!formattingHints)}
+          accessibilityRole="switch"
+          accessibilityState={{ checked: formattingHints }}
+          accessibilityLabel="Show formatting hints"
+          style={({ pressed }) => [pressed && styles.pressed]}>
+          <ThemedView type="backgroundElement" style={styles.row}>
+            <View style={styles.rowText}>
+              <ThemedText style={styles.optionLabel}>Formatting hints</ThemedText>
+              <ThemedText type="small" themeColor="textSecondary">
+                Show the markdown cheatsheet button while editing
+              </ThemedText>
+            </View>
+            {/* Squircle check indicator (not a pill switch) — accent-filled when
+                on, hollow when off. */}
+            <View
+              style={[
+                styles.check,
+                formattingHints
+                  ? { backgroundColor: ACCENT, borderColor: ACCENT }
+                  : { borderColor: hexToRgba(theme.textSecondary, 0.4) },
+              ]}>
+              {formattingHints && (
+                <MaterialCommunityIcons name="check" size={18} color={theme.background} />
+              )}
+            </View>
+          </ThemedView>
+        </Pressable>
+      </View>
+    </>
+  );
+}
+
 const styles = StyleSheet.create({
   container: {
     flex: 1,
+  },
+  check: {
+    width: 28,
+    height: 28,
+    borderRadius: Spacing.two,
+    borderWidth: 2,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   accountRow: {
     flexDirection: 'row',
