@@ -20,12 +20,13 @@ import { ThemedView } from '@/components/themed-view';
 import { Spacing } from '@/constants/theme';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
 import { useTheme } from '@/hooks/use-theme';
+import { htmlToPlainText } from '@/lib/html-text';
 import { noFocusOutline } from '@/lib/web-style';
 import { useNotes } from '@/store/notes-store';
 
 export default function NoteScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
-  const { getNote, updateNote } = useNotes();
+  const { getNote, updateNote, deleteNote } = useNotes();
   const theme = useTheme();
   const tabBarInset = useTabBarInset();
   const insets = useSafeAreaInsets();
@@ -61,10 +62,13 @@ export default function NoteScreen() {
   const [fmtState, setFmtState] = useState<OnChangeStateEvent | null>(null);
 
   // Latest edit state, refreshed after each render so the unmount flush below
-  // can read it without writing refs during render.
-  const snapshot = useRef({ id, title, body, stored: note });
+  // can read it without writing refs during render. The store handlers ride
+  // along too: `deleteNote` isn't referentially stable (it closes over `notes`),
+  // so the unmount effect reads it from here and keeps empty deps — otherwise its
+  // cleanup would fire on every notes change, not just on a real unmount.
+  const snapshot = useRef({ id, title, body, stored: note, updateNote, deleteNote });
   useEffect(() => {
-    snapshot.current = { id, title, body, stored: note };
+    snapshot.current = { id, title, body, stored: note, updateNote, deleteNote };
   });
 
   // Load the note's text when navigating to a different note. Resets the edited
@@ -96,18 +100,29 @@ export default function NoteScreen() {
     return () => clearTimeout(timer);
   }, [title, body, id, updateNote]);
 
-  // Flush any pending edit when leaving the screen — but only if the user
-  // actually edited, so leaving a note that changed underneath us (remote) never
-  // clobbers that remote change with our stale local copy.
+  // On leaving the screen: auto-delete a note left completely empty (no title
+  // and no text content), otherwise flush any pending edit. A title with an
+  // empty body is kept — only "nothing at all" is discarded. Plugin notes (e.g.
+  // Sentry) carry no body by design, so they're never treated as empty.
+  // Flushing is still gated on `editedRef` so leaving a note that changed
+  // underneath us (remote) never clobbers that change with our stale local copy.
   useEffect(
     () => () => {
+      const { id: sid, title: st, body: sb, stored, updateNote: update, deleteNote: remove } =
+        snapshot.current;
+      if (!stored) return;
+      const isEmpty =
+        !stored.pluginType && st.trim().length === 0 && htmlToPlainText(sb).length === 0;
+      if (isEmpty) {
+        remove(sid);
+        return;
+      }
       if (!editedRef.current) return;
-      const { id: sid, title: st, body: sb, stored } = snapshot.current;
-      if (stored && (stored.title !== st || stored.body !== sb)) {
-        updateNote(sid, { title: st, body: sb });
+      if (stored.title !== st || stored.body !== sb) {
+        update(sid, { title: st, body: sb });
       }
     },
-    [updateNote],
+    [],
   );
 
   if (!note) {
