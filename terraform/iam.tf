@@ -38,6 +38,7 @@ data "aws_iam_policy_document" "read_secrets" {
     resources = concat(
       [aws_ssm_parameter.database_url.arn, aws_ssm_parameter.tunnel_token.arn],
       local.sentry_enabled ? [aws_ssm_parameter.sentry_dsn[0].arn] : [],
+      local.sentry_api_enabled ? [aws_ssm_parameter.sentry_api_token[0].arn] : [],
       local.firebase_enabled ? [aws_ssm_parameter.firebase[0].arn] : [],
     )
   }

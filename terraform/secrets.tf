@@ -35,6 +35,15 @@ resource "aws_ssm_parameter" "sentry_dsn" {
   value = var.sentry_dsn
 }
 
+# SENTRY_API_TOKEN — REST-API token for the /sentry issue proxy; only created
+# when provided.
+resource "aws_ssm_parameter" "sentry_api_token" {
+  count = local.sentry_api_enabled ? 1 : 0
+  name  = "/${local.name}/sentry-api-token"
+  type  = "SecureString"
+  value = var.sentry_api_token
+}
+
 # FIREBASE_CREDENTIALS — the service-account JSON; only created when provided.
 resource "aws_ssm_parameter" "firebase" {
   count = local.firebase_enabled ? 1 : 0

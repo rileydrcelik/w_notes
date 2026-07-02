@@ -29,6 +29,7 @@ locals {
   container_secrets = concat(
     [{ name = "DATABASE_URL", valueFrom = aws_ssm_parameter.database_url.arn }],
     local.sentry_enabled ? [{ name = "SENTRY_DSN", valueFrom = aws_ssm_parameter.sentry_dsn[0].arn }] : [],
+    local.sentry_api_enabled ? [{ name = "SENTRY_API_TOKEN", valueFrom = aws_ssm_parameter.sentry_api_token[0].arn }] : [],
     local.firebase_enabled ? [{ name = "FIREBASE_CREDENTIALS", valueFrom = aws_ssm_parameter.firebase[0].arn }] : [],
   )
 }

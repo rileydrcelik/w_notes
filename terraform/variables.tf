@@ -110,6 +110,13 @@ variable "firebase_credentials_json" {
   description = "Firebase service-account JSON (the whole file's contents). Empty => Firebase auth disabled."
 }
 
+variable "sentry_api_token" {
+  type        = string
+  default     = ""
+  sensitive   = true
+  description = "Sentry REST API token (internal integration) for the /sentry issue proxy. Empty => the /sentry endpoints return 503."
+}
+
 # ---- Web client (CORS) ----
 
 variable "web_origins" {

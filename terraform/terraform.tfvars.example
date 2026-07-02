@@ -16,6 +16,11 @@ cloudflare_account_id = "your-account-id"     # same Overview page, right sideba
 # Backend Sentry DSN (the Python project DSN).
 # sentry_dsn = "https://...@oXXXX.ingest.sentry.io/XXXX"
 
+# Sentry REST-API token (internal integration) for the /sentry issue proxy.
+# Empty => the /sentry endpoints return 503. Scopes: project:read, event:read
+# (+ :write once issue-status updates land).
+# sentry_api_token = "sntryu_..."
+
 # Firebase service-account JSON. Easiest is to load it from the file at apply time
 # rather than pasting it here:
 #   terraform apply -var "firebase_credentials_json=$(Get-Content ..\backend\firebase-service-account.json -Raw)"
