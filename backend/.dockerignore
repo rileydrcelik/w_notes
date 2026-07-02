@@ -1,0 +1,17 @@
+# Keep local secrets and cruft out of the image. Prod gets all config via
+# env/SSM (see ECS task secrets); local dev mounts the source as a volume, so
+# excluding these from `docker build` COPY doesn't affect `docker compose`.
+.env
+.env.*
+firebase-service-account.json
+
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+venv/
+.git/
+.gitignore
+README.md
