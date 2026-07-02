@@ -21,6 +21,12 @@ cloudflare_account_id = "your-account-id"     # same Overview page, right sideba
 # (+ :write once issue-status updates land).
 # sentry_api_token = "sntryu_..."
 
+# GitHub autofix: the repo Claude fixes + a fine-grained PAT on it. Both required
+# to enable /sentry/autofix; empty => those endpoints return 503. PAT permissions:
+# Contents R/W, Pull requests R, Actions R/W. See backend/docs/autofix/README.md.
+# autofix_repo = "owner/name"
+# github_token = "github_pat_..."
+
 # Firebase service-account JSON. Easiest is to load it from the file at apply time
 # rather than pasting it here:
 #   terraform apply -var "firebase_credentials_json=$(Get-Content ..\backend\firebase-service-account.json -Raw)"

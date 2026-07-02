@@ -44,6 +44,15 @@ resource "aws_ssm_parameter" "sentry_api_token" {
   value = var.sentry_api_token
 }
 
+# GITHUB_TOKEN — fine-grained PAT for the /sentry/autofix dispatch; only created
+# when both a token and a target repo were provided.
+resource "aws_ssm_parameter" "github_token" {
+  count = local.autofix_enabled ? 1 : 0
+  name  = "/${local.name}/github-token"
+  type  = "SecureString"
+  value = var.github_token
+}
+
 # FIREBASE_CREDENTIALS — the service-account JSON; only created when provided.
 resource "aws_ssm_parameter" "firebase" {
   count = local.firebase_enabled ? 1 : 0

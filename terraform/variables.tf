@@ -117,6 +117,19 @@ variable "sentry_api_token" {
   description = "Sentry REST API token (internal integration) for the /sentry issue proxy. Empty => the /sentry endpoints return 503."
 }
 
+variable "github_token" {
+  type        = string
+  default     = ""
+  sensitive   = true
+  description = "Fine-grained GitHub PAT for the /sentry/autofix endpoints (fires repository_dispatch at autofix_repo and reads back the PR). Needs Contents R/W + Pull requests R + Actions R/W on the target repo. Empty => autofix returns 503."
+}
+
+variable "autofix_repo" {
+  type        = string
+  default     = ""
+  description = "owner/name of the repo autofix dispatches target, e.g. \"rileydrcelik/aiko\". Empty => autofix disabled."
+}
+
 # ---- Web client (CORS) ----
 
 variable "web_origins" {

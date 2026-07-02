@@ -1,0 +1,131 @@
+# Sentry autofix — runs the Claude Code Action when the w_notes backend fires a
+# `repository_dispatch` (event_type: sentry-autofix). Claude reads the Sentry
+# error context from client_payload, applies a minimal fix, commits to a fixed
+# `autofixes/issue-*` branch, and opens a PR to main. It never merges.
+#
+# COPY THIS FILE INTO THE TARGET REPO (rileydrcelik/aiko) AT:
+#   .github/workflows/sentry-autofix.yml
+# It does nothing in w_notes itself — the repo it fixes is the one that must host
+# the workflow and the ANTHROPIC_API_KEY secret. See README.md in this folder.
+
+name: Sentry autofix
+
+on:
+  repository_dispatch:
+    types: [sentry-autofix]
+
+# Least privilege: write code (branch/commit) and open PRs. No merge permission.
+permissions:
+  contents: write
+  pull-requests: write
+
+# One run per issue branch; a repeat dispatch cancels the stale run rather than
+# racing it. Also caps token spend from accidental double-taps.
+concurrency:
+  group: sentry-autofix-${{ github.event.client_payload.branch }}
+  cancel-in-progress: true
+
+jobs:
+  autofix:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Claude autofix
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          base_branch: main
+          # Give Claude the file/edit/shell tools it needs to fix code and run git.
+          claude_args: |
+            --allowedTools Edit,Read,Write,Bash
+          prompt: |
+            A production error was reported by Sentry. Fix its root cause in this repository.
+
+            Work on a branch named EXACTLY this — create it from `main`, commit only there,
+            and open a pull request from it into `main`. Do NOT merge, and do NOT push to main:
+              BRANCH: ${{ github.event.client_payload.branch }}
+
+            The pull request title should start with "Autofix:" and reference the Sentry issue
+            ${{ github.event.client_payload.short_id }}. In the PR body, summarize the root cause
+            and the fix, and link the Sentry issue: ${{ github.event.client_payload.permalink }}
+
+            Keep the change minimal and focused on this bug. If you cannot confidently identify a
+            fix from the context below, open the PR anyway with your analysis and a proposed
+            direction rather than guessing broadly.
+
+            --- Sentry issue ---
+            Issue: ${{ github.event.client_payload.short_id }} — ${{ github.event.client_payload.title }}
+            Level: ${{ github.event.client_payload.level }}
+            Culprit: ${{ github.event.client_payload.culprit }}
+            Exception: ${{ github.event.client_payload.exception_type }}: ${{ github.event.client_payload.exception_value }}
+            Sentry link: ${{ github.event.client_payload.permalink }}
+
+            Stack frames (in-app, nearest the crash first) and request/breadcrumb context are in
+            this JSON payload:
+            ${{ toJSON(github.event.client_payload) }}
+
+      # The action pushes the fix branch but, on a repository_dispatch trigger,
+      # doesn't reliably open the PR itself (no comment thread to open it from).
+      # This guarantees a PR exists whenever the branch has commits — idempotent,
+      # so it's a no-op if the action already opened one. Still PR-only, no merge.
+      - name: Ensure pull request
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BRANCH: ${{ github.event.client_payload.branch }}
+          SHORT_ID: ${{ github.event.client_payload.short_id }}
+          PERMALINK: ${{ github.event.client_payload.permalink }}
+        run: |
+          set -euo pipefail
+          if ! git fetch origin "$BRANCH"; then
+            echo "No branch $BRANCH was pushed — nothing to open a PR for."
+            exit 0
+          fi
+          commits=$(git rev-list --count "origin/main..origin/$BRANCH")
+          if [ "$commits" -eq 0 ]; then
+            echo "Branch $BRANCH has no commits over main — no fix to propose."
+            exit 0
+          fi
+          if [ -n "$(gh pr list --head "$BRANCH" --state all --json number --jq '.[].number')" ]; then
+            echo "A pull request for $BRANCH already exists."
+            exit 0
+          fi
+          gh pr create --head "$BRANCH" --base main \
+            --title "Autofix: $SHORT_ID" \
+            --body "Automated fix for Sentry issue $SHORT_ID. See $PERMALINK"
+
+      # Once a PR exists for the fix, mark the Sentry issue resolved so it drops
+      # out of the unresolved list. If the error recurs, Sentry auto-reopens it on
+      # regression. Needs a SENTRY_API_TOKEN repo secret (event:write scope);
+      # skipped quietly if it's absent. Swap "resolved" for "resolvedInNextRelease"
+      # if you'd rather tie it to a release.
+      - name: Resolve Sentry issue
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SENTRY_API_TOKEN: ${{ secrets.SENTRY_API_TOKEN }}
+          BRANCH: ${{ github.event.client_payload.branch }}
+          ISSUE_ID: ${{ github.event.client_payload.issue_id }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SENTRY_API_TOKEN:-}" ]; then
+            echo "No SENTRY_API_TOKEN secret set — leaving the Sentry issue unresolved."
+            exit 0
+          fi
+          if [ -z "$(gh pr list --head "$BRANCH" --state open --json number --jq '.[].number')" ]; then
+            echo "No open PR for $BRANCH — not resolving the Sentry issue."
+            exit 0
+          fi
+          echo "Resolving Sentry issue $ISSUE_ID"
+          code=$(curl -sS -X PUT "https://sentry.io/api/0/issues/$ISSUE_ID/" \
+            -H "Authorization: Bearer $SENTRY_API_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d '{"status":"resolved"}' -o /dev/null -w "%{http_code}")
+          echo "Sentry responded $code"
+          # Don't fail the run if Sentry rejects it — the PR is the important part.
+          if [ "$code" -ge 400 ]; then echo "::warning::Sentry resolve returned $code"; fi

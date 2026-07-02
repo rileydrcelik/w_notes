@@ -28,6 +28,20 @@ class Settings(BaseSettings):
     # Base URL of the Sentry REST API. Overridable for self-hosted Sentry.
     sentry_api_base: str = "https://sentry.io/api/0"
 
+    # Fine-grained GitHub PAT used by the /sentry/autofix endpoints to fire a
+    # `repository_dispatch` at `autofix_repo` and read back the resulting PR. Kept
+    # server-side (SSM) and never shipped in the app bundle. Empty => the autofix
+    # endpoints return 503. Needs Contents R/W + Pull requests R + Actions R/W on
+    # the target repo.
+    github_token: str = ""
+
+    # "owner/name" of the repo autofix dispatches target (e.g. "rileydrcelik/aiko").
+    # Empty (with token) => autofix disabled.
+    autofix_repo: str = ""
+
+    # Base URL of the GitHub REST API. Overridable for GitHub Enterprise.
+    github_api_base: str = "https://api.github.com"
+
     # Firebase service-account credential used to verify ID tokens: either a path
     # to the JSON file (local dev) or the JSON content itself (deployed — injected
     # from a secrets manager). Empty => Firebase auth is disabled and only

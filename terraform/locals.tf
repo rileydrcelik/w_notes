@@ -14,4 +14,6 @@ locals {
   sentry_enabled     = var.sentry_dsn != ""
   sentry_api_enabled = var.sentry_api_token != ""
   firebase_enabled   = var.firebase_credentials_json != ""
+  # Autofix needs both a GitHub token (to dispatch/read PRs) and a target repo.
+  autofix_enabled = var.github_token != "" && var.autofix_repo != ""
 }

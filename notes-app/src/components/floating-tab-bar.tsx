@@ -39,6 +39,7 @@ import { useTheme } from '@/hooks/use-theme';
 import { useCopa } from '@/store/copa-store';
 import { useNotes } from '@/store/notes-store';
 import { useSidebar } from '@/store/sidebar-store';
+import { useAutofixSelection } from '@/store/autofix-selection-store';
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
@@ -98,6 +99,11 @@ export function FloatingTabBar({ blurTarget }: FloatingTabBarProps) {
   // open state is shared (via context) so the home screen's left-swipe can open
   // the same drawer.
   const { open: menuOpen, setOpen: setMenuOpen } = useSidebar();
+  // While the Sentry screen has issues selected, the trailing (+) slot becomes a
+  // "Fix" button that ships the selection to the autofix pipeline.
+  const { active: selecting, count: selectedCount, requestFix, clear: clearSelection } =
+    useAutofixSelection();
+  const fixMode = selecting && selectedCount > 0;
   // Copa is the only sibling tab; everything else lives under the home group.
   // Its editor lives at /copa/[id], so match the whole copa stack.
   const onCopa = pathname === '/copa' || pathname.startsWith('/copa/');
@@ -196,14 +202,28 @@ export function FloatingTabBar({ blurTarget }: FloatingTabBarProps) {
             })}
           </GlassSurface>
 
-          {/* Trailing slot: the create button, mirroring the back button. */}
+          {/* Trailing slot: the create button, mirroring the back button. It
+              becomes a Fix button while Sentry issues are selected. */}
           <View pointerEvents="box-none" style={[styles.sideSlot, slotStyle]}>
-            <CreateButton
-              iconColor={colors.textSecondary}
-              keyboardVisible={doneMode}
-              blurTarget={blurTarget}
-              onOpenMenu={(anchor) => setCreateMenu({ anchor })}
-            />
+            {fixMode ? (
+              <Animated.View key="fix" entering={FadeIn.duration(160)} exiting={FadeOut.duration(140)}>
+                <FixButton
+                  count={selectedCount}
+                  blurTarget={blurTarget}
+                  onPress={requestFix}
+                  onCancel={clearSelection}
+                />
+              </Animated.View>
+            ) : (
+              <Animated.View key="create" entering={FadeIn.duration(160)} exiting={FadeOut.duration(140)}>
+                <CreateButton
+                  iconColor={colors.textSecondary}
+                  keyboardVisible={doneMode}
+                  blurTarget={blurTarget}
+                  onOpenMenu={(anchor) => setCreateMenu({ anchor })}
+                />
+              </Animated.View>
+            )}
           </View>
         </View>
       </Animated.View>
@@ -255,7 +275,7 @@ function CreateMenu({
     onClose();
     // Default target for now; a per-note org/project picker comes later.
     const id = createSentryNote(
-      { org: 'aiko-6q', project: 'python-fastapi' },
+      { org: 'aiko-6q', project: 'w-notes-fastapi' },
       currentFolderId(pathname, getNote),
     );
     router.push({ pathname: '/sentry/[id]', params: { id } });
@@ -470,6 +490,56 @@ function CreateButton({
   );
 }
 
+/**
+ * Trailing action while Sentry issues are selected: sits exactly where the create
+ * (+) button normally does. A tap ships the selection to the autofix pipeline; a
+ * long-press cancels selection. A small badge shows how many issues are picked.
+ */
+function FixButton({
+  count,
+  blurTarget,
+  onPress,
+  onCancel,
+}: {
+  count: number;
+  blurTarget?: RefObject<View | null> | null;
+  onPress: () => void;
+  onCancel: () => void;
+}) {
+  const scale = useSharedValue(1);
+  const animatedStyle = useAnimatedStyle(() => ({ transform: [{ scale: scale.value }] }));
+  // Right-click cancels selection on web, matching the long-press affordance.
+  const contextMenuRef = useContextMenu(onCancel);
+
+  return (
+    <Animated.View style={animatedStyle}>
+      <Pressable
+        ref={contextMenuRef}
+        accessibilityRole="button"
+        accessibilityLabel={`Fix ${count} selected ${count === 1 ? 'issue' : 'issues'}`}
+        onPressIn={() => {
+          scale.value = withTiming(0.92, { duration: 80 });
+        }}
+        onPressOut={() => {
+          scale.value = withTiming(1, { duration: 120 });
+        }}
+        onPress={onPress}
+        onLongPress={onCancel}>
+        <GlassSurface
+          intensity={75}
+          tintOpacity={0.85}
+          blurTarget={blurTarget}
+          style={[styles.createButton, { width: TabBar.height, height: TabBar.height }]}>
+          <Feather name="zap" color="#7553FF" size={24} />
+          <View style={styles.fixBadge}>
+            <ThemedText style={styles.fixBadgeText}>{count}</ThemedText>
+          </View>
+        </GlassSurface>
+      </Pressable>
+    </Animated.View>
+  );
+}
+
 const styles = StyleSheet.create({
   host: {
     position: 'absolute',
@@ -512,6 +582,25 @@ const styles = StyleSheet.create({
     shadowRadius: 16,
     shadowOffset: { width: 0, height: 0 },
     elevation: 16,
+  },
+  // Count pill on the Fix button's top-right, showing how many issues are selected.
+  fixBadge: {
+    position: 'absolute',
+    top: 4,
+    right: 4,
+    minWidth: 16,
+    height: 16,
+    paddingHorizontal: 4,
+    borderRadius: Spacing.one,
+    backgroundColor: '#7553FF',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  fixBadgeText: {
+    color: '#fff',
+    fontSize: 10,
+    lineHeight: 14,
+    fontWeight: '700',
   },
   bar: {
     flexDirection: 'row',

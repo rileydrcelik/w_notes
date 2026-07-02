@@ -22,7 +22,7 @@ from __future__ import annotations
 import re
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.config import get_settings
@@ -382,3 +382,198 @@ async def latest_event(
         request=_request_info(event),
         user=_event_user(event),
     )
+
+
+# ---- Autofix: dispatch an issue to a GitHub Actions coding agent ----
+#
+# The heavy lifting (checkout, fix, PR) happens in a GitHub Actions workflow in
+# the target repo — the FastAPI container has no repo/git/write creds and is the
+# wrong place for it. This router only gathers issue context from Sentry and
+# fires a `repository_dispatch`, then reads back the resulting branch/PR so the
+# app can poll status. Guardrails live in the workflow (PR only, never merge).
+
+
+class AutofixRequest(BaseModel):
+    issue_id: str
+    org: str
+    project: str
+
+
+class AutofixResponse(BaseModel):
+    dispatched: bool
+    issue_id: str
+    short_id: str | None = None
+    branch: str
+
+
+class AutofixStatus(BaseModel):
+    # none => nothing yet (queued / run not started); branch_created => the agent
+    # pushed a branch but no PR yet; pr_* => a PR exists in that state.
+    state: str
+    branch: str
+    pr_number: int | None = None
+    pr_url: str | None = None
+    title: str | None = None
+
+
+def _require_github() -> tuple[str, str]:
+    """The GitHub token + target repo, or 503 if autofix isn't configured."""
+    settings = get_settings()
+    if not settings.github_token or not settings.autofix_repo:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, "Autofix is not configured"
+        )
+    return settings.github_token, settings.autofix_repo
+
+
+def _github_client() -> httpx.AsyncClient:
+    settings = get_settings()
+    return httpx.AsyncClient(
+        base_url=settings.github_api_base.rstrip("/"),
+        headers={
+            "Authorization": f"Bearer {settings.github_token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
+        timeout=_TIMEOUT,
+    )
+
+
+def _branch_for(short_id: str) -> str:
+    """Deterministic branch name shared by dispatch, the workflow, and the status
+    poll — so all three agree without passing state around. e.g.
+    ``PYTHON-FASTAPI-3`` -> ``autofixes/issue-python-fastapi-3``."""
+    slug = re.sub(r"[^a-z0-9-]+", "-", short_id.lower()).strip("-") or "unknown"
+    return f"autofixes/issue-{slug}"
+
+
+def _raise_for_github(resp: httpx.Response) -> None:
+    """Like ``_raise_for_upstream`` but for GitHub. A 401/403 means our server
+    token is bad/under-scoped — a server misconfig, surfaced as 502."""
+    if resp.is_success:
+        return
+    if resp.status_code in (401, 403):
+        raise HTTPException(
+            status.HTTP_502_BAD_GATEWAY, "GitHub rejected the server token"
+        )
+    code = resp.status_code if resp.status_code < 500 else status.HTTP_502_BAD_GATEWAY
+    raise HTTPException(code, f"GitHub API error ({resp.status_code})")
+
+
+def _autofix_payload(issue: dict, event: dict, branch: str) -> dict:
+    """A trimmed, JSON-safe context bundle for the coding agent. Kept small (well
+    under GitHub's ~64 KB client_payload cap): the headline, culprit, permalink,
+    and the in-app stack frames closest to the crash with a little source.
+
+    GitHub's `repository_dispatch` allows at most **10 top-level** properties in
+    `client_payload`, so the bulkier context (stack frames, request, breadcrumbs)
+    is nested under a single ``details`` key. The workflow still reaches it via
+    ``toJSON(client_payload)``; the individually-interpolated fields stay top-level.
+    """
+    exc_type, exc_value = _exception_head(event)
+    meta = issue.get("metadata") or {}
+    # In-app frames only, tail (nearest the crash) first, capped.
+    in_app = [f for f in _extract_frames(event) if f.in_app]
+    frames = [
+        {
+            "filename": f.filename or f.module,
+            "function": f.function,
+            "lineno": f.lineno,
+            "context": [{"lineno": c.lineno, "code": c.code} for c in f.context[:8]],
+        }
+        for f in reversed(in_app[-15:])
+    ]
+    request = _request_info(event)
+    return {
+        # Top-level (≤10), each referenced individually by the workflow prompt.
+        "branch": branch,
+        "issue_id": str(issue.get("id", "")),
+        "short_id": issue.get("shortId"),
+        "title": issue.get("title") or (meta.get("value") if isinstance(meta, dict) else None),
+        "culprit": issue.get("culprit"),
+        "level": issue.get("level"),
+        "permalink": issue.get("permalink"),
+        "exception_type": exc_type,
+        "exception_value": exc_value or (meta.get("value") if isinstance(meta, dict) else None),
+        # Everything bulkier rides in one nested object (the 10th top-level key).
+        "details": {
+            "frames": frames,
+            "request": {"url": request.url, "method": request.method} if request else None,
+            "breadcrumbs": [
+                {"category": c.category, "level": c.level, "message": c.message}
+                for c in _breadcrumbs(event, limit=8)
+            ],
+        },
+    }
+
+
+@router.post("/autofix", response_model=AutofixResponse, status_code=status.HTTP_202_ACCEPTED)
+async def autofix(
+    req: AutofixRequest = Body(...),
+    user: User = Depends(get_current_user),
+) -> AutofixResponse:
+    _require_token()  # need Sentry to gather context
+    _require_github()  # and GitHub to dispatch
+
+    # Pull issue detail + latest event to build the context bundle.
+    async with _client() as client:
+        issue_resp = await client.get(f"/issues/{req.issue_id}/")
+        _raise_for_upstream(issue_resp)
+        issue = issue_resp.json()
+        event_resp = await client.get(f"/issues/{req.issue_id}/events/latest/")
+        _raise_for_upstream(event_resp)
+        event = event_resp.json()
+
+    short_id = issue.get("shortId") or req.issue_id
+    branch = _branch_for(short_id)
+    payload = _autofix_payload(issue, event, branch)
+
+    _, repo = _require_github()
+    async with _github_client() as gh:
+        resp = await gh.post(
+            f"/repos/{repo}/dispatches",
+            json={"event_type": "sentry-autofix", "client_payload": payload},
+        )
+    _raise_for_github(resp)
+
+    # Return the *resolved* short id (the one the branch was built from) so the
+    # app polls status with a value that recomputes to the same branch.
+    return AutofixResponse(
+        dispatched=True, issue_id=req.issue_id, short_id=short_id, branch=branch
+    )
+
+
+@router.get("/autofix/status", response_model=AutofixStatus)
+async def autofix_status(
+    short_id: str = Query(..., description="Sentry issue short id, e.g. PYTHON-FASTAPI-3"),
+    user: User = Depends(get_current_user),
+) -> AutofixStatus:
+    _, repo = _require_github()
+    branch = _branch_for(short_id)
+
+    async with _github_client() as gh:
+        # A PR is the strongest signal — check first (covers open/merged/closed).
+        pulls = await gh.get(f"/repos/{repo}/pulls", params={"state": "all", "per_page": 30})
+        _raise_for_github(pulls)
+        for pr in pulls.json():
+            if (pr.get("head") or {}).get("ref") == branch:
+                if pr.get("merged_at"):
+                    state = "pr_merged"
+                elif pr.get("state") == "closed":
+                    state = "pr_closed"
+                else:
+                    state = "pr_open"
+                return AutofixStatus(
+                    state=state,
+                    branch=branch,
+                    pr_number=pr.get("number"),
+                    pr_url=pr.get("html_url"),
+                    title=pr.get("title"),
+                )
+
+        # No PR yet — has the agent at least pushed the branch?
+        br = await gh.get(f"/repos/{repo}/branches/{branch}")
+    if br.status_code == 404:
+        return AutofixStatus(state="none", branch=branch)
+    _raise_for_github(br)
+    return AutofixStatus(state="branch_created", branch=branch)

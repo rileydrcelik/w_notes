@@ -17,10 +17,12 @@ import { SwipeBackView } from '@/components/swipe-back-view';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Fonts, hexToRgba, Spacing } from '@/constants/theme';
+import { useContextMenu } from '@/hooks/use-context-menu';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
 import { useTheme } from '@/hooks/use-theme';
 import { apiFetch } from '@/lib/sync/api';
 import { sentryTarget } from '@/lib/sentry-note';
+import { useAutofixSelection } from '@/store/autofix-selection-store';
 import { useNotes } from '@/store/notes-store';
 
 // Sentry level → dot color. Falls back to secondary text for unknown levels.
@@ -55,6 +57,36 @@ type Issue = {
 };
 
 type IssueListResponse = { issues: Issue[]; next_cursor?: string | null };
+
+// Backend /sentry/autofix responses.
+type AutofixResponse = { dispatched: boolean; issue_id: string; short_id?: string | null; branch: string };
+type AutofixStatusState = 'none' | 'branch_created' | 'pr_open' | 'pr_merged' | 'pr_closed';
+type AutofixStatus = {
+  state: AutofixStatusState;
+  branch: string;
+  pr_number?: number | null;
+  pr_url?: string | null;
+  title?: string | null;
+};
+// Per-issue autofix progress tracked on the screen (never synced).
+type FixState = {
+  phase: 'dispatching' | 'error' | 'tracking';
+  shortId?: string;
+  status?: AutofixStatus;
+  stopped?: boolean; // polling gave up (timeout); keep the last status shown
+  message?: string;
+};
+
+// A fix is still "in flight" (worth polling) until a PR shows up or we give up.
+function isPollable(fix: FixState | undefined): boolean {
+  return (
+    !!fix &&
+    fix.phase === 'tracking' &&
+    !fix.stopped &&
+    !!fix.shortId &&
+    (fix.status?.state === 'none' || fix.status?.state === 'branch_created')
+  );
+}
 
 type ContextLine = { lineno: number; code: string };
 
@@ -227,7 +259,77 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
   );
 }
 
-function IssueCard({ issue }: { issue: Issue }) {
+/** Small status pill shown on a card once its issue has been sent to autofix. */
+function FixChip({ fix }: { fix: FixState }) {
+  const prNum = fix.status?.pr_number;
+  const prUrl = fix.status?.pr_url;
+
+  let label = '';
+  let spin = false;
+  if (fix.phase === 'dispatching') {
+    label = 'Sending to autofix…';
+    spin = true;
+  } else if (fix.phase === 'error') {
+    label = fix.message || 'Autofix failed';
+  } else {
+    switch (fix.status?.state) {
+      case 'pr_open':
+        label = `PR #${prNum} open`;
+        break;
+      case 'pr_merged':
+        label = `PR #${prNum} merged`;
+        break;
+      case 'pr_closed':
+        label = `PR #${prNum} closed`;
+        break;
+      case 'branch_created':
+        label = fix.stopped ? 'Still working — check GitHub' : 'Fixing…';
+        spin = !fix.stopped;
+        break;
+      default:
+        label = fix.stopped ? 'Still working — check GitHub' : 'Queued…';
+        spin = !fix.stopped;
+    }
+  }
+
+  const body = (
+    <View style={styles.fixChip}>
+      <Feather name="zap" size={12} color="#7553FF" />
+      <ThemedText type="small" style={styles.fixChipText}>
+        {label}
+      </ThemedText>
+      {spin && <ActivityIndicator size="small" color="#7553FF" />}
+      {!!prUrl && <Feather name="external-link" size={12} color="#7553FF" />}
+    </View>
+  );
+
+  if (prUrl) {
+    return (
+      <Pressable
+        accessibilityRole="link"
+        accessibilityLabel={`Open ${label} on GitHub`}
+        onPress={() => void Linking.openURL(prUrl)}
+        style={({ pressed }) => pressed && styles.pressed}>
+        {body}
+      </Pressable>
+    );
+  }
+  return body;
+}
+
+function IssueCard({
+  issue,
+  selectionActive,
+  selected,
+  onToggleSelect,
+  fix,
+}: {
+  issue: Issue;
+  selectionActive: boolean;
+  selected: boolean;
+  onToggleSelect: () => void;
+  fix?: FixState;
+}) {
   const theme = useTheme();
   const dot = LEVEL_COLORS[issue.level ?? ''] ?? theme.textSecondary;
   const [expanded, setExpanded] = useState(false);
@@ -278,14 +380,31 @@ function IssueCard({ issue }: { issue: Issue }) {
     ? [event.exception_type, event.exception_value ?? event.message].filter(Boolean).join(': ')
     : '';
 
+  // In selection mode a tap toggles the selection; otherwise it expands. A
+  // long-press (or right-click on web) always toggles — that's what turns
+  // selection mode on in the first place.
+  const onPress = () => {
+    if (selectionActive) onToggleSelect();
+    else setExpanded((v) => !v);
+  };
+  const contextMenuRef = useContextMenu(onToggleSelect);
+
   return (
     <Pressable
+      ref={contextMenuRef}
       accessibilityRole="button"
-      accessibilityState={{ expanded }}
-      accessibilityLabel={`${expanded ? 'Collapse' : 'Expand'} ${issue.shortId ?? issue.title}`}
-      onPress={() => setExpanded((v) => !v)}
+      accessibilityState={{ expanded, selected }}
+      accessibilityLabel={
+        selectionActive
+          ? `${selected ? 'Deselect' : 'Select'} ${issue.shortId ?? issue.title}`
+          : `${expanded ? 'Collapse' : 'Expand'} ${issue.shortId ?? issue.title}`
+      }
+      onPress={onPress}
+      onLongPress={onToggleSelect}
       style={({ pressed }) => pressed && styles.pressed}>
-      <ThemedView type="backgroundElementAlt" style={styles.card}>
+      <ThemedView
+        type="backgroundElementAlt"
+        style={[styles.card, selected && styles.cardSelected]}>
         <View style={styles.cardHeader}>
           <View style={[styles.levelDot, { backgroundColor: dot }]} />
           <ThemedText
@@ -294,12 +413,20 @@ function IssueCard({ issue }: { issue: Issue }) {
             style={styles.cardTitle}>
             {issue.title || issue.shortId || 'Issue'}
           </ThemedText>
-          <Feather
-            name="chevron-down"
-            size={16}
-            color={theme.textSecondary}
-            style={expanded && styles.chevronOpen}
-          />
+          {selectionActive ? (
+            <Feather
+              name={selected ? 'check-circle' : 'circle'}
+              size={18}
+              color={selected ? '#7553FF' : theme.textSecondary}
+            />
+          ) : (
+            <Feather
+              name="chevron-down"
+              size={16}
+              color={theme.textSecondary}
+              style={expanded && styles.chevronOpen}
+            />
+          )}
         </View>
         {!!issue.culprit && (
           <ThemedText
@@ -314,6 +441,8 @@ function IssueCard({ issue }: { issue: Issue }) {
             {meta}
           </ThemedText>
         )}
+
+        {fix && <FixChip fix={fix} />}
 
         {expanded && (
           <Animated.View entering={FadeIn.duration(180)} style={styles.details}>
@@ -453,6 +582,8 @@ export default function SentryIssuesScreen() {
   const theme = useTheme();
   const insets = useSafeAreaInsets();
   const tabBarInset = useTabBarInset();
+  const { active: selectionActive, selectedIds, isSelected, toggle, clear, registerFixHandler } =
+    useAutofixSelection();
 
   const note = getNote(id);
   // Memoize on the raw config so `target` keeps a stable identity across
@@ -467,6 +598,10 @@ export default function SentryIssuesScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Per-issue autofix progress (kept in memory only — never synced). Keyed by
+  // Sentry issue id. `attemptsRef` caps how long we poll each one.
+  const [fixStates, setFixStates] = useState<Record<string, FixState>>({});
+  const attemptsRef = useRef<Record<string, number>>({});
 
   const load = useCallback(
     async (mode: 'initial' | 'refresh') => {
@@ -499,6 +634,85 @@ export default function SentryIssuesScreen() {
     void load('initial');
   }, [load]);
 
+  // Ship the selected issues to the autofix pipeline. Fired by the navbar's Fix
+  // button via the shared selection store. Each issue is dispatched independently
+  // so one failure doesn't block the rest; selection clears once they're sent.
+  const handleFix = useCallback(
+    (ids: string[]) => {
+      if (!target) return;
+      ids.forEach((issueId) => {
+        setFixStates((prev) => ({ ...prev, [issueId]: { phase: 'dispatching' } }));
+        apiFetch<AutofixResponse>('/sentry/autofix', {
+          method: 'POST',
+          body: { issue_id: issueId, org: target.org, project: target.project },
+        })
+          .then((res) => {
+            attemptsRef.current[issueId] = 0;
+            setFixStates((prev) => ({
+              ...prev,
+              [issueId]: {
+                phase: 'tracking',
+                shortId: res.short_id ?? undefined,
+                status: { state: 'none', branch: res.branch },
+              },
+            }));
+          })
+          .catch(() => {
+            setFixStates((prev) => ({
+              ...prev,
+              [issueId]: { phase: 'error', message: 'Autofix failed to start' },
+            }));
+          });
+      });
+      clear();
+    },
+    [target, clear],
+  );
+
+  // Register the handler so the (screen-external) navbar Fix button can invoke it,
+  // and make sure selection doesn't linger once we leave the screen.
+  useEffect(() => {
+    registerFixHandler(handleFix);
+    return () => registerFixHandler(null);
+  }, [registerFixHandler, handleFix]);
+  useEffect(() => () => clear(), [clear]);
+
+  // Poll the backend for each in-flight fix until a PR appears (or we give up).
+  // One shared timer re-arms ~5s after each batch; terminal/timed-out fixes drop
+  // out of `isPollable`, so the timer stops on its own once nothing is pending.
+  useEffect(() => {
+    const pending = Object.entries(fixStates).filter(([, s]) => isPollable(s));
+    if (pending.length === 0) return;
+    const timer = setTimeout(() => {
+      void (async () => {
+        for (const [issueId, s] of pending) {
+          const attempts = (attemptsRef.current[issueId] ?? 0) + 1;
+          attemptsRef.current[issueId] = attempts;
+          const timedOut = attempts >= 24; // ~2 min at 5s
+          try {
+            const status = await apiFetch<AutofixStatus>(
+              `/sentry/autofix/status?short_id=${encodeURIComponent(s.shortId!)}`,
+            );
+            setFixStates((prev) =>
+              prev[issueId]
+                ? { ...prev, [issueId]: { ...prev[issueId], status, stopped: timedOut } }
+                : prev,
+            );
+          } catch {
+            if (timedOut) {
+              setFixStates((prev) =>
+                prev[issueId]
+                  ? { ...prev, [issueId]: { ...prev[issueId], stopped: true } }
+                  : prev,
+              );
+            }
+          }
+        }
+      })();
+    }, 5000);
+    return () => clearTimeout(timer);
+  }, [fixStates]);
+
   const headerTop = insets.top + Spacing.four;
 
   return (
@@ -508,6 +722,8 @@ export default function SentryIssuesScreen() {
         <FlatList
           data={issues}
           keyExtractor={(item) => item.id}
+          // Re-render rows when selection or any fix status changes.
+          extraData={{ selectionActive, selectedIds, fixStates }}
           contentContainerStyle={[
             styles.content,
             { paddingTop: headerTop, paddingBottom: tabBarInset },
@@ -548,7 +764,15 @@ export default function SentryIssuesScreen() {
               </ThemedText>
             )
           }
-          renderItem={({ item }) => <IssueCard issue={item} />}
+          renderItem={({ item }) => (
+            <IssueCard
+              issue={item}
+              selectionActive={selectionActive}
+              selected={isSelected(item.id)}
+              onToggleSelect={() => toggle(item.id)}
+              fix={fixStates[item.id]}
+            />
+          )}
         />
       </ThemedView>
     </SwipeBackView>
@@ -579,6 +803,22 @@ const styles = StyleSheet.create({
     borderRadius: Spacing.three,
     padding: Spacing.three,
     gap: Spacing.half,
+    borderWidth: 1.5,
+    borderColor: 'transparent',
+  },
+  cardSelected: {
+    borderColor: '#7553FF',
+    backgroundColor: hexToRgba('#7553FF', 0.1),
+  },
+  fixChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.one,
+    marginTop: Spacing.half,
+  },
+  fixChipText: {
+    color: '#7553FF',
+    fontSize: 12,
   },
   cardHeader: {
     flexDirection: 'row',

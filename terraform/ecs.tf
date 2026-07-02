@@ -30,6 +30,7 @@ locals {
     [{ name = "DATABASE_URL", valueFrom = aws_ssm_parameter.database_url.arn }],
     local.sentry_enabled ? [{ name = "SENTRY_DSN", valueFrom = aws_ssm_parameter.sentry_dsn[0].arn }] : [],
     local.sentry_api_enabled ? [{ name = "SENTRY_API_TOKEN", valueFrom = aws_ssm_parameter.sentry_api_token[0].arn }] : [],
+    local.autofix_enabled ? [{ name = "GITHUB_TOKEN", valueFrom = aws_ssm_parameter.github_token[0].arn }] : [],
     local.firebase_enabled ? [{ name = "FIREBASE_CREDENTIALS", valueFrom = aws_ssm_parameter.firebase[0].arn }] : [],
   )
 }
@@ -63,6 +64,8 @@ resource "aws_ecs_task_definition" "api" {
         # CORS allow-list for the web client (comma-separated). The S3 bucket
         # CORS in s3.tf must allow the same origins for byte transfers.
         { name = "CORS_ORIGINS", value = join(",", var.web_origins) },
+        # Target repo for /sentry/autofix dispatches (empty => autofix disabled).
+        { name = "AUTOFIX_REPO", value = var.autofix_repo },
       ]
 
       # Secret config, pulled from SSM Parameter Store by the execution role.

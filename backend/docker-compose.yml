@@ -34,6 +34,10 @@ services:
       # Sentry REST API token for the /sentry issue-proxy (internal integration).
       # Read from backend/.env; empty => /sentry endpoints return 503.
       SENTRY_API_TOKEN: ${SENTRY_API_TOKEN:-}
+      # GitHub autofix: fine-grained PAT + target repo for /sentry/autofix.
+      # Read from backend/.env; empty => the autofix endpoints return 503.
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      AUTOFIX_REPO: ${AUTOFIX_REPO:-}
       ENV: ${ENV:-development}
       # Path (inside the container) to the Firebase service-account JSON. Drop the
       # file at backend/firebase-service-account.json and it appears here via the

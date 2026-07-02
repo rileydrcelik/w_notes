@@ -19,6 +19,7 @@ import { ItemOptionsProvider } from '@/components/item-options-modal';
 import { CopaProvider } from '@/store/copa-store';
 import { NotesProvider } from '@/store/notes-store';
 import { SidebarProvider, useSidebar } from '@/store/sidebar-store';
+import { AutofixSelectionProvider } from '@/store/autofix-selection-store';
 import { EditorPrefsProvider, useEditorPrefs } from '@/store/editor-prefs-store';
 import { AppThemeProvider, useThemePref } from '@/store/theme-store';
 import { installSyncFlush } from '@/lib/sync/flush-on-hide';
@@ -106,6 +107,7 @@ function AppShell() {
       <NotesProvider>
         <CopaProvider>
         <SidebarProvider>
+        <AutofixSelectionProvider>
         <ItemOptionsProvider>
         <CopaOptionsProvider>
           <AnimatedSplashOverlay />
@@ -129,6 +131,7 @@ function AppShell() {
           <DbTabGuard />
         </CopaOptionsProvider>
         </ItemOptionsProvider>
+        </AutofixSelectionProvider>
         </SidebarProvider>
         </CopaProvider>
       </NotesProvider>
