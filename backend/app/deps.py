@@ -20,12 +20,12 @@ import threading
 
 import firebase_admin
 from firebase_admin import auth as firebase_auth, credentials
-from fastapi import Depends, Header, HTTPException, status
+from fastapi import Header, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.db import get_session
+from app.db import SessionLocal
 from app.models import User
 
 # Lazily-initialized Firebase app (None when no credentials are configured).
@@ -99,11 +99,13 @@ async def _user_by_device_key(session: AsyncSession, device_key: str) -> User:
 
 async def get_current_user(
     authorization: str | None = Header(default=None),
-    session: AsyncSession = Depends(get_session),
 ) -> User:
     token = _bearer(authorization)
 
     app = _firebase()
+    # Firebase verification is a network call that doesn't touch the DB, so do it
+    # before opening a session — no point holding a connection during it.
+    decoded: dict | None = None
     if app is not None and _looks_like_jwt(token):
         try:
             decoded = firebase_auth.verify_id_token(token, app=app)
@@ -112,7 +114,25 @@ async def get_current_user(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid Firebase ID token",
             ) from exc
-        return await _user_by_firebase(session, decoded["uid"], decoded.get("email"))
 
-    # Anonymous pre-login identity.
-    return await _user_by_device_key(session, token)
+    # Auth owns a short-lived session it commits and closes right away, rather
+    # than the request-scoped `get_session` dependency (which FastAPI keeps open
+    # for the whole request). Endpoints like the Sentry proxy then make slow
+    # upstream calls with no DB connection pinned idle behind them; leaving it
+    # open exhausted the pool under concurrent polling (QueuePool timeout). The
+    # returned user is detached but safe to read (no relationships;
+    # expire_on_commit=False). Endpoints needing the DB declare their own session.
+    async with SessionLocal() as session:
+        try:
+            if decoded is not None:
+                user = await _user_by_firebase(
+                    session, decoded["uid"], decoded.get("email")
+                )
+            else:
+                # Anonymous pre-login identity.
+                user = await _user_by_device_key(session, token)
+            await session.commit()
+            return user
+        except Exception:
+            await session.rollback()
+            raise
