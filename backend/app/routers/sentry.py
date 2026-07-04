@@ -356,6 +356,26 @@ async def get_issue(
     return IssueSummary.model_validate(resp.json())
 
 
+class ResolveResponse(BaseModel):
+    resolved: bool
+    issue_id: str
+
+
+@router.post("/issues/{issue_id}/resolve", response_model=ResolveResponse)
+async def resolve_issue(
+    issue_id: str,
+    user: User = Depends(get_current_user),
+) -> ResolveResponse:
+    """Mark a Sentry issue resolved — the app's "Ignore" action. Sentry
+    auto-reopens it on regression, so this is a dismissal, not a permanent mute.
+    Same PUT the autofix workflow makes after opening a PR."""
+    _require_token()
+    async with _client() as client:
+        resp = await client.put(f"/issues/{issue_id}/", json={"status": "resolved"})
+    _raise_for_upstream(resp)
+    return ResolveResponse(resolved=True, issue_id=issue_id)
+
+
 @router.get("/issues/{issue_id}/latest-event", response_model=LatestEvent)
 async def latest_event(
     issue_id: str,
@@ -507,6 +527,22 @@ def _autofix_payload(issue: dict, event: dict, branch: str) -> dict:
     }
 
 
+async def _autofix_in_flight(gh: httpx.AsyncClient, repo: str, branch: str) -> bool:
+    """True if a fix for this issue's branch already exists (a PR in any state, or
+    the pushed branch) — so we don't dispatch a second billed agent run to redo
+    work that's already done or in progress. Mirrors the checks in
+    ``autofix_status``."""
+    pulls = await gh.get(f"/repos/{repo}/pulls", params={"state": "all", "per_page": 30})
+    _raise_for_github(pulls)
+    if any((pr.get("head") or {}).get("ref") == branch for pr in pulls.json()):
+        return True
+    br = await gh.get(f"/repos/{repo}/branches/{branch}")
+    if br.status_code == 404:
+        return False
+    _raise_for_github(br)
+    return True
+
+
 @router.post("/autofix", response_model=AutofixResponse, status_code=status.HTTP_202_ACCEPTED)
 async def autofix(
     req: AutofixRequest = Body(...),
@@ -526,10 +562,16 @@ async def autofix(
 
     short_id = issue.get("shortId") or req.issue_id
     branch = _branch_for(short_id)
-    payload = _autofix_payload(issue, event, branch)
 
     _, repo = _require_github()
+    # Dedup: if a fix is already in flight or landed, don't burn another agent run.
     async with _github_client() as gh:
+        if await _autofix_in_flight(gh, repo, branch):
+            return AutofixResponse(
+                dispatched=False, issue_id=req.issue_id, short_id=short_id, branch=branch
+            )
+
+        payload = _autofix_payload(issue, event, branch)
         resp = await gh.post(
             f"/repos/{repo}/dispatches",
             json={"event_type": "sentry-autofix", "client_payload": payload},

@@ -41,8 +41,13 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           base_branch: main
           # Give Claude the file/edit/shell tools it needs to fix code and run git.
+          # Sonnet is ~2.5x cheaper than the Opus default and plenty for a fix
+          # scoped by a stack trace; --max-turns caps token spend on a run that
+          # gets stuck exploring instead of converging.
           claude_args: |
             --allowedTools Edit,Read,Write,Bash
+            --model claude-sonnet-5
+            --max-turns 20
           prompt: |
             A production error was reported by Sentry. Fix its root cause in this repository.
 

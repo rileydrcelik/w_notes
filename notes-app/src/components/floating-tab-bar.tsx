@@ -100,9 +100,14 @@ export function FloatingTabBar({ blurTarget }: FloatingTabBarProps) {
   // the same drawer.
   const { open: menuOpen, setOpen: setMenuOpen } = useSidebar();
   // While the Sentry screen has issues selected, the trailing (+) slot becomes a
-  // "Fix" button that ships the selection to the autofix pipeline.
-  const { active: selecting, count: selectedCount, requestFix, clear: clearSelection } =
-    useAutofixSelection();
+  // pair of actions — Fix (ship to autofix) and Ignore (resolve in Sentry).
+  const {
+    active: selecting,
+    count: selectedCount,
+    requestFix,
+    requestIgnore,
+    clear: clearSelection,
+  } = useAutofixSelection();
   const fixMode = selecting && selectedCount > 0;
   // Copa is the only sibling tab; everything else lives under the home group.
   // Its editor lives at /copa/[id], so match the whole copa stack.
@@ -202,11 +207,26 @@ export function FloatingTabBar({ blurTarget }: FloatingTabBarProps) {
             })}
           </GlassSurface>
 
-          {/* Trailing slot: the create button, mirroring the back button. It
-              becomes a Fix button while Sentry issues are selected. */}
-          <View pointerEvents="box-none" style={[styles.sideSlot, slotStyle]}>
+          {/* Trailing slot: the create button, mirroring the back button. While
+              Sentry issues are selected it becomes an Ignore + Fix pair; the slot
+              sizes to that pair rather than a single button. */}
+          <View
+            pointerEvents="box-none"
+            style={[styles.sideSlot, !fixMode && slotStyle]}>
             {fixMode ? (
-              <Animated.View key="fix" entering={FadeIn.duration(160)} exiting={FadeOut.duration(140)}>
+              <Animated.View
+                key="selection"
+                entering={FadeIn.duration(160)}
+                exiting={FadeOut.duration(140)}
+                style={[styles.selectionActions, vertical && styles.selectionActionsVertical]}>
+                <SelectionActionButton
+                  icon="check"
+                  iconColor={colors.textSecondary}
+                  accessibilityLabel={`Ignore ${selectedCount} selected ${selectedCount === 1 ? 'issue' : 'issues'}`}
+                  blurTarget={blurTarget}
+                  onPress={requestIgnore}
+                  onCancel={clearSelection}
+                />
                 <FixButton
                   count={selectedCount}
                   blurTarget={blurTarget}
@@ -491,6 +511,56 @@ function CreateButton({
 }
 
 /**
+ * A plain selection action (e.g. Ignore) shown next to the Fix button while
+ * Sentry issues are selected. Same squircle glass treatment, no count badge; a
+ * long-press (or right-click) cancels selection like its sibling.
+ */
+function SelectionActionButton({
+  icon,
+  iconColor,
+  accessibilityLabel,
+  blurTarget,
+  onPress,
+  onCancel,
+}: {
+  icon: FeatherName;
+  iconColor: string;
+  accessibilityLabel: string;
+  blurTarget?: RefObject<View | null> | null;
+  onPress: () => void;
+  onCancel: () => void;
+}) {
+  const scale = useSharedValue(1);
+  const animatedStyle = useAnimatedStyle(() => ({ transform: [{ scale: scale.value }] }));
+  const contextMenuRef = useContextMenu(onCancel);
+
+  return (
+    <Animated.View style={animatedStyle}>
+      <Pressable
+        ref={contextMenuRef}
+        accessibilityRole="button"
+        accessibilityLabel={accessibilityLabel}
+        onPressIn={() => {
+          scale.value = withTiming(0.92, { duration: 80 });
+        }}
+        onPressOut={() => {
+          scale.value = withTiming(1, { duration: 120 });
+        }}
+        onPress={onPress}
+        onLongPress={onCancel}>
+        <GlassSurface
+          intensity={75}
+          tintOpacity={0.85}
+          blurTarget={blurTarget}
+          style={[styles.createButton, { width: TabBar.height, height: TabBar.height }]}>
+          <Feather name={icon} color={iconColor} size={24} />
+        </GlassSurface>
+      </Pressable>
+    </Animated.View>
+  );
+}
+
+/**
  * Trailing action while Sentry issues are selected: sits exactly where the create
  * (+) button normally does. A tap ships the selection to the autofix pipeline; a
  * long-press cancels selection. A small badge shows how many issues are picked.
@@ -556,6 +626,15 @@ const styles = StyleSheet.create({
   sideSlot: {
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  // Ignore + Fix sit side by side in the trailing slot while issues are selected.
+  selectionActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.two,
+  },
+  selectionActionsVertical: {
+    flexDirection: 'column',
   },
   backButton: {
     alignItems: 'center',

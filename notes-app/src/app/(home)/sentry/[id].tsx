@@ -582,8 +582,15 @@ export default function SentryIssuesScreen() {
   const theme = useTheme();
   const insets = useSafeAreaInsets();
   const tabBarInset = useTabBarInset();
-  const { active: selectionActive, selectedIds, isSelected, toggle, clear, registerFixHandler } =
-    useAutofixSelection();
+  const {
+    active: selectionActive,
+    selectedIds,
+    isSelected,
+    toggle,
+    clear,
+    registerFixHandler,
+    registerIgnoreHandler,
+  } = useAutofixSelection();
 
   const note = getNote(id);
   // Memoize on the raw config so `target` keeps a stable identity across
@@ -669,12 +676,41 @@ export default function SentryIssuesScreen() {
     [target, clear],
   );
 
-  // Register the handler so the (screen-external) navbar Fix button can invoke it,
-  // and make sure selection doesn't linger once we leave the screen.
+  // Resolve the selected issues in Sentry (the navbar's "Ignore" action). Sentry
+  // drops resolved issues from the unresolved list, so remove them locally right
+  // away; on failure we put them back and surface the error banner.
+  const handleIgnore = useCallback(
+    (ids: string[]) => {
+      const idSet = new Set(ids);
+      const removed = issues.filter((i) => idSet.has(i.id));
+      setIssues((prev) => prev.filter((i) => !idSet.has(i.id)));
+      clear();
+      ids.forEach((issueId) => {
+        apiFetch(`/sentry/issues/${encodeURIComponent(issueId)}/resolve`, {
+          method: 'POST',
+        }).catch(() => {
+          // Restore the ones that failed to resolve, preserving list order.
+          const failed = removed.find((i) => i.id === issueId);
+          if (failed) {
+            setIssues((prev) => (prev.some((i) => i.id === issueId) ? prev : [failed, ...prev]));
+          }
+          setError('Could not resolve one or more issues in Sentry.');
+        });
+      });
+    },
+    [issues, clear],
+  );
+
+  // Register the handlers so the (screen-external) navbar Fix/Ignore buttons can
+  // invoke them, and make sure selection doesn't linger once we leave the screen.
   useEffect(() => {
     registerFixHandler(handleFix);
     return () => registerFixHandler(null);
   }, [registerFixHandler, handleFix]);
+  useEffect(() => {
+    registerIgnoreHandler(handleIgnore);
+    return () => registerIgnoreHandler(null);
+  }, [registerIgnoreHandler, handleIgnore]);
   useEffect(() => () => clear(), [clear]);
 
   // Poll the backend for each in-flight fix until a PR appears (or we give up).
