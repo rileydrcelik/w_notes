@@ -413,10 +413,22 @@ async def latest_event(
 # app can poll status. Guardrails live in the workflow (PR only, never merge).
 
 
+# Models the autofix workflow will accept as a per-issue override. The default
+# (Haiku) lives in the workflow; a caller passes one of these to escalate a hard
+# fix ("Sonnet on demand"). Allowlisted because the value is interpolated into the
+# workflow's `--model` arg — an arbitrary string there could inject extra CLI args.
+_AUTOFIX_MODELS = frozenset(
+    {"claude-haiku-4-5", "claude-sonnet-5", "claude-opus-4-8"}
+)
+
+
 class AutofixRequest(BaseModel):
     issue_id: str
     org: str
     project: str
+    # Optional model override for a tougher fix. Ignored unless it's in
+    # _AUTOFIX_MODELS; omitted => the workflow's default (Haiku).
+    model: str | None = None
 
 
 class AutofixResponse(BaseModel):
@@ -480,7 +492,9 @@ def _raise_for_github(resp: httpx.Response) -> None:
     raise HTTPException(code, f"GitHub API error ({resp.status_code})")
 
 
-def _autofix_payload(issue: dict, event: dict, branch: str) -> dict:
+def _autofix_payload(
+    issue: dict, event: dict, branch: str, model: str | None = None
+) -> dict:
     """A trimmed, JSON-safe context bundle for the coding agent. Kept small (well
     under GitHub's ~64 KB client_payload cap): the headline, culprit, permalink,
     and the in-app stack frames closest to the crash with a little source.
@@ -516,6 +530,8 @@ def _autofix_payload(issue: dict, event: dict, branch: str) -> dict:
         "exception_type": exc_type,
         "exception_value": exc_value or (meta.get("value") if isinstance(meta, dict) else None),
         # Everything bulkier rides in one nested object (the 10th top-level key).
+        # `model` (optional) lives here too so it doesn't add an 11th top-level key;
+        # the workflow reads it as client_payload.details.model.
         "details": {
             "frames": frames,
             "request": {"url": request.url, "method": request.method} if request else None,
@@ -523,6 +539,7 @@ def _autofix_payload(issue: dict, event: dict, branch: str) -> dict:
                 {"category": c.category, "level": c.level, "message": c.message}
                 for c in _breadcrumbs(event, limit=8)
             ],
+            **({"model": model} if model else {}),
         },
     }
 
@@ -562,6 +579,9 @@ async def autofix(
 
     short_id = issue.get("shortId") or req.issue_id
     branch = _branch_for(short_id)
+    # Only honor an allowlisted override; anything else falls back to the workflow
+    # default (Haiku). Guards against injecting arbitrary text into `--model`.
+    model = req.model if req.model in _AUTOFIX_MODELS else None
 
     _, repo = _require_github()
     # Dedup: if a fix is already in flight or landed, don't burn another agent run.
@@ -571,7 +591,7 @@ async def autofix(
                 dispatched=False, issue_id=req.issue_id, short_id=short_id, branch=branch
             )
 
-        payload = _autofix_payload(issue, event, branch)
+        payload = _autofix_payload(issue, event, branch, model)
         resp = await gh.post(
             f"/repos/{repo}/dispatches",
             json={"event_type": "sentry-autofix", "client_payload": payload},

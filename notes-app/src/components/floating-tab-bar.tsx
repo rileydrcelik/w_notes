@@ -100,15 +100,20 @@ export function FloatingTabBar({ blurTarget }: FloatingTabBarProps) {
   // the same drawer.
   const { open: menuOpen, setOpen: setMenuOpen } = useSidebar();
   // While the Sentry screen has issues selected, the trailing (+) slot becomes a
-  // pair of actions — Fix (ship to autofix) and Ignore (resolve in Sentry).
+  // "⋯" button that opens a menu of actions — Fix, Dismiss, Copy error message.
   const {
     active: selecting,
     count: selectedCount,
     requestFix,
     requestIgnore,
+    requestCopy,
     clear: clearSelection,
   } = useAutofixSelection();
   const fixMode = selecting && selectedCount > 0;
+  // The selection actions menu (opened by the "⋯" button while selecting).
+  const [selectionMenuOpen, setSelectionMenuOpen] = useState(false);
+  // Reset it when selection ends so it can't auto-open on the next selection.
+  if (!fixMode && selectionMenuOpen) setSelectionMenuOpen(false);
   // Copa is the only sibling tab; everything else lives under the home group.
   // Its editor lives at /copa/[id], so match the whole copa stack.
   const onCopa = pathname === '/copa' || pathname.startsWith('/copa/');
@@ -208,29 +213,18 @@ export function FloatingTabBar({ blurTarget }: FloatingTabBarProps) {
           </GlassSurface>
 
           {/* Trailing slot: the create button, mirroring the back button. While
-              Sentry issues are selected it becomes an Ignore + Fix pair; the slot
-              sizes to that pair rather than a single button. */}
-          <View
-            pointerEvents="box-none"
-            style={[styles.sideSlot, !fixMode && slotStyle]}>
+              Sentry issues are selected it becomes a "⋯" button that opens the
+              actions menu (Fix / Dismiss / Copy). */}
+          <View pointerEvents="box-none" style={[styles.sideSlot, slotStyle]}>
             {fixMode ? (
               <Animated.View
                 key="selection"
                 entering={FadeIn.duration(160)}
-                exiting={FadeOut.duration(140)}
-                style={[styles.selectionActions, vertical && styles.selectionActionsVertical]}>
-                <SelectionActionButton
-                  icon="check"
-                  iconColor={colors.textSecondary}
-                  accessibilityLabel={`Ignore ${selectedCount} selected ${selectedCount === 1 ? 'issue' : 'issues'}`}
-                  blurTarget={blurTarget}
-                  onPress={requestIgnore}
-                  onCancel={clearSelection}
-                />
-                <FixButton
+                exiting={FadeOut.duration(140)}>
+                <SelectionMenuButton
                   count={selectedCount}
                   blurTarget={blurTarget}
-                  onPress={requestFix}
+                  onPress={() => setSelectionMenuOpen(true)}
                   onCancel={clearSelection}
                 />
               </Animated.View>
@@ -254,6 +248,15 @@ export function FloatingTabBar({ blurTarget }: FloatingTabBarProps) {
         open={createMenu !== null}
         anchor={createMenu?.anchor ?? null}
         onClose={() => setCreateMenu(null)}
+      />
+      {/* Actions for the selected Sentry issues, opened by the "⋯" button. */}
+      <SelectionMenu
+        open={selectionMenuOpen && fixMode}
+        count={selectedCount}
+        onClose={() => setSelectionMenuOpen(false)}
+        onFix={requestFix}
+        onDismiss={requestIgnore}
+        onCopy={requestCopy}
       />
     </>
   );
@@ -511,61 +514,12 @@ function CreateButton({
 }
 
 /**
- * A plain selection action (e.g. Ignore) shown next to the Fix button while
- * Sentry issues are selected. Same squircle glass treatment, no count badge; a
- * long-press (or right-click) cancels selection like its sibling.
- */
-function SelectionActionButton({
-  icon,
-  iconColor,
-  accessibilityLabel,
-  blurTarget,
-  onPress,
-  onCancel,
-}: {
-  icon: FeatherName;
-  iconColor: string;
-  accessibilityLabel: string;
-  blurTarget?: RefObject<View | null> | null;
-  onPress: () => void;
-  onCancel: () => void;
-}) {
-  const scale = useSharedValue(1);
-  const animatedStyle = useAnimatedStyle(() => ({ transform: [{ scale: scale.value }] }));
-  const contextMenuRef = useContextMenu(onCancel);
-
-  return (
-    <Animated.View style={animatedStyle}>
-      <Pressable
-        ref={contextMenuRef}
-        accessibilityRole="button"
-        accessibilityLabel={accessibilityLabel}
-        onPressIn={() => {
-          scale.value = withTiming(0.92, { duration: 80 });
-        }}
-        onPressOut={() => {
-          scale.value = withTiming(1, { duration: 120 });
-        }}
-        onPress={onPress}
-        onLongPress={onCancel}>
-        <GlassSurface
-          intensity={75}
-          tintOpacity={0.85}
-          blurTarget={blurTarget}
-          style={[styles.createButton, { width: TabBar.height, height: TabBar.height }]}>
-          <Feather name={icon} color={iconColor} size={24} />
-        </GlassSurface>
-      </Pressable>
-    </Animated.View>
-  );
-}
-
-/**
  * Trailing action while Sentry issues are selected: sits exactly where the create
- * (+) button normally does. A tap ships the selection to the autofix pipeline; a
- * long-press cancels selection. A small badge shows how many issues are picked.
+ * (+) button normally does. A tap opens the actions menu (Fix / Dismiss / Copy); a
+ * long-press (or right-click on web) cancels the selection. A small badge shows how
+ * many issues are picked.
  */
-function FixButton({
+function SelectionMenuButton({
   count,
   blurTarget,
   onPress,
@@ -586,7 +540,7 @@ function FixButton({
       <Pressable
         ref={contextMenuRef}
         accessibilityRole="button"
-        accessibilityLabel={`Fix ${count} selected ${count === 1 ? 'issue' : 'issues'}`}
+        accessibilityLabel={`Actions for ${count} selected ${count === 1 ? 'issue' : 'issues'}`}
         onPressIn={() => {
           scale.value = withTiming(0.92, { duration: 80 });
         }}
@@ -600,13 +554,91 @@ function FixButton({
           tintOpacity={0.85}
           blurTarget={blurTarget}
           style={[styles.createButton, { width: TabBar.height, height: TabBar.height }]}>
-          <Feather name="zap" color="#7553FF" size={24} />
+          <Feather name="more-horizontal" color="#7553FF" size={26} />
           <View style={styles.fixBadge}>
             <ThemedText style={styles.fixBadgeText}>{count}</ThemedText>
           </View>
         </GlassSurface>
       </Pressable>
     </Animated.View>
+  );
+}
+
+/**
+ * Bottom sheet of actions for the selected Sentry issues, opened from the "⋯"
+ * button. Mirrors the app's other option sheets (glass surface, slide-in, a
+ * backdrop tap to dismiss). Each row runs its action and closes the sheet; the
+ * Fix/Dismiss/Copy handlers themselves clear the selection.
+ */
+function SelectionMenu({
+  open,
+  count,
+  onClose,
+  onFix,
+  onDismiss,
+  onCopy,
+}: {
+  open: boolean;
+  count: number;
+  onClose: () => void;
+  onFix: () => void;
+  onDismiss: () => void;
+  onCopy: () => void;
+}) {
+  const colors = useTheme();
+  const insets = useSafeAreaInsets();
+  const noun = count === 1 ? 'issue' : 'issues';
+
+  const options: {
+    key: string;
+    label: string;
+    icon: FeatherName;
+    tint: string;
+    onPress: () => void;
+  }[] = [
+    { key: 'fix', label: `Fix ${count} ${noun}`, icon: 'zap', tint: '#7553FF', onPress: onFix },
+    { key: 'dismiss', label: `Dismiss ${count} ${noun}`, icon: 'check', tint: colors.text, onPress: onDismiss },
+    { key: 'copy', label: 'Copy error message', icon: 'copy', tint: colors.text, onPress: onCopy },
+  ];
+
+  return (
+    <View style={styles.menuOverlay} pointerEvents={open ? 'box-none' : 'none'}>
+      {open && (
+        <>
+          <AnimatedPressable
+            entering={FadeIn.duration(180)}
+            exiting={FadeOut.duration(180)}
+            style={styles.menuBackdrop}
+            onPress={onClose}
+            accessibilityRole="button"
+            accessibilityLabel="Dismiss actions"
+          />
+          <Animated.View
+            entering={SlideInDown.duration(260)}
+            exiting={SlideOutDown.duration(220)}
+            style={[styles.menuHost, { paddingBottom: insets.bottom + Spacing.three }]}>
+            <GlassSurface intensity={75} tintOpacity={0.85} style={styles.menuSheet}>
+              {options.map((option) => (
+                <Pressable
+                  key={option.key}
+                  onPress={() => {
+                    option.onPress();
+                    onClose();
+                  }}
+                  accessibilityRole="button"
+                  accessibilityLabel={option.label}
+                  style={({ pressed }) => [styles.menuRow, pressed && styles.menuRowPressed]}>
+                  <Feather name={option.icon} size={20} color={option.tint} style={styles.menuIcon} />
+                  <ThemedText style={[styles.menuLabel, { color: option.tint }]}>
+                    {option.label}
+                  </ThemedText>
+                </Pressable>
+              ))}
+            </GlassSurface>
+          </Animated.View>
+        </>
+      )}
+    </View>
   );
 }
 
@@ -626,15 +658,6 @@ const styles = StyleSheet.create({
   sideSlot: {
     alignItems: 'center',
     justifyContent: 'center',
-  },
-  // Ignore + Fix sit side by side in the trailing slot while issues are selected.
-  selectionActions: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.two,
-  },
-  selectionActionsVertical: {
-    flexDirection: 'column',
   },
   backButton: {
     alignItems: 'center',
