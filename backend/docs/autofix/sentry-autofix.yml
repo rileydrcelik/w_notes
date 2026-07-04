@@ -42,12 +42,13 @@ jobs:
           base_branch: main
           # Give Claude the file/edit/shell tools it needs to fix code and run git.
           # Sonnet is ~2.5x cheaper than the Opus default and plenty for a fix
-          # scoped by a stack trace; --max-turns caps token spend on a run that
-          # gets stuck exploring instead of converging.
+          # scoped by a stack trace; --max-turns is a runaway guard (a stuck run
+          # burns tokens and produces no PR), set high enough that a normal
+          # explore→edit→test→commit→PR flow finishes inside it.
           claude_args: |
             --allowedTools Edit,Read,Write,Bash
             --model claude-sonnet-5
-            --max-turns 20
+            --max-turns 50
           prompt: |
             A production error was reported by Sentry. Fix its root cause in this repository.
 
