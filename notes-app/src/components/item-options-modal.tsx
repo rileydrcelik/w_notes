@@ -23,12 +23,12 @@ import { useNotes } from '@/store/notes-store';
 
 type FeatherName = ComponentProps<typeof Feather>['name'];
 
-/** What the open options sheet is acting on. */
+/** One note or folder the open options sheet is acting on. */
 type OptionsTarget = { type: 'note' | 'folder'; id: string };
 
 type ItemOptionsContextValue = {
-  /** Opens the options sheet for a note or folder. */
-  openOptions: (target: OptionsTarget) => void;
+  /** Opens the options sheet for one or more notes/folders (bulk selection). */
+  openOptions: (targets: OptionsTarget[]) => void;
 };
 
 const ItemOptionsContext = createContext<ItemOptionsContextValue | null>(null);
@@ -46,68 +46,73 @@ const FAVORITE = '#f5a623';
  */
 export function ItemOptionsProvider({ children }: { children: ReactNode }) {
   const { getNote, getFolder, deleteNote, deleteFolder } = useNotes();
-  const [target, setTarget] = useState<OptionsTarget | null>(null);
+  const [targets, setTargets] = useState<OptionsTarget[]>([]);
   const [renameTarget, setRenameTarget] = useState<OptionsTarget | null>(null);
-  const [moveTarget, setMoveTarget] = useState<string | null>(null);
-  const [deleteTarget, setDeleteTarget] = useState<OptionsTarget | null>(null);
+  const [moveTargets, setMoveTargets] = useState<string[] | null>(null);
+  const [deleteTargets, setDeleteTargets] = useState<OptionsTarget[] | null>(null);
 
-  const openOptions = useCallback((next: OptionsTarget) => setTarget(next), []);
-  const closeOptions = useCallback(() => setTarget(null), []);
+  const openOptions = useCallback((next: OptionsTarget[]) => {
+    if (next.length > 0) setTargets(next);
+  }, []);
+  const closeOptions = useCallback(() => setTargets([]), []);
   const openRename = useCallback((next: OptionsTarget) => {
-    setTarget(null);
+    setTargets([]);
     setRenameTarget(next);
   }, []);
-  const openMove = useCallback((id: string) => {
-    setTarget(null);
-    setMoveTarget(id);
+  const openMove = useCallback((ids: string[]) => {
+    setTargets([]);
+    setMoveTargets(ids);
   }, []);
-  const openDelete = useCallback((next: OptionsTarget) => {
-    setTarget(null);
-    setDeleteTarget(next);
+  const openDelete = useCallback((next: OptionsTarget[]) => {
+    setTargets([]);
+    setDeleteTargets(next);
   }, []);
   const confirmDelete = useCallback(() => {
-    if (deleteTarget) {
-      if (deleteTarget.type === 'note') deleteNote(deleteTarget.id);
-      else deleteFolder(deleteTarget.id);
-    }
-    setDeleteTarget(null);
-  }, [deleteTarget, deleteNote, deleteFolder]);
+    deleteTargets?.forEach((t) => (t.type === 'note' ? deleteNote(t.id) : deleteFolder(t.id)));
+    setDeleteTargets(null);
+  }, [deleteTargets, deleteNote, deleteFolder]);
 
   const value = useMemo<ItemOptionsContextValue>(() => ({ openOptions }), [openOptions]);
 
-  const isNote = deleteTarget?.type === 'note';
-  const deleteName = deleteTarget
-    ? isNote
-      ? getNote(deleteTarget.id)?.title
-      : getFolder(deleteTarget.id)?.name
+  // Delete-confirmation copy: name the single item, else count them.
+  const deleteCount = deleteTargets?.length ?? 0;
+  const single = deleteTargets?.[0];
+  const singleIsNote = single?.type === 'note';
+  const singleName = single
+    ? singleIsNote
+      ? getNote(single.id)?.title
+      : getFolder(single.id)?.name
     : undefined;
+  const anyFolders = deleteTargets?.some((t) => t.type === 'folder') ?? false;
+  const deleteTitle =
+    deleteCount > 1 ? `Delete ${deleteCount} items?` : singleIsNote ? 'Delete note?' : 'Delete folder?';
+  const deleteMessage =
+    deleteCount > 1
+      ? `${deleteCount} items${anyFolders ? ' (and any folder contents)' : ''} will be moved to the Trash.`
+      : singleIsNote
+        ? singleName
+          ? `“${singleName}” will be moved to the Trash.`
+          : 'This note will be moved to the Trash.'
+        : `${singleName ? `“${singleName}”` : 'This folder'} and its notes will be moved to the Trash.`;
 
   return (
     <ItemOptionsContext.Provider value={value}>
       {children}
       <OptionsSheet
-        target={target}
+        targets={targets}
         onClose={closeOptions}
         onRename={openRename}
         onMove={openMove}
         onDelete={openDelete}
       />
       <RenameDialog target={renameTarget} onClose={() => setRenameTarget(null)} />
-      <MoveSheet noteId={moveTarget} onClose={() => setMoveTarget(null)} />
+      <MoveSheet noteIds={moveTargets} onClose={() => setMoveTargets(null)} />
       <ConfirmDialog
-        open={deleteTarget !== null}
-        title={isNote ? 'Delete note?' : 'Delete folder?'}
-        message={
-          isNote
-            ? deleteName
-              ? `“${deleteName}” will be moved to the Trash.`
-              : 'This note will be moved to the Trash.'
-            : `${
-                deleteName ? `“${deleteName}”` : 'This folder'
-              } and its notes will be moved to the Trash.`
-        }
+        open={deleteCount > 0}
+        title={deleteTitle}
+        message={deleteMessage}
         onConfirm={confirmDelete}
-        onCancel={() => setDeleteTarget(null)}
+        onCancel={() => setDeleteTargets(null)}
       />
     </ItemOptionsContext.Provider>
   );
@@ -128,22 +133,24 @@ type Option = {
 };
 
 /**
- * Bottom action sheet for a long-pressed note/folder. Always mounted; the inner
- * content mounts on an active `target` so the slide/fade transitions can play
- * out on dismiss. Mirrors the right sidebar's always-mounted overlay pattern.
+ * Bottom action sheet for the selected note(s)/folder(s). Always mounted; the
+ * inner content mounts while `targets` is non-empty so the slide/fade
+ * transitions can play out on dismiss. Options adapt to the selection: rename is
+ * single-only, move applies when every item is a note, and favorite/share/delete
+ * act on the whole set.
  */
 function OptionsSheet({
-  target,
+  targets,
   onClose,
   onRename,
   onMove,
   onDelete,
 }: {
-  target: OptionsTarget | null;
+  targets: OptionsTarget[];
   onClose: () => void;
   onRename: (target: OptionsTarget) => void;
-  onMove: (id: string) => void;
-  onDelete: (target: OptionsTarget) => void;
+  onMove: (ids: string[]) => void;
+  onDelete: (targets: OptionsTarget[]) => void;
 }) {
   const colors = useTheme();
   const insets = useSafeAreaInsets();
@@ -156,53 +163,75 @@ function OptionsSheet({
     markNoteShared,
   } = useNotes();
 
-  const open = target !== null;
-  const isNote = target?.type === 'note';
-  const note = target && isNote ? getNote(target.id) : undefined;
-  const folder = target && !isNote ? getFolder(target.id) : undefined;
-  const favorited = (isNote ? note?.favorite : folder?.favorite) ?? false;
+  const count = targets.length;
+  const open = count > 0;
+  const single = count === 1;
+  const suffix = single ? '' : ` ${count}`;
+  // Only notes carry a folderId, so "move" is offered when nothing is a folder.
+  const allNotes = targets.every((t) => t.type === 'note');
+  const isFavorited = (t: OptionsTarget) =>
+    (t.type === 'note' ? getNote(t.id)?.favorite : getFolder(t.id)?.favorite) ?? false;
+  const allFavorited = count > 0 && targets.every(isFavorited);
 
-  // Folders are flat (only notes carry a folderId), so "move" applies to notes.
   const options: Option[] = [
-    { key: 'favorite', label: favorited ? 'Unfavorite' : 'Favorite', icon: 'star' },
-    { key: 'rename', label: 'Rename', icon: 'edit-3' },
-    ...(isNote ? [{ key: 'move', label: 'Move to folder', icon: 'move' as FeatherName }] : []),
-    { key: 'share', label: 'Share', icon: 'share' },
-    { key: 'delete', label: 'Delete', icon: 'trash-2', destructive: true },
+    { key: 'favorite', label: `${allFavorited ? 'Unfavorite' : 'Favorite'}${suffix}`, icon: 'star' },
+    ...(single ? [{ key: 'rename', label: 'Rename', icon: 'edit-3' as FeatherName }] : []),
+    ...(allNotes ? [{ key: 'move', label: `Move${suffix} to folder`, icon: 'move' as FeatherName }] : []),
+    { key: 'share', label: `Share${suffix}`, icon: 'share' },
+    { key: 'delete', label: `Delete${suffix}`, icon: 'trash-2', destructive: true },
   ];
 
   const onSelect = async (option: Option) => {
-    if (!target) return;
+    if (count === 0) return;
     switch (option.key) {
-      case 'favorite':
-        if (isNote) toggleNoteFavorite(target.id);
-        else toggleFolderFavorite(target.id);
+      case 'favorite': {
+        // Set every item to the same state (favorite unless all already are),
+        // toggling only those that differ so mixed selections end up uniform.
+        const next = !allFavorited;
+        targets.forEach((t) => {
+          if (isFavorited(t) === next) return;
+          if (t.type === 'note') toggleNoteFavorite(t.id);
+          else toggleFolderFavorite(t.id);
+        });
         onClose();
         break;
+      }
       case 'rename':
-        onRename(target);
+        onRename(targets[0]);
         break;
       case 'move':
-        onMove(target.id);
+        onMove(targets.map((t) => t.id));
         break;
-      case 'share':
+      case 'share': {
         onClose();
-        if (isNote && note) {
-          // Record it on the Shared screen, then offer the OS share sheet.
-          markNoteShared(note.id);
-          await Share.share({ title: note.title || 'Note', message: `${note.title}\n\n${note.body}`.trim() });
-        } else if (folder) {
+        const parts = targets.map((t) => {
+          if (t.type === 'note') {
+            const note = getNote(t.id);
+            if (!note) return '';
+            markNoteShared(note.id);
+            return `${note.title}\n\n${note.body}`.trim();
+          }
+          const folder = getFolder(t.id);
+          if (!folder) return '';
           const titles = getNotesInFolder(folder.id)
             .map((n) => `• ${n.title || 'Untitled'}`)
             .join('\n');
-          await Share.share({
-            title: folder.name || 'Folder',
-            message: `${folder.name}\n${titles}`.trim(),
-          });
+          return `${folder.name}\n${titles}`.trim();
+        });
+        const message = parts.filter(Boolean).join('\n\n———\n\n');
+        if (message) {
+          const first = targets[0];
+          const title = !single
+            ? `${count} items`
+            : first.type === 'note'
+              ? getNote(first.id)?.title || 'Note'
+              : getFolder(first.id)?.name || 'Folder';
+          await Share.share({ title, message });
         }
         break;
+      }
       case 'delete':
-        onDelete(target);
+        onDelete(targets);
         break;
     }
   };
@@ -227,7 +256,7 @@ function OptionsSheet({
             <GlassSurface intensity={75} tintOpacity={0.85} style={styles.sheet}>
               {options.map((option) => {
                 const tint = option.destructive ? DESTRUCTIVE : colors.text;
-                const filled = option.key === 'favorite' && favorited;
+                const filled = option.key === 'favorite' && allFavorited;
                 return (
                   <Pressable
                     key={option.key}
@@ -358,16 +387,20 @@ function RenameDialog({ target, onClose }: { target: OptionsTarget | null; onClo
 
 /**
  * Bottom sheet listing every folder (plus the home screen) as a destination for
- * a note. The note's current location is marked and tapping a row moves it.
+ * the selected note(s). A destination is marked only when every moved note
+ * already shares it; tapping a row moves them all there.
  */
-function MoveSheet({ noteId, onClose }: { noteId: string | null; onClose: () => void }) {
+function MoveSheet({ noteIds, onClose }: { noteIds: string[] | null; onClose: () => void }) {
   const colors = useTheme();
   const insets = useSafeAreaInsets();
   const { folders, getNote, moveNote } = useNotes();
 
-  const open = noteId !== null;
-  const note = noteId ? getNote(noteId) : undefined;
-  const currentFolderId = note?.folderId ?? null;
+  const ids = noteIds ?? [];
+  const open = ids.length > 0;
+  // The common current folder across the moved notes, or `undefined` when they
+  // differ (so no row shows a checkmark). `null` is a real value here (Home).
+  const folderIds = new Set(ids.map((id) => getNote(id)?.folderId ?? null));
+  const commonFolderId = folderIds.size === 1 ? [...folderIds][0] : undefined;
 
   const destinations: { id: string | null; name: string; icon: FeatherName }[] = [
     { id: null, name: 'Home', icon: 'home' },
@@ -375,7 +408,7 @@ function MoveSheet({ noteId, onClose }: { noteId: string | null; onClose: () => 
   ];
 
   const onPick = (folderId: string | null) => {
-    if (noteId) moveNote(noteId, folderId);
+    ids.forEach((id) => moveNote(id, folderId));
     onClose();
   };
 
@@ -397,10 +430,12 @@ function MoveSheet({ noteId, onClose }: { noteId: string | null; onClose: () => 
             exiting={SlideOutDown.duration(220)}
             style={[styles.sheetHost, { paddingBottom: insets.bottom + Spacing.three }]}>
             <GlassSurface intensity={75} tintOpacity={0.85} style={styles.sheet}>
-              <ThemedText style={styles.sheetTitle}>Move to…</ThemedText>
+              <ThemedText style={styles.sheetTitle}>
+                {ids.length > 1 ? `Move ${ids.length} notes to…` : 'Move to…'}
+              </ThemedText>
               <ScrollView style={styles.moveList} bounces={false}>
                 {destinations.map((dest) => {
-                  const selected = dest.id === currentFolderId;
+                  const selected = dest.id === commonFolderId;
                   return (
                     <Pressable
                       key={dest.id ?? 'home'}

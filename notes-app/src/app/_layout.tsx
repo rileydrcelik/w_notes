@@ -14,12 +14,15 @@ import { AnimatedSplashOverlay } from '@/components/animated-icon';
 import { DbTabGuard } from '@/components/db-tab-guard';
 import { FloatingTabBar } from '@/components/floating-tab-bar';
 import { MarkdownHelp } from '@/components/markdown-help';
+import { SelectionBackdrop } from '@/components/selection-backdrop';
+import { SelectionDismissView } from '@/components/selection-dismiss-view';
 import { CopaOptionsProvider, useCopaOptions } from '@/components/copa-options-modal';
 import { ItemOptionsProvider } from '@/components/item-options-modal';
 import { CopaProvider } from '@/store/copa-store';
 import { NotesProvider } from '@/store/notes-store';
 import { SidebarProvider, useSidebar } from '@/store/sidebar-store';
 import { AutofixSelectionProvider } from '@/store/autofix-selection-store';
+import { ItemSelectionProvider } from '@/store/item-selection-store';
 import { EditorPrefsProvider, useEditorPrefs } from '@/store/editor-prefs-store';
 import { AppThemeProvider, useThemePref } from '@/store/theme-store';
 import { installSyncFlush } from '@/lib/sync/flush-on-hide';
@@ -108,20 +111,27 @@ function AppShell() {
         <CopaProvider>
         <SidebarProvider>
         <AutofixSelectionProvider>
+        <ItemSelectionProvider>
         <ItemOptionsProvider>
         <CopaOptionsProvider>
           <AnimatedSplashOverlay />
-          {Platform.OS === 'android' ? (
-            <BlurTargetView
-              // Cast: expo-blur types `ref` as RefObject, but we need a callback
-              // ref to push the node into state once it mounts.
-              ref={setTarget as unknown as RefObject<View | null>}
-              style={StyleSheet.absoluteFill}>
+          {/* Tapping empty space (not a card, not the navbar) clears a card
+              selection; cards claim their own taps so they still toggle. */}
+          <SelectionDismissView style={styles.root}>
+            {Platform.OS === 'android' ? (
+              <BlurTargetView
+                // Cast: expo-blur types `ref` as RefObject, but we need a callback
+                // ref to push the node into state once it mounts.
+                ref={setTarget as unknown as RefObject<View | null>}
+                style={StyleSheet.absoluteFill}>
+                <Screens />
+              </BlurTargetView>
+            ) : (
               <Screens />
-            </BlurTargetView>
-          ) : (
-            <Screens />
-          )}
+            )}
+          </SelectionDismissView>
+          {/* Drops the selection when the route changes. */}
+          <SelectionBackdrop />
           <FloatingTabBar blurTarget={blurTarget} />
           {/* Web-only markdown cheatsheet button, docked bottom-left on the
               note/copa editor screens. Native renders nothing regardless. */}
@@ -131,6 +141,7 @@ function AppShell() {
           <DbTabGuard />
         </CopaOptionsProvider>
         </ItemOptionsProvider>
+        </ItemSelectionProvider>
         </AutofixSelectionProvider>
         </SidebarProvider>
         </CopaProvider>

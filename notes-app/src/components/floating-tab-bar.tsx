@@ -25,6 +25,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { GlassSurface } from '@/components/glass-surface';
 import { RightSidebar } from '@/components/right-sidebar';
 import { ThemedText } from '@/components/themed-text';
+import { useItemOptions } from '@/components/item-options-modal';
 import type { Note } from '@/data/notes';
 import {
   dismissActiveEditor,
@@ -41,6 +42,7 @@ import { useCopa } from '@/store/copa-store';
 import { useNotes } from '@/store/notes-store';
 import { useSidebar } from '@/store/sidebar-store';
 import { useAutofixSelection } from '@/store/autofix-selection-store';
+import { useItemSelection } from '@/store/item-selection-store';
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
@@ -105,6 +107,17 @@ export function FloatingTabBar({ blurTarget }: FloatingTabBarProps) {
   const [selectionMenuOpen, setSelectionMenuOpen] = useState(false);
   // Reset it when selection ends so it can't auto-open on the next selection.
   if (!fixMode && selectionMenuOpen) setSelectionMenuOpen(false);
+  // Long-pressed/right-clicked note/folder cards. While any are selected the
+  // trailing (+) slot becomes a "⋯" button that opens the bulk options sheet for
+  // the whole selection. Sentry's fix selection takes precedence when both coexist.
+  const {
+    selected: selectedItems,
+    count: selectedItemCount,
+    active: itemSelectionActive,
+    clear: clearItemSelection,
+  } = useItemSelection();
+  const { openOptions } = useItemOptions();
+  const itemSelected = itemSelectionActive && !fixMode;
   // Copa is the only sibling tab; everything else lives under the home group.
   // Its editor lives at /copa/[id], so match the whole copa stack.
   const onCopa = pathname === '/copa' || pathname.startsWith('/copa/');
@@ -245,8 +258,9 @@ export function FloatingTabBar({ blurTarget }: FloatingTabBarProps) {
           </Animated.View>
 
           {/* Trailing slot: the create button, mirroring the back button. While
-              Sentry issues are selected it becomes a "⋯" button that opens the
-              actions menu (Fix / Dismiss / Copy). */}
+              Sentry issues are selected it becomes a "⋯" actions button, and
+              while a note/folder card is selected it becomes a "⋯" options
+              button for that item. */}
           <Animated.View
             layout={LinearTransition.duration(220)}
             pointerEvents="box-none"
@@ -261,6 +275,22 @@ export function FloatingTabBar({ blurTarget }: FloatingTabBarProps) {
                   blurTarget={blurTarget}
                   onPress={() => setSelectionMenuOpen(true)}
                   onCancel={clearSelection}
+                />
+              </Animated.View>
+            ) : itemSelected ? (
+              <Animated.View
+                key="item-options"
+                entering={FadeIn.duration(160)}
+                exiting={FadeOut.duration(140)}>
+                <ItemOptionsButton
+                  count={selectedItemCount}
+                  iconColor={colors.text}
+                  blurTarget={blurTarget}
+                  onPress={() => {
+                    if (selectedItems.length > 0) openOptions(selectedItems);
+                    clearItemSelection();
+                  }}
+                  onCancel={clearItemSelection}
                 />
               </Animated.View>
             ) : (
@@ -542,6 +572,60 @@ function CreateButton({
             color={iconColor}
             size={26}
           />
+        </GlassSurface>
+      </Pressable>
+    </Animated.View>
+  );
+}
+
+/**
+ * Trailing action while a note/folder card is selected: sits exactly where the
+ * create (+) button normally does. A tap opens that item's options sheet; a
+ * long-press (or right-click on web) cancels the selection.
+ */
+function ItemOptionsButton({
+  count,
+  iconColor,
+  blurTarget,
+  onPress,
+  onCancel,
+}: {
+  count: number;
+  iconColor: string;
+  blurTarget?: RefObject<View | null> | null;
+  onPress: () => void;
+  onCancel: () => void;
+}) {
+  const scale = useSharedValue(1);
+  const animatedStyle = useAnimatedStyle(() => ({ transform: [{ scale: scale.value }] }));
+  // Right-click cancels the selection on web, matching the long-press affordance.
+  const contextMenuRef = useContextMenu(onCancel);
+
+  return (
+    <Animated.View style={animatedStyle}>
+      <Pressable
+        ref={contextMenuRef}
+        accessibilityRole="button"
+        accessibilityLabel={`Options for ${count} selected ${count === 1 ? 'item' : 'items'}`}
+        onPressIn={() => {
+          scale.value = withTiming(0.92, { duration: 80 });
+        }}
+        onPressOut={() => {
+          scale.value = withTiming(1, { duration: 120 });
+        }}
+        onPress={onPress}
+        onLongPress={onCancel}>
+        <GlassSurface
+          intensity={75}
+          tintOpacity={0.85}
+          blurTarget={blurTarget}
+          style={[styles.createButton, { width: TabBar.height, height: TabBar.height }]}>
+          <Feather name="more-horizontal" color={iconColor} size={26} />
+          {count > 1 && (
+            <View style={styles.fixBadge}>
+              <ThemedText style={styles.fixBadgeText}>{count}</ThemedText>
+            </View>
+          )}
         </GlassSurface>
       </Pressable>
     </Animated.View>
