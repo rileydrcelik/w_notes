@@ -36,6 +36,7 @@ import { Spacing, TabBar } from '@/constants/theme';
 import { useContextMenu } from '@/hooks/use-context-menu';
 import { useTabBarBottom } from '@/hooks/use-tab-bar-inset';
 import { useTheme } from '@/hooks/use-theme';
+import { saveNoteToDevice } from '@/lib/save-note';
 import { useCopa } from '@/store/copa-store';
 import { useNotes } from '@/store/notes-store';
 import { useSidebar } from '@/store/sidebar-store';
@@ -69,17 +70,6 @@ type FeatherName = ComponentProps<typeof Feather>['name'];
 /** On-screen rect of the create button, so the menu can anchor above it. */
 type Anchor = { x: number; y: number; width: number; height: number };
 
-/**
- * The fixed tab set. `menu` opens the side drawer and `copy` triggers the
- * copy/paste action (no route); the rest map to their screen. Order mirrors
- * the screens declared in _layout.
- */
-const TABS: { key: string; icon: FeatherName; path?: Href }[] = [
-  { key: 'copa', icon: 'clipboard', path: '/copa' as Href },
-  { key: 'home', icon: 'home', path: '/' as Href },
-  { key: 'menu', icon: 'menu' },
-];
-
 type FloatingTabBarProps = {
   /** Android blur target (ref to the screens' BlurTargetView); null elsewhere. */
   blurTarget?: RefObject<View | null> | null;
@@ -91,6 +81,7 @@ export function FloatingTabBar({ blurTarget }: FloatingTabBarProps) {
   const pathname = usePathname();
   const insets = useSafeAreaInsets();
   const bottom = useTabBarBottom();
+  const { getNote } = useNotes();
   // The create menu. `null` is closed; an `anchor` rect renders it as a popover
   // above the + button (copa tab), while `null` anchor falls back to the bottom
   // sheet (note/folder picker from a long-press elsewhere).
@@ -127,6 +118,13 @@ export function FloatingTabBar({ blurTarget }: FloatingTabBarProps) {
   const doneMode = vertical || (Platform.OS === 'web' && editorActive);
   // Show back on every page except the home screen (which lives at "/").
   const showBack = pathname !== '/';
+  // The current note being viewed, if any. When one is open and we're in *view*
+  // mode (not editing — no keyboard/active editor), a "save to device" button
+  // appears in the navbar, expanding it. Plugin notes (e.g. Sentry) carry no
+  // body to export, so they're excluded.
+  const noteMatch = pathname.match(/^\/note\/([^/]+)/);
+  const currentNote = noteMatch ? getNote(decodeURIComponent(noteMatch[1])) : undefined;
+  const showSave = !!currentNote && !currentNote.pluginType && !doneMode;
 
   const goBack = () => {
     dismissActiveEditor();
@@ -135,11 +133,24 @@ export function FloatingTabBar({ blurTarget }: FloatingTabBarProps) {
     else router.replace('/' as Href);
   };
 
+  // The bar's icons. The save-to-device action slots in between home and menu
+  // while a note is open in view mode, growing the pill to fit it.
+  const items: { key: string; icon: FeatherName; path?: Href }[] = [
+    { key: 'copa', icon: 'clipboard', path: '/copa' as Href },
+    { key: 'home', icon: 'home', path: '/' as Href },
+    ...(showSave ? [{ key: 'save', icon: 'download' as FeatherName }] : []),
+    { key: 'menu', icon: 'menu' },
+  ];
+
   // When docked at the top-right the slots reserve height; otherwise width.
   const slotStyle = vertical ? { height: TabBar.height } : { width: TabBar.height };
-  const barSize = vertical
-    ? { width: TabBar.height, height: TabBar.width }
-    : { width: TabBar.width, height: TabBar.height };
+  // The pill sizes to its icons (each a square TabBar.height wide) plus padding,
+  // so adding/removing the save icon grows/shrinks it. Its main-axis length is
+  // animated via the wrapper's LinearTransition below.
+  const barLen = items.length * TabBar.height + Spacing.two * 2;
+  const barWrapStyle = vertical
+    ? { width: TabBar.height, height: barLen, marginVertical: Spacing.two }
+    : { width: barLen, height: TabBar.height, marginHorizontal: Spacing.two };
   const hostPlacement = vertical
     ? { top: insets.top + TabBar.margin, right: TabBar.margin, alignItems: 'flex-end' as const }
     : { bottom, left: 0, right: 0, alignItems: 'center' as const };
@@ -158,7 +169,10 @@ export function FloatingTabBar({ blurTarget }: FloatingTabBarProps) {
         style={[styles.host, hostPlacement]}>
         <View style={[styles.cluster, vertical && styles.clusterVertical]}>
           {/* Leading slot: reserves space so the bar stays centered whether or not back shows. */}
-          <View pointerEvents="box-none" style={[styles.sideSlot, slotStyle]}>
+          <Animated.View
+            layout={LinearTransition.duration(220)}
+            pointerEvents="box-none"
+            style={[styles.sideSlot, slotStyle]}>
             {showBack && (
               <Animated.View entering={FadeIn.duration(200)} exiting={FadeOut.duration(150)}>
                 <Pressable accessibilityRole="button" accessibilityLabel="Go back" onPress={goBack}>
@@ -172,24 +186,37 @@ export function FloatingTabBar({ blurTarget }: FloatingTabBarProps) {
                 </Pressable>
               </Animated.View>
             )}
-          </View>
+          </Animated.View>
 
+          {/* The pill grows/shrinks as items change; LinearTransition animates
+              its length and slides the side slots along with it. */}
+          <Animated.View layout={LinearTransition.duration(220)} style={barWrapStyle}>
           <GlassSurface
             intensity={75}
             tintOpacity={0.5}
             blurTarget={blurTarget}
-            style={[styles.bar, vertical && styles.barVertical, barSize]}>
-            {TABS.map((tab) => {
-              // The menu tab reflects the drawer's open state rather than
-              // navigation; copa is active on its own route, home on everything else.
-              const isMenu = tab.key === 'menu';
-              const focused = isMenu ? menuOpen : tab.key === 'copa' ? onCopa : !onCopa;
+            style={[styles.bar, vertical && styles.barVertical, styles.barFill]}>
+            {items.map((tab) => {
+              // The menu tab reflects the drawer's open state, copa is active on
+              // its own route, home on everything else; save is a plain action.
+              const focused =
+                tab.key === 'menu'
+                  ? menuOpen
+                  : tab.key === 'copa'
+                    ? onCopa
+                    : tab.key === 'home'
+                      ? !onCopa
+                      : false;
 
               const onPress = () => {
                 // Any navbar press dismisses the keyboard before acting.
                 Keyboard.dismiss();
-                if (isMenu) {
+                if (tab.key === 'menu') {
                   setMenuOpen((prev) => !prev);
+                  return;
+                }
+                if (tab.key === 'save') {
+                  if (currentNote) void saveNoteToDevice(currentNote);
                   return;
                 }
                 if (tab.path) router.navigate(tab.path);
@@ -199,23 +226,31 @@ export function FloatingTabBar({ blurTarget }: FloatingTabBarProps) {
                 <Pressable
                   key={tab.key}
                   accessibilityRole="button"
+                  accessibilityLabel={tab.key === 'save' ? 'Save note to device' : undefined}
                   accessibilityState={focused ? { selected: true } : {}}
                   onPress={onPress}
                   style={styles.item}>
-                  <Feather
-                    name={tab.icon}
-                    color={focused ? '#7a89b8' : colors.textSecondary}
-                    size={28}
-                  />
+                  <Animated.View
+                    entering={tab.key === 'save' ? FadeIn.duration(200) : undefined}>
+                    <Feather
+                      name={tab.icon}
+                      color={focused ? '#7a89b8' : colors.textSecondary}
+                      size={tab.key === 'save' ? 24 : 28}
+                    />
+                  </Animated.View>
                 </Pressable>
               );
             })}
           </GlassSurface>
+          </Animated.View>
 
           {/* Trailing slot: the create button, mirroring the back button. While
               Sentry issues are selected it becomes a "⋯" button that opens the
               actions menu (Fix / Dismiss / Copy). */}
-          <View pointerEvents="box-none" style={[styles.sideSlot, slotStyle]}>
+          <Animated.View
+            layout={LinearTransition.duration(220)}
+            pointerEvents="box-none"
+            style={[styles.sideSlot, slotStyle]}>
             {fixMode ? (
               <Animated.View
                 key="selection"
@@ -238,7 +273,7 @@ export function FloatingTabBar({ blurTarget }: FloatingTabBarProps) {
                 />
               </Animated.View>
             )}
-          </View>
+          </Animated.View>
         </View>
       </Animated.View>
       )}
@@ -708,7 +743,6 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-around',
-    marginHorizontal: Spacing.two,
     borderRadius: Spacing.three,
     paddingHorizontal: Spacing.two,
     shadowColor: '#000',
@@ -717,10 +751,13 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 0 },
     elevation: 16,
   },
+  // The pill fills its animated wrapper so LinearTransition can grow/shrink it.
+  barFill: {
+    width: '100%',
+    height: '100%',
+  },
   barVertical: {
     flexDirection: 'column',
-    marginHorizontal: 0,
-    marginVertical: Spacing.two,
     paddingHorizontal: 0,
     paddingVertical: Spacing.two,
   },
