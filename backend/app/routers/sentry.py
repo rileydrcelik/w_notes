@@ -92,6 +92,33 @@ class IssueList(BaseModel):
     next_cursor: str | None = None
 
 
+class ProjectSummary(BaseModel):
+    """A project the server token can see — enough to render a picker row and
+    build a note's ``{org, project}`` config from the selection."""
+
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+    slug: str
+    name: str = ""
+    platform: str | None = None
+    # Org slug, flattened from Sentry's nested ``organization`` object so the
+    # client gets a flat value it can drop straight into pluginConfig.
+    organization: str = ""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _flatten_org(cls, data: object) -> object:
+        if isinstance(data, dict):
+            org = data.get("organization")
+            if isinstance(org, dict):
+                data["organization"] = org.get("slug") or ""
+        return data
+
+
+class ProjectList(BaseModel):
+    projects: list[ProjectSummary]
+
+
 class ContextLine(BaseModel):
     """One line of source around a frame: its number and the code text."""
 
@@ -356,6 +383,31 @@ async def get_issue(
     return IssueSummary.model_validate(resp.json())
 
 
+@router.get("/projects", response_model=ProjectList)
+async def list_projects(
+    user: User = Depends(get_current_user),
+) -> ProjectList:
+    """Every project the server token can see, each with its org slug — the
+    source for the in-app picker that configures a Sentry note. Pages through
+    Sentry's cursor so an org with many projects isn't truncated, with a hard
+    cap so a malformed cursor can't loop forever."""
+    _require_token()
+    projects: list[ProjectSummary] = []
+    cursor: str | None = None
+    async with _client() as client:
+        for _ in range(20):
+            params = {"cursor": cursor} if cursor else {}
+            resp = await client.get("/projects/", params=params)
+            _raise_for_upstream(resp)
+            projects.extend(ProjectSummary.model_validate(p) for p in resp.json())
+            cursor = _next_cursor(resp)
+            if not cursor:
+                break
+    # Group by org, then alphabetical — stable order for the picker list.
+    projects.sort(key=lambda p: (p.organization.lower(), (p.name or p.slug).lower()))
+    return ProjectList(projects=projects)
+
+
 class ResolveResponse(BaseModel):
     resolved: bool
     issue_id: str
@@ -422,10 +474,20 @@ _AUTOFIX_MODELS = frozenset(
 )
 
 
+# A GitHub "owner/name" slug. The repo an autofix targets is interpolated into
+# API paths and (downstream) the workflow, so an override is only honored when it
+# matches this shape — no path traversal, no query smuggling.
+_REPO_RE = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")
+
+
 class AutofixRequest(BaseModel):
     issue_id: str
     org: str
     project: str
+    # Optional per-note target repo ("owner/name"). Falls back to the server's
+    # configured `autofix_repo` when absent — so a note that watches project X
+    # can PR fixes into X's repo instead of one hardcoded repo.
+    repo: str | None = None
     # Optional model override for a tougher fix. Ignored unless it's in
     # _AUTOFIX_MODELS; omitted => the workflow's default (Haiku).
     model: str | None = None
@@ -448,14 +510,34 @@ class AutofixStatus(BaseModel):
     title: str | None = None
 
 
-def _require_github() -> tuple[str, str]:
-    """The GitHub token + target repo, or 503 if autofix isn't configured."""
-    settings = get_settings()
-    if not settings.github_token or not settings.autofix_repo:
+def _require_github_token() -> str:
+    """The GitHub token, or 503 if autofix isn't configured. The target repo is
+    resolved separately (a note may supply its own) — see ``_resolve_repo``."""
+    token = get_settings().github_token
+    if not token:
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE, "Autofix is not configured"
         )
-    return settings.github_token, settings.autofix_repo
+    return token
+
+
+def _resolve_repo(override: str | None) -> str:
+    """The repo an autofix acts on: the note's own ``owner/name`` when it passes
+    a valid one, else the server default. A malformed override is rejected (422)
+    rather than silently ignored, and a missing repo with no default is a 503."""
+    if override:
+        if not _REPO_RE.match(override):
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                "Invalid repo (expected owner/name)",
+            )
+        return override
+    repo = get_settings().autofix_repo
+    if not repo:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, "Autofix is not configured"
+        )
+    return repo
 
 
 def _github_client() -> httpx.AsyncClient:
@@ -566,7 +648,8 @@ async def autofix(
     user: User = Depends(get_current_user),
 ) -> AutofixResponse:
     _require_token()  # need Sentry to gather context
-    _require_github()  # and GitHub to dispatch
+    _require_github_token()  # and GitHub to dispatch
+    repo = _resolve_repo(req.repo)  # the note's repo, or the server default
 
     # Pull issue detail + latest event to build the context bundle.
     async with _client() as client:
@@ -583,7 +666,6 @@ async def autofix(
     # default (Haiku). Guards against injecting arbitrary text into `--model`.
     model = req.model if req.model in _AUTOFIX_MODELS else None
 
-    _, repo = _require_github()
     # Dedup: if a fix is already in flight or landed, don't burn another agent run.
     async with _github_client() as gh:
         if await _autofix_in_flight(gh, repo, branch):
@@ -608,9 +690,11 @@ async def autofix(
 @router.get("/autofix/status", response_model=AutofixStatus)
 async def autofix_status(
     short_id: str = Query(..., description="Sentry issue short id, e.g. PYTHON-FASTAPI-3"),
+    repo: str | None = Query(None, description="Target repo (owner/name); defaults to the server repo"),
     user: User = Depends(get_current_user),
 ) -> AutofixStatus:
-    _, repo = _require_github()
+    _require_github_token()
+    repo = _resolve_repo(repo)
     branch = _branch_for(short_id)
 
     async with _github_client() as gh:
