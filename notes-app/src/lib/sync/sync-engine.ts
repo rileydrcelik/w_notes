@@ -117,7 +117,7 @@ async function runSync(): Promise<SyncResult> {
     if (isDbLockedError(e)) {
       return { status: 'skipped', reason: 'database owned by another tab' };
     }
-    Sentry.captureException(e, { tags: { source: 'sync-engine' } });
+    // apiFetch already captures ApiError; don't duplicate here.
     throw e;
   }
 }

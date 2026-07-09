@@ -33,7 +33,6 @@ export async function apiFetch<T = unknown>(path: string, options: ApiOptions = 
   }
 
   const url = `${BASE_URL}${path.startsWith('/') ? path : `/${path}`}`;
-  const token = await getAuthToken();
   const { body, headers, ...rest } = options;
 
   Sentry.addBreadcrumb({
@@ -43,6 +42,7 @@ export async function apiFetch<T = unknown>(path: string, options: ApiOptions = 
   });
 
   try {
+    const token = await getAuthToken();
     const res = await fetch(url, {
       ...rest,
       headers: {
@@ -62,7 +62,17 @@ export async function apiFetch<T = unknown>(path: string, options: ApiOptions = 
     const text = await res.text();
     return (text ? JSON.parse(text) : undefined) as T;
   } catch (e) {
-    Sentry.captureException(e, { tags: { source: 'sync-api', path } });
+    // Network-level errors (offline, CORS blocked, etc) are transient and expected.
+    // Log as breadcrumb but don't report as exceptions; only capture ApiError.
+    if (e instanceof ApiError) {
+      Sentry.captureException(e, { tags: { source: 'sync-api', path } });
+    } else {
+      Sentry.addBreadcrumb({
+        category: 'sync',
+        message: `network error on ${path}: ${e instanceof Error ? e.message : String(e)}`,
+        level: 'warning',
+      });
+    }
     throw e;
   }
 }
