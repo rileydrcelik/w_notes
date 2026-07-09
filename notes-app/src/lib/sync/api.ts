@@ -9,7 +9,25 @@
 import { Sentry } from '@/lib/sentry';
 import { getAuthToken } from '@/lib/auth/token';
 
-const BASE_URL = process.env.EXPO_PUBLIC_API_URL?.replace(/\/$/, '') ?? '';
+function normalizeApiUrl(): string {
+  const url = process.env.EXPO_PUBLIC_API_URL?.trim() ?? '';
+  if (!url) return '';
+
+  // If the URL doesn't have a protocol, it's invalid (prevents bare domain names)
+  try {
+    new URL(url);
+    return url.replace(/\/$/, '');
+  } catch {
+    // Invalid URL format — log a warning and return empty to trigger offline mode
+    console.warn(
+      'EXPO_PUBLIC_API_URL is not a valid URL',
+      `"${url}" — sync will be disabled.`,
+    );
+    return '';
+  }
+}
+
+const BASE_URL = normalizeApiUrl();
 
 export const syncConfigured = !!BASE_URL;
 
