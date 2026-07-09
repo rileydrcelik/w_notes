@@ -6,6 +6,7 @@ import {
   Keyboard,
   Platform,
   Pressable,
+  ScrollView,
   StyleSheet,
   useWindowDimensions,
   View,
@@ -107,6 +108,8 @@ export function FloatingTabBar({ blurTarget }: FloatingTabBarProps) {
   const [selectionMenuOpen, setSelectionMenuOpen] = useState(false);
   // Reset it when selection ends so it can't auto-open on the next selection.
   if (!fixMode && selectionMenuOpen) setSelectionMenuOpen(false);
+  // The autofix setup instructions, opened by the "?" next to the Fix action.
+  const [autofixHelpOpen, setAutofixHelpOpen] = useState(false);
   // Long-pressed/right-clicked note/folder cards. While any are selected the
   // trailing (+) slot becomes a "⋯" button that opens the bulk options sheet for
   // the whole selection. Sentry's fix selection takes precedence when both coexist.
@@ -322,7 +325,14 @@ export function FloatingTabBar({ blurTarget }: FloatingTabBarProps) {
         onFix={requestFix}
         onDismiss={requestIgnore}
         onCopy={requestCopy}
+        onHelp={() => {
+          // Swap the actions sheet for the setup instructions.
+          setSelectionMenuOpen(false);
+          setAutofixHelpOpen(true);
+        }}
       />
+      {/* How to make a repo autofix-ready — opened by the "?" next to Fix. */}
+      <AutofixHelp open={autofixHelpOpen} onClose={() => setAutofixHelpOpen(false)} />
     </>
   );
 }
@@ -361,11 +371,9 @@ function CreateMenu({
 
   const onCreateSentry = () => {
     onClose();
-    // Default target for now; a per-note org/project picker comes later.
-    const id = createSentryNote(
-      { org: 'aiko-6q', project: 'w-notes-fastapi' },
-      currentFolderId(pathname, getNote),
-    );
+    // Create it unconfigured — the Sentry screen shows a project picker and
+    // writes the org/project (and optional repo) into the note in place.
+    const id = createSentryNote(currentFolderId(pathname, getNote));
     router.push({ pathname: '/sentry/[id]', params: { id } });
   };
 
@@ -696,6 +704,7 @@ function SelectionMenu({
   onFix,
   onDismiss,
   onCopy,
+  onHelp,
 }: {
   open: boolean;
   count: number;
@@ -703,19 +712,23 @@ function SelectionMenu({
   onFix: () => void;
   onDismiss: () => void;
   onCopy: () => void;
+  onHelp: () => void;
 }) {
   const colors = useTheme();
   const insets = useSafeAreaInsets();
   const noun = count === 1 ? 'issue' : 'issues';
 
+  // `onHelp` marks the row that gets a trailing "?" (setup instructions). Only
+  // Fix depends on repo config, so only it carries the affordance.
   const options: {
     key: string;
     label: string;
     icon: FeatherName;
     tint: string;
     onPress: () => void;
+    onHelp?: () => void;
   }[] = [
-    { key: 'fix', label: `Fix ${count} ${noun}`, icon: 'zap', tint: '#7553FF', onPress: onFix },
+    { key: 'fix', label: `Fix ${count} ${noun}`, icon: 'zap', tint: '#7553FF', onPress: onFix, onHelp },
     { key: 'dismiss', label: `Dismiss ${count} ${noun}`, icon: 'check', tint: colors.text, onPress: onDismiss },
     { key: 'copy', label: 'Copy error message', icon: 'copy', tint: colors.text, onPress: onCopy },
   ];
@@ -738,21 +751,128 @@ function SelectionMenu({
             style={[styles.menuHost, { paddingBottom: insets.bottom + Spacing.three }]}>
             <GlassSurface intensity={75} tintOpacity={0.85} style={styles.menuSheet}>
               {options.map((option) => (
-                <Pressable
-                  key={option.key}
-                  onPress={() => {
-                    option.onPress();
-                    onClose();
-                  }}
-                  accessibilityRole="button"
-                  accessibilityLabel={option.label}
-                  style={({ pressed }) => [styles.menuRow, pressed && styles.menuRowPressed]}>
-                  <Feather name={option.icon} size={20} color={option.tint} style={styles.menuIcon} />
-                  <ThemedText style={[styles.menuLabel, { color: option.tint }]}>
-                    {option.label}
-                  </ThemedText>
-                </Pressable>
+                <View key={option.key} style={styles.menuRowWrap}>
+                  <Pressable
+                    onPress={() => {
+                      option.onPress();
+                      onClose();
+                    }}
+                    accessibilityRole="button"
+                    accessibilityLabel={option.label}
+                    style={({ pressed }) => [
+                      styles.menuRow,
+                      styles.menuRowFlex,
+                      pressed && styles.menuRowPressed,
+                    ]}>
+                    <Feather name={option.icon} size={20} color={option.tint} style={styles.menuIcon} />
+                    <ThemedText style={[styles.menuLabel, { color: option.tint }]}>
+                      {option.label}
+                    </ThemedText>
+                  </Pressable>
+                  {option.onHelp && (
+                    <Pressable
+                      onPress={option.onHelp}
+                      accessibilityRole="button"
+                      accessibilityLabel="How to set up autofix for a repo"
+                      hitSlop={8}
+                      style={({ pressed }) => [styles.menuHelp, pressed && styles.menuRowPressed]}>
+                      <Feather name="help-circle" size={20} color={colors.textSecondary} />
+                    </Pressable>
+                  )}
+                </View>
               ))}
+            </GlassSurface>
+          </Animated.View>
+        </>
+      )}
+    </View>
+  );
+}
+
+/**
+ * Bottom sheet explaining how to make a repo autofix-ready. Autofix dispatches a
+ * GitHub Actions agent that opens a PR, so the target repo (a note's `repo`, or
+ * the server default) needs a one-time setup that can't be automated from here —
+ * this lists the steps. Opened by the "?" next to the Fix action.
+ */
+function AutofixHelp({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const colors = useTheme();
+
+  const steps: { title: string; body: string }[] = [
+    {
+      title: 'Add the workflow',
+      body: 'Copy .github/workflows/sentry-autofix.yml into the repo on its default branch.',
+    },
+    {
+      title: 'Add repo secrets',
+      body: 'ANTHROPIC_API_KEY (required). SENTRY_API_TOKEN with event:write (optional — resolves the issue on PR).',
+    },
+    {
+      title: 'Allow PR creation',
+      body: 'Settings → Actions → General → "Allow GitHub Actions to create and approve pull requests."',
+    },
+    {
+      title: 'Scope the server token',
+      body: "The backend's GitHub token must cover this repo (Contents R/W, Pull requests R, Actions R/W).",
+    },
+  ];
+
+  return (
+    <View style={styles.menuOverlay} pointerEvents={open ? 'box-none' : 'none'}>
+      {open && (
+        <>
+          <AnimatedPressable
+            entering={FadeIn.duration(180)}
+            exiting={FadeOut.duration(180)}
+            style={styles.menuBackdrop}
+            onPress={onClose}
+            accessibilityRole="button"
+            accessibilityLabel="Dismiss"
+          />
+          <Animated.View
+            entering={SlideInDown.duration(260)}
+            exiting={SlideOutDown.duration(220)}
+            // Sit lower than the other sheets — a small fixed bottom gap that
+            // ignores the safe-area inset so it hugs the bottom of the screen.
+            style={[styles.menuHost, { paddingBottom: Spacing.two }]}>
+            <GlassSurface intensity={75} tintOpacity={0.85} style={styles.helpSheet}>
+              <View style={styles.helpHeader}>
+                <Feather name="zap" size={20} color="#7553FF" />
+                <ThemedText type="subtitle" style={styles.helpTitle}>
+                  Set up autofix for a repo
+                </ThemedText>
+              </View>
+              <ThemedText type="small" themeColor="textSecondary" style={styles.helpIntro}>
+                Fix sends the selected issues to a GitHub agent that opens a PR on the repo you set
+                for the note. That repo needs a one-time setup:
+              </ThemedText>
+              <ScrollView
+                style={styles.helpScroll}
+                contentContainerStyle={styles.helpSteps}
+                showsVerticalScrollIndicator={false}>
+                {steps.map((step, i) => (
+                  <View key={step.title} style={styles.helpStep}>
+                    <View style={styles.helpStepNum}>
+                      <ThemedText style={styles.helpStepNumText}>{i + 1}</ThemedText>
+                    </View>
+                    <View style={styles.helpStepText}>
+                      <ThemedText style={[styles.helpStepTitle, { color: colors.text }]}>
+                        {step.title}
+                      </ThemedText>
+                      <ThemedText type="small" themeColor="textSecondary" style={styles.helpStepBody}>
+                        {step.body}
+                      </ThemedText>
+                    </View>
+                  </View>
+                ))}
+              </ScrollView>
+              <Pressable
+                onPress={onClose}
+                accessibilityRole="button"
+                accessibilityLabel="Close"
+                style={({ pressed }) => [styles.helpDone, pressed && styles.menuRowPressed]}>
+                <ThemedText style={styles.helpDoneText}>Got it</ThemedText>
+              </Pressable>
             </GlassSurface>
           </Animated.View>
         </>
@@ -915,6 +1035,95 @@ const styles = StyleSheet.create({
     flex: 1,
     fontSize: 16,
     lineHeight: 24,
+    fontWeight: '600',
+  },
+  // A menu row that carries a trailing "?" — the tappable action fills, the help
+  // button sits at the right edge.
+  menuRowWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  menuRowFlex: {
+    flex: 1,
+  },
+  menuHelp: {
+    padding: Spacing.two,
+    marginRight: Spacing.one,
+    borderRadius: Spacing.two,
+  },
+  // Autofix setup instructions sheet.
+  helpSheet: {
+    overflow: 'hidden',
+    borderRadius: Spacing.four,
+    padding: Spacing.four,
+    gap: Spacing.four,
+    maxHeight: '80%',
+    shadowColor: '#000',
+    shadowOpacity: 0.4,
+    shadowRadius: 24,
+    shadowOffset: { width: 0, height: 0 },
+    elevation: 24,
+  },
+  helpHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.two,
+  },
+  helpTitle: {
+    flexShrink: 1,
+  },
+  helpIntro: {
+    lineHeight: 20,
+  },
+  // Shrinks (and scrolls) only when the steps don't all fit.
+  helpScroll: {
+    flexShrink: 1,
+  },
+  helpSteps: {
+    gap: Spacing.four,
+    paddingRight: Spacing.one,
+  },
+  helpStep: {
+    flexDirection: 'row',
+    gap: Spacing.three,
+    alignItems: 'flex-start',
+  },
+  helpStepNum: {
+    width: 24,
+    height: 24,
+    borderRadius: Spacing.two,
+    backgroundColor: '#7553FF',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 1,
+  },
+  helpStepNumText: {
+    color: '#fff',
+    fontSize: 13,
+    fontWeight: '700',
+    lineHeight: 16,
+  },
+  helpStepText: {
+    flex: 1,
+    gap: Spacing.half,
+  },
+  helpStepTitle: {
+    fontSize: 15,
+    fontWeight: '600',
+    lineHeight: 20,
+  },
+  helpStepBody: {
+    lineHeight: 19,
+  },
+  helpDone: {
+    borderRadius: Spacing.three,
+    paddingVertical: Spacing.three,
+    alignItems: 'center',
+    backgroundColor: '#7553FF',
+  },
+  helpDoneText: {
+    color: '#fff',
+    fontSize: 15,
     fontWeight: '600',
   },
 });
