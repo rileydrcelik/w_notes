@@ -417,7 +417,7 @@ export const db = {
 
   async updateNote(
     id: string,
-    patch: Partial<Pick<Note, 'title' | 'body' | 'folderId' | 'favorite' | 'shared'>>,
+    patch: Partial<Pick<Note, 'title' | 'body' | 'folderId' | 'favorite' | 'shared' | 'pluginConfig'>>,
   ): Promise<void> {
     dbCrumb('updateNote', { id, fields: Object.keys(patch) });
     const database = await getDb();
@@ -428,6 +428,10 @@ export const db = {
     if (patch.folderId !== undefined) (sets.push('folder_id = ?'), args.push(patch.folderId));
     if (patch.favorite !== undefined) (sets.push('favorite = ?'), args.push(patch.favorite ? 1 : 0));
     if (patch.shared !== undefined) (sets.push('shared = ?'), args.push(patch.shared ? 1 : 0));
+    // A plugin note's config (e.g. Sentry org/project) can be set after creation
+    // when the user configures the note; it syncs like any other column.
+    if (patch.pluginConfig !== undefined)
+      (sets.push('plugin_config = ?'), args.push(patch.pluginConfig));
     sets.push('updated_at = ?', 'dirty = 1');
     args.push(Date.now());
     args.push(id);

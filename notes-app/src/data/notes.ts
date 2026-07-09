@@ -20,7 +20,11 @@ export type Note = {
    * it undefined.
    */
   pluginType?: 'sentry';
-  /** Opaque per-plugin JSON config; for Sentry: `{"org","project"}`. */
+  /**
+   * Opaque per-plugin JSON config. For Sentry: `{org, project, projectName?,
+   * repo?}` (see `@/lib/sentry-note`). Absent on an unconfigured plugin note,
+   * which renders a setup UI instead of live content.
+   */
   pluginConfig?: string;
 };
 

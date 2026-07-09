@@ -13,6 +13,7 @@ import { Sentry } from '@/lib/sentry';
 import { db, type TrashEntry } from '@/lib/db';
 import { isDbLockedError } from '@/lib/web-db-lock';
 import { requestSync, subscribeSynced, syncNow } from '@/lib/sync/sync-engine';
+import type { SentryTarget } from '@/lib/sentry-note';
 import type { Folder, Note } from '@/data/notes';
 
 const today = () => new Date().toISOString().slice(0, 10);
@@ -59,14 +60,15 @@ type NotesContextValue = {
   /** Creates an empty note in the given folder (null = root) and returns its id. */
   createNote: (folderId: string | null) => string;
   /**
-   * Creates a Sentry plugin note bound to an org/project (null folder = root)
-   * and returns its id. It renders that project's live issues, not an editable
-   * body — only the marker + config sync.
+   * Creates a Sentry plugin note (null folder = root) and returns its id. It
+   * renders a project's live issues, not an editable body — only the marker +
+   * config sync. `config` is optional: an unconfigured note opens a project
+   * picker, which writes the config in place via `updateNote`.
    */
-  createSentryNote: (config: { org: string; project: string }, folderId: string | null) => string;
+  createSentryNote: (folderId: string | null, config?: SentryTarget) => string;
   /** Creates an unnamed folder inside the given parent (null = root); returns its id. */
   createFolder: (parentId: string | null) => string;
-  updateNote: (id: string, patch: Partial<Pick<Note, 'title' | 'body'>>) => void;
+  updateNote: (id: string, patch: Partial<Pick<Note, 'title' | 'body' | 'pluginConfig'>>) => void;
   updateFolder: (id: string, patch: Partial<Pick<Folder, 'name'>>) => void;
   /** Moves a note into a folder, or to the home screen when folderId is null. */
   moveNote: (id: string, folderId: string | null) => void;
@@ -145,9 +147,11 @@ export function NotesProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const createSentryNote = useCallback<NotesContextValue['createSentryNote']>(
-    (config, folderId) => {
+    (folderId, config) => {
       const id = rid('note');
-      const pluginConfig = JSON.stringify(config);
+      // Omit config for an unconfigured note — the screen shows a project picker
+      // and writes the config in place once the user chooses.
+      const pluginConfig = config ? JSON.stringify(config) : undefined;
       // The card/screen derive their label from pluginConfig, so title stays
       // empty — a Sentry note carries no user-authored content.
       const note: Note = {

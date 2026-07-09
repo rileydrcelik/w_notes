@@ -158,7 +158,7 @@ function SentryNoteCard({ note }: { note: Note }) {
         <View style={styles.titleRow}>
           <Feather name="alert-triangle" size={15} color={SENTRY_ACCENT} />
           <ThemedText type="smallBold" numberOfLines={1} style={styles.titleText}>
-            {target?.project ?? 'Sentry'}
+            {target?.projectName ?? target?.project ?? 'Sentry'}
           </ThemedText>
           {note.favorite && <FavoriteStar size={13} />}
         </View>
