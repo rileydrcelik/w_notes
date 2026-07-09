@@ -24,6 +24,12 @@ export function isSignedIn(): boolean {
 
 /** The bearer token for the next request: Firebase ID token, or device key. */
 export async function getAuthToken(): Promise<string> {
-  if (currentUser) return currentUser.getIdToken();
+  if (currentUser) {
+    try {
+      return await currentUser.getIdToken();
+    } catch {
+      return getDeviceKey();
+    }
+  }
   return getDeviceKey();
 }
