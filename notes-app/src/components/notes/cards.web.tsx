@@ -8,6 +8,7 @@ import { ThemedView } from '@/components/themed-view';
 import { hexToRgba, Spacing } from '@/constants/theme';
 import type { Folder, Note } from '@/data/notes';
 import { sentryTarget } from '@/lib/sentry-note';
+import { githubTarget } from '@/lib/github-note';
 import { useContextMenu } from '@/hooks/use-context-menu';
 import { useDoubleTap } from '@/hooks/use-double-tap';
 import { useTheme } from '@/hooks/use-theme';
@@ -16,6 +17,7 @@ import { useItemSelection } from '@/store/item-selection-store';
 import { useNotes } from '@/store/notes-store';
 
 const SENTRY_ACCENT = '#7553FF';
+const GITHUB_ACCENT = '#8250df';
 /** Accent for a long-pressed/right-clicked (selected) card. */
 const SELECT_ACCENT = '#7a89b8';
 const PREVIEW_TEXT = { fontSize: 14, lineHeight: 20, fontWeight: '500' } as const;
@@ -80,6 +82,7 @@ export function NoteCard({ note }: { note: Note }) {
   // A Sentry plugin note renders as a distinct card that opens the live issues
   // screen rather than the text editor.
   if (note.pluginType === 'sentry') return <SentryNoteCard note={note} />;
+  if (note.pluginType === 'github') return <GithubNoteCard note={note} />;
 
   // Tap opens the note; double-tap favorites it. In selection mode a click
   // instead toggles this card's selection.
@@ -156,6 +159,45 @@ function SentryNoteCard({ note }: { note: Note }) {
         </View>
         <ThemedText type="small" themeColor="textSecondary" numberOfLines={1}>
           Live issues{target?.org ? ` · ${target.org}` : ''}
+        </ThemedText>
+      </ThemedView>
+    </Pressable>
+  );
+}
+
+/** A GitHub plugin note: a distinct card that opens the live issues screen. */
+function GithubNoteCard({ note }: { note: Note }) {
+  const router = useRouter();
+  const { toggleNoteFavorite } = useNotes();
+  const { active, isSelected, toggle } = useItemSelection();
+  const selected = isSelected('note', note.id);
+
+  const target = githubTarget(note);
+
+  const openOrFavorite = useDoubleTap(
+    () => router.push({ pathname: '/github/[id]', params: { id: note.id } }),
+    () => toggleNoteFavorite(note.id),
+  );
+  const onSelectToggle = () => toggle({ type: 'note', id: note.id });
+
+  const contextMenuRef = useContextMenu(onSelectToggle);
+
+  return (
+    <Pressable
+      ref={contextMenuRef}
+      style={({ pressed }) => [styles.cardWrapper, pressed && styles.pressed]}
+      onPress={active ? onSelectToggle : openOrFavorite}
+      onLongPress={onSelectToggle}>
+      <ThemedView type="backgroundElementAlt" style={[styles.card, selected && styles.selected]}>
+        <View style={styles.titleRow}>
+          <Feather name="github" size={15} color={GITHUB_ACCENT} />
+          <ThemedText type="smallBold" numberOfLines={1} style={styles.titleText}>
+            {target?.repoName ?? target?.repo ?? 'GitHub'}
+          </ThemedText>
+          {note.favorite && <FavoriteStar size={13} />}
+        </View>
+        <ThemedText type="small" themeColor="textSecondary" numberOfLines={1}>
+          Issues{target?.repo ? ` · ${target.repo}` : ''}
         </ThemedText>
       </ThemedView>
     </Pressable>

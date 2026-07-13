@@ -8,6 +8,7 @@ import {
   Pressable,
   ScrollView,
   StyleSheet,
+  TextInput,
   useWindowDimensions,
   View,
 } from 'react-native';
@@ -27,6 +28,7 @@ import { GlassSurface } from '@/components/glass-surface';
 import { RightSidebar } from '@/components/right-sidebar';
 import { ThemedText } from '@/components/themed-text';
 import { useItemOptions } from '@/components/item-options-modal';
+import { GithubIssueCompose } from '@/components/notes/github-issue-compose';
 import type { Note } from '@/data/notes';
 import {
   dismissActiveEditor,
@@ -43,6 +45,7 @@ import { useCopa } from '@/store/copa-store';
 import { useNotes } from '@/store/notes-store';
 import { useSidebar } from '@/store/sidebar-store';
 import { useAutofixSelection } from '@/store/autofix-selection-store';
+import { useGithubSelection, type CloseReason } from '@/store/github-selection-store';
 import { useItemSelection } from '@/store/item-selection-store';
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
@@ -108,6 +111,31 @@ export function FloatingTabBar({ blurTarget }: FloatingTabBarProps) {
   const [selectionMenuOpen, setSelectionMenuOpen] = useState(false);
   // Reset it when selection ends so it can't auto-open on the next selection.
   if (!fixMode && selectionMenuOpen) setSelectionMenuOpen(false);
+  // Same pattern for the GitHub issues screen: while issues are selected there,
+  // the (+) slot becomes a "⋯" button opening Close / Reopen / Comment / Copy.
+  const {
+    active: ghSelecting,
+    count: ghSelectedCount,
+    requestClose: requestGhClose,
+    requestReopen: requestGhReopen,
+    requestComment: requestGhComment,
+    requestCopy: requestGhCopy,
+    clear: clearGhSelection,
+    composeRepo: ghComposeRepo,
+    emitCreated: emitGhCreated,
+  } = useGithubSelection();
+  // Sentry's selection takes precedence if both somehow coexist.
+  const ghMode = !fixMode && ghSelecting && ghSelectedCount > 0;
+  const [ghMenuOpen, setGhMenuOpen] = useState(false);
+  if (!ghMode && ghMenuOpen) setGhMenuOpen(false);
+  // The comment composer opened by the GitHub menu's "Comment" action.
+  const [ghCommentOpen, setGhCommentOpen] = useState(false);
+  if (!ghMode && ghCommentOpen) setGhCommentOpen(false);
+  // On a configured GitHub issues screen the (+) button composes a new issue
+  // instead of opening the new-note menu. The composer is rendered here (in the
+  // navbar) so it stacks above the bar rather than under it.
+  const [ghComposeOpen, setGhComposeOpen] = useState(false);
+  if (!ghComposeRepo && ghComposeOpen) setGhComposeOpen(false);
   // The autofix setup instructions, opened by the "?" next to the Fix action.
   const [autofixHelpOpen, setAutofixHelpOpen] = useState(false);
   // Long-pressed/right-clicked note/folder cards. While any are selected the
@@ -120,7 +148,10 @@ export function FloatingTabBar({ blurTarget }: FloatingTabBarProps) {
     clear: clearItemSelection,
   } = useItemSelection();
   const { openOptions } = useItemOptions();
-  const itemSelected = itemSelectionActive && !fixMode;
+  const itemSelected = itemSelectionActive && !fixMode && !ghMode;
+  // The (+) becomes a "compose issue" button on a configured GitHub screen, when
+  // nothing is selected.
+  const ghComposeMode = !!ghComposeRepo && !fixMode && !ghMode && !itemSelected;
   // Copa is the only sibling tab; everything else lives under the home group.
   // Its editor lives at /copa/[id], so match the whole copa stack.
   const onCopa = pathname === '/copa' || pathname.startsWith('/copa/');
@@ -280,6 +311,19 @@ export function FloatingTabBar({ blurTarget }: FloatingTabBarProps) {
                   onCancel={clearSelection}
                 />
               </Animated.View>
+            ) : ghMode ? (
+              <Animated.View
+                key="gh-selection"
+                entering={FadeIn.duration(160)}
+                exiting={FadeOut.duration(140)}>
+                <SelectionMenuButton
+                  count={ghSelectedCount}
+                  blurTarget={blurTarget}
+                  tint="#8250df"
+                  onPress={() => setGhMenuOpen(true)}
+                  onCancel={clearGhSelection}
+                />
+              </Animated.View>
             ) : itemSelected ? (
               <Animated.View
                 key="item-options"
@@ -295,6 +339,13 @@ export function FloatingTabBar({ blurTarget }: FloatingTabBarProps) {
                   }}
                   onCancel={clearItemSelection}
                 />
+              </Animated.View>
+            ) : ghComposeMode ? (
+              <Animated.View
+                key="gh-compose"
+                entering={FadeIn.duration(160)}
+                exiting={FadeOut.duration(140)}>
+                <ComposeButton blurTarget={blurTarget} onPress={() => setGhComposeOpen(true)} />
               </Animated.View>
             ) : (
               <Animated.View key="create" entering={FadeIn.duration(160)} exiting={FadeOut.duration(140)}>
@@ -333,6 +384,39 @@ export function FloatingTabBar({ blurTarget }: FloatingTabBarProps) {
       />
       {/* How to make a repo autofix-ready — opened by the "?" next to Fix. */}
       <AutofixHelp open={autofixHelpOpen} onClose={() => setAutofixHelpOpen(false)} />
+      {/* Actions for the selected GitHub issues, opened by the "⋯" button. */}
+      <GithubSelectionMenu
+        open={ghMenuOpen && ghMode}
+        count={ghSelectedCount}
+        onClose={() => setGhMenuOpen(false)}
+        onCloseIssues={requestGhClose}
+        onReopen={requestGhReopen}
+        onCopy={requestGhCopy}
+        onComment={() => {
+          // Swap the actions sheet for the comment composer (selection persists).
+          setGhMenuOpen(false);
+          setGhCommentOpen(true);
+        }}
+      />
+      {/* Compose a comment applied to the selected GitHub issues. */}
+      <CommentSheet
+        open={ghCommentOpen && ghMode}
+        count={ghSelectedCount}
+        onClose={() => setGhCommentOpen(false)}
+        onSubmit={(body) => {
+          requestGhComment(body);
+          setGhCommentOpen(false);
+        }}
+      />
+      {/* Create a new GitHub issue — opened by the (+) on a GitHub issues screen.
+          Rendered here so it stacks above the navbar; the created issue is handed
+          back to the screen via the shared store. */}
+      <GithubIssueCompose
+        open={ghComposeOpen && !!ghComposeRepo}
+        repo={ghComposeRepo ?? ''}
+        onClose={() => setGhComposeOpen(false)}
+        onCreated={emitGhCreated}
+      />
     </>
   );
 }
@@ -358,7 +442,7 @@ function CreateMenu({
   const router = useRouter();
   const pathname = usePathname();
   const { width: winW, height: winH } = useWindowDimensions();
-  const { createNote, createSentryNote, createFolder, getNote } = useNotes();
+  const { createNote, createSentryNote, createGithubNote, createFolder, getNote } = useNotes();
   const { createCopa, createFileCopa } = useCopa();
 
   const onCopa = pathname === '/copa' || pathname.startsWith('/copa/');
@@ -375,6 +459,14 @@ function CreateMenu({
     // writes the org/project (and optional repo) into the note in place.
     const id = createSentryNote(currentFolderId(pathname, getNote));
     router.push({ pathname: '/sentry/[id]', params: { id } });
+  };
+
+  const onCreateGithub = () => {
+    onClose();
+    // Create it unconfigured — the GitHub screen shows a repo picker and writes
+    // the repo into the note in place.
+    const id = createGithubNote(currentFolderId(pathname, getNote));
+    router.push({ pathname: '/github/[id]', params: { id } });
   };
 
   const onCreateFolder = () => {
@@ -405,6 +497,7 @@ function CreateMenu({
         { key: 'note', label: 'New note', icon: 'file-plus', onPress: onCreateNote },
         { key: 'folder', label: 'New folder', icon: 'folder-plus', onPress: onCreateFolder },
         { key: 'sentry', label: 'New Sentry view', icon: 'alert-triangle', onPress: onCreateSentry },
+        { key: 'github', label: 'New GitHub view', icon: 'github', onPress: onCreateGithub },
       ];
 
   const card = (
@@ -587,6 +680,45 @@ function CreateButton({
 }
 
 /**
+ * Trailing (+) on a configured GitHub issues screen: sits where the create button
+ * normally does, but a tap opens the new-issue composer for that repo (its accent
+ * colour marks it as a GitHub action) instead of the note/folder menu.
+ */
+function ComposeButton({
+  blurTarget,
+  onPress,
+}: {
+  blurTarget?: RefObject<View | null> | null;
+  onPress: () => void;
+}) {
+  const scale = useSharedValue(1);
+  const animatedStyle = useAnimatedStyle(() => ({ transform: [{ scale: scale.value }] }));
+
+  return (
+    <Animated.View style={animatedStyle}>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="New issue"
+        onPressIn={() => {
+          scale.value = withTiming(0.92, { duration: 80 });
+        }}
+        onPressOut={() => {
+          scale.value = withTiming(1, { duration: 120 });
+        }}
+        onPress={onPress}>
+        <GlassSurface
+          intensity={75}
+          tintOpacity={0.85}
+          blurTarget={blurTarget}
+          style={[styles.createButton, { width: TabBar.height, height: TabBar.height }]}>
+          <Feather name="plus" color="#8250df" size={28} />
+        </GlassSurface>
+      </Pressable>
+    </Animated.View>
+  );
+}
+
+/**
  * Trailing action while a note/folder card is selected: sits exactly where the
  * create (+) button normally does. A tap opens that item's options sheet; a
  * long-press (or right-click on web) cancels the selection.
@@ -651,11 +783,14 @@ function SelectionMenuButton({
   blurTarget,
   onPress,
   onCancel,
+  tint = '#7553FF',
 }: {
   count: number;
   blurTarget?: RefObject<View | null> | null;
   onPress: () => void;
   onCancel: () => void;
+  /** Icon/badge accent — Sentry purple by default; GitHub passes its own. */
+  tint?: string;
 }) {
   const scale = useSharedValue(1);
   const animatedStyle = useAnimatedStyle(() => ({ transform: [{ scale: scale.value }] }));
@@ -681,7 +816,7 @@ function SelectionMenuButton({
           tintOpacity={0.85}
           blurTarget={blurTarget}
           style={[styles.createButton, { width: TabBar.height, height: TabBar.height }]}>
-          <Feather name="more-horizontal" color="#7553FF" size={26} />
+          <Feather name="more-horizontal" color={tint} size={26} />
           <View style={styles.fixBadge}>
             <ThemedText style={styles.fixBadgeText}>{count}</ThemedText>
           </View>
@@ -781,6 +916,167 @@ function SelectionMenu({
                   )}
                 </View>
               ))}
+            </GlassSurface>
+          </Animated.View>
+        </>
+      )}
+    </View>
+  );
+}
+
+/**
+ * Bottom sheet of actions for the selected GitHub issues, opened from the "⋯"
+ * button on the GitHub issues screen. Mirrors {@link SelectionMenu}. Close offers
+ * two reasons (completed / not planned); the close/reopen/comment/copy handlers
+ * themselves clear the selection (except Comment, which first opens a composer).
+ */
+function GithubSelectionMenu({
+  open,
+  count,
+  onClose,
+  onCloseIssues,
+  onReopen,
+  onComment,
+  onCopy,
+}: {
+  open: boolean;
+  count: number;
+  onClose: () => void;
+  onCloseIssues: (reason: CloseReason) => void;
+  onReopen: () => void;
+  onComment: () => void;
+  onCopy: () => void;
+}) {
+  const colors = useTheme();
+  const insets = useSafeAreaInsets();
+  const noun = count === 1 ? 'issue' : 'issues';
+
+  const options: { key: string; label: string; icon: FeatherName; tint: string; onPress: () => void }[] = [
+    { key: 'complete', label: `Close ${count} ${noun} as completed`, icon: 'check-circle', tint: '#3fb950', onPress: () => onCloseIssues('completed') },
+    { key: 'notplanned', label: `Close ${count} ${noun} as not planned`, icon: 'slash', tint: colors.textSecondary, onPress: () => onCloseIssues('not_planned') },
+    { key: 'reopen', label: `Reopen ${count} ${noun}`, icon: 'rotate-ccw', tint: '#8250df', onPress: onReopen },
+    { key: 'comment', label: 'Add a comment', icon: 'message-square', tint: colors.text, onPress: onComment },
+    { key: 'copy', label: 'Copy issue details', icon: 'copy', tint: colors.text, onPress: onCopy },
+  ];
+
+  return (
+    <View style={styles.menuOverlay} pointerEvents={open ? 'box-none' : 'none'}>
+      {open && (
+        <>
+          <AnimatedPressable
+            entering={FadeIn.duration(180)}
+            exiting={FadeOut.duration(180)}
+            style={styles.menuBackdrop}
+            onPress={onClose}
+            accessibilityRole="button"
+            accessibilityLabel="Dismiss actions"
+          />
+          <Animated.View
+            entering={SlideInDown.duration(260)}
+            exiting={SlideOutDown.duration(220)}
+            style={[styles.menuHost, { paddingBottom: insets.bottom + Spacing.three }]}>
+            <GlassSurface intensity={75} tintOpacity={0.85} style={styles.menuSheet}>
+              {options.map((option) => (
+                <Pressable
+                  key={option.key}
+                  onPress={() => {
+                    option.onPress();
+                    onClose();
+                  }}
+                  accessibilityRole="button"
+                  accessibilityLabel={option.label}
+                  style={({ pressed }) => [styles.menuRow, pressed && styles.menuRowPressed]}>
+                  <Feather name={option.icon} size={20} color={option.tint} style={styles.menuIcon} />
+                  <ThemedText style={[styles.menuLabel, { color: option.tint }]}>
+                    {option.label}
+                  </ThemedText>
+                </Pressable>
+              ))}
+            </GlassSurface>
+          </Animated.View>
+        </>
+      )}
+    </View>
+  );
+}
+
+/**
+ * Bottom sheet with a single multiline field to comment on the selected GitHub
+ * issues. Opened from the GitHub actions menu's "Add a comment" row; submitting
+ * posts the same body to every selected issue.
+ */
+function CommentSheet({
+  open,
+  count,
+  onClose,
+  onSubmit,
+}: {
+  open: boolean;
+  count: number;
+  onClose: () => void;
+  onSubmit: (body: string) => void;
+}) {
+  const colors = useTheme();
+  const insets = useSafeAreaInsets();
+  const [text, setText] = useState('');
+  const noun = count === 1 ? 'issue' : 'issues';
+
+  // Clear the field whenever the sheet closes so it opens empty next time.
+  if (!open && text) setText('');
+
+  const submit = () => {
+    const body = text.trim();
+    if (!body) return;
+    Keyboard.dismiss();
+    onSubmit(body);
+  };
+
+  return (
+    <View style={styles.menuOverlay} pointerEvents={open ? 'box-none' : 'none'}>
+      {open && (
+        <>
+          <AnimatedPressable
+            entering={FadeIn.duration(180)}
+            exiting={FadeOut.duration(180)}
+            style={styles.menuBackdrop}
+            onPress={() => {
+              Keyboard.dismiss();
+              onClose();
+            }}
+            accessibilityRole="button"
+            accessibilityLabel="Cancel comment"
+          />
+          <Animated.View
+            entering={SlideInDown.duration(260)}
+            exiting={SlideOutDown.duration(220)}
+            style={[styles.menuHost, { paddingBottom: insets.bottom + Spacing.three }]}>
+            <GlassSurface intensity={75} tintOpacity={0.9} style={styles.commentSheet}>
+              <ThemedText style={styles.commentTitle}>{`Comment on ${count} ${noun}`}</ThemedText>
+              <TextInput
+                value={text}
+                onChangeText={setText}
+                placeholder="Write a comment…"
+                placeholderTextColor={colors.textSecondary}
+                autoFocus
+                multiline
+                style={[
+                  styles.commentInput,
+                  { color: colors.text, backgroundColor: colors.backgroundElement },
+                ]}
+              />
+              <Pressable
+                onPress={submit}
+                disabled={!text.trim()}
+                accessibilityRole="button"
+                accessibilityLabel="Post comment"
+                accessibilityState={{ disabled: !text.trim() }}
+                style={({ pressed }) => [
+                  styles.commentCta,
+                  !text.trim() && styles.commentCtaDisabled,
+                  pressed && text.trim() && styles.menuRowPressed,
+                ]}>
+                <ThemedText style={styles.commentCtaText}>Comment</ThemedText>
+              </Pressable>
             </GlassSurface>
           </Animated.View>
         </>
@@ -1011,6 +1307,44 @@ const styles = StyleSheet.create({
     shadowRadius: 24,
     shadowOffset: { width: 0, height: 8 },
     elevation: 24,
+  },
+  // The comment composer sheet: same surface as menuSheet with roomier padding.
+  commentSheet: {
+    overflow: 'hidden',
+    borderRadius: Spacing.four,
+    padding: Spacing.three,
+    gap: Spacing.three,
+    shadowColor: '#000',
+    shadowOpacity: 0.4,
+    shadowRadius: 24,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 24,
+  },
+  commentTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  commentInput: {
+    minHeight: 96,
+    borderRadius: Spacing.three,
+    paddingHorizontal: Spacing.three,
+    paddingVertical: Spacing.two + Spacing.half,
+    fontSize: 15,
+    textAlignVertical: 'top',
+  },
+  commentCta: {
+    backgroundColor: '#8250df',
+    borderRadius: Spacing.three,
+    paddingVertical: Spacing.three,
+    alignItems: 'center',
+  },
+  commentCtaDisabled: {
+    opacity: 0.4,
+  },
+  commentCtaText: {
+    color: '#FFFFFF',
+    fontWeight: '600',
+    fontSize: 15,
   },
   // The anchored popover sizes to its content, so give the rows room to breathe.
   menuSheetAnchored: {

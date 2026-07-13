@@ -16,14 +16,15 @@ export type Note = {
   shared?: boolean;
   /**
    * Plugin-note marker. When set, the note renders live plugin content (e.g. a
-   * Sentry project's issues) instead of an editable body. Ordinary notes leave
-   * it undefined.
+   * Sentry project's issues, or a GitHub repo's issues) instead of an editable
+   * body. Ordinary notes leave it undefined.
    */
-  pluginType?: 'sentry';
+  pluginType?: 'sentry' | 'github';
   /**
    * Opaque per-plugin JSON config. For Sentry: `{org, project, projectName?,
-   * repo?}` (see `@/lib/sentry-note`). Absent on an unconfigured plugin note,
-   * which renders a setup UI instead of live content.
+   * repo?}` (see `@/lib/sentry-note`). For GitHub: `{repo, repoName?}` (see
+   * `@/lib/github-note`). Absent on an unconfigured plugin note, which renders a
+   * setup UI instead of live content.
    */
   pluginConfig?: string;
 };

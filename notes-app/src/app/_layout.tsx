@@ -22,6 +22,7 @@ import { CopaProvider } from '@/store/copa-store';
 import { NotesProvider } from '@/store/notes-store';
 import { SidebarProvider, useSidebar } from '@/store/sidebar-store';
 import { AutofixSelectionProvider } from '@/store/autofix-selection-store';
+import { GithubSelectionProvider } from '@/store/github-selection-store';
 import { ItemSelectionProvider } from '@/store/item-selection-store';
 import { EditorPrefsProvider, useEditorPrefs } from '@/store/editor-prefs-store';
 import { AppThemeProvider, useThemePref } from '@/store/theme-store';
@@ -111,6 +112,7 @@ function AppShell() {
         <CopaProvider>
         <SidebarProvider>
         <AutofixSelectionProvider>
+        <GithubSelectionProvider>
         <ItemSelectionProvider>
         <ItemOptionsProvider>
         <CopaOptionsProvider>
@@ -142,6 +144,7 @@ function AppShell() {
         </CopaOptionsProvider>
         </ItemOptionsProvider>
         </ItemSelectionProvider>
+        </GithubSelectionProvider>
         </AutofixSelectionProvider>
         </SidebarProvider>
         </CopaProvider>

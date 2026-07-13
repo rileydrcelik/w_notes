@@ -14,6 +14,7 @@ import { db, type TrashEntry } from '@/lib/db';
 import { isDbLockedError } from '@/lib/web-db-lock';
 import { requestSync, subscribeSynced, syncNow } from '@/lib/sync/sync-engine';
 import type { SentryTarget } from '@/lib/sentry-note';
+import type { GithubTarget } from '@/lib/github-note';
 import type { Folder, Note } from '@/data/notes';
 
 const today = () => new Date().toISOString().slice(0, 10);
@@ -66,6 +67,13 @@ type NotesContextValue = {
    * picker, which writes the config in place via `updateNote`.
    */
   createSentryNote: (folderId: string | null, config?: SentryTarget) => string;
+  /**
+   * Creates a GitHub plugin note (null folder = root) and returns its id. It
+   * renders a repo's live issues, not an editable body — only the marker +
+   * config sync. `config` is optional: an unconfigured note opens a repo picker,
+   * which writes the config in place via `updateNote`.
+   */
+  createGithubNote: (folderId: string | null, config?: GithubTarget) => string;
   /** Creates an unnamed folder inside the given parent (null = root); returns its id. */
   createFolder: (parentId: string | null) => string;
   updateNote: (id: string, patch: Partial<Pick<Note, 'title' | 'body' | 'pluginConfig'>>) => void;
@@ -165,6 +173,30 @@ export function NotesProvider({ children }: { children: ReactNode }) {
       };
       setNotes((prev) => [note, ...prev]);
       persist(db.createNote({ id, folderId, pluginType: 'sentry', pluginConfig }));
+      return id;
+    },
+    [],
+  );
+
+  const createGithubNote = useCallback<NotesContextValue['createGithubNote']>(
+    (folderId, config) => {
+      const id = rid('note');
+      // Omit config for an unconfigured note — the screen shows a repo picker and
+      // writes the config in place once the user chooses.
+      const pluginConfig = config ? JSON.stringify(config) : undefined;
+      // The card/screen derive their label from pluginConfig, so title stays
+      // empty — a GitHub note carries no user-authored content.
+      const note: Note = {
+        id,
+        title: '',
+        body: '',
+        folderId,
+        updatedAt: today(),
+        pluginType: 'github',
+        pluginConfig,
+      };
+      setNotes((prev) => [note, ...prev]);
+      persist(db.createNote({ id, folderId, pluginType: 'github', pluginConfig }));
       return id;
     },
     [],
@@ -310,6 +342,7 @@ export function NotesProvider({ children }: { children: ReactNode }) {
       getSubfolders: (parentId) => folders.filter((folder) => folder.parentId === parentId),
       createNote,
       createSentryNote,
+      createGithubNote,
       createFolder,
       updateNote,
       updateFolder,
@@ -328,6 +361,7 @@ export function NotesProvider({ children }: { children: ReactNode }) {
       trash,
       createNote,
       createSentryNote,
+      createGithubNote,
       createFolder,
       updateNote,
       updateFolder,

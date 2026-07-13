@@ -24,6 +24,7 @@ export default function HomeStackLayout() {
       <Stack.Screen name="folder/[id]" options={{ title: '' }} />
       <Stack.Screen name="note/[id]" options={{ title: '' }} />
       <Stack.Screen name="sentry/[id]" options={{ headerShown: false }} />
+      <Stack.Screen name="github/[id]" options={{ headerShown: false }} />
       <Stack.Screen name="menu" options={{ headerShown: false }} />
       <Stack.Screen name="settings" options={{ headerShown: false }} />
       <Stack.Screen name="favorites" options={{ headerShown: false }} />
