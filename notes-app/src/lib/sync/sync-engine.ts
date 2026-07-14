@@ -14,6 +14,7 @@
 import { Sentry } from '@/lib/sentry';
 import { db, type SyncPayload } from '@/lib/db';
 import { isDbLockedError } from '@/lib/web-db-lock';
+import { AuthUnavailableError } from '@/lib/auth/token';
 import { ApiError, apiFetch, syncConfigured } from './api';
 import { getDeviceKey, rotateDeviceKey } from './device-key';
 import { downloadCopaFile, prepareLocalFiles, uploadCopaFile } from './files';
@@ -112,6 +113,11 @@ async function runSync(): Promise<SyncResult> {
     // 501 = endpoints not wired (shouldn't happen now, but stays graceful).
     if (e instanceof ApiError && e.status === 501) {
       return { status: 'skipped', reason: 'sync endpoints not implemented' };
+    }
+    // The account's Firebase session isn't available yet (restoring on launch,
+    // or dropped). Defer rather than fork the account's data onto the device key.
+    if (e instanceof AuthUnavailableError) {
+      return { status: 'skipped', reason: 'auth session unavailable' };
     }
     // A follower browser tab can't reach the OPFS database (another tab owns it);
     // the DbTabGuard handles that, so skip rather than report it as an error.
