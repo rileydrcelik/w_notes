@@ -146,6 +146,9 @@ function IssueRow({
   // Single tap expands the description; double tap toggles done.
   const doubleTap = useDoubleTap(() => setExpanded((v) => !v), onToggleDone);
   const contextMenuRef = useContextMenu(onToggleSelect);
+  // The left status icon is a one-tap shortcut: mark done / undo (or, in
+  // selection mode, toggle this issue's selection like the rest of the card).
+  const onStatusPress = selectionActive ? onToggleSelect : onToggleDone;
 
   // Copy this issue to the clipboard, flashing a checkmark for confirmation.
   const handleCopy = useCallback(() => {
@@ -168,19 +171,6 @@ function IssueRow({
         style={({ pressed }) => pressed && styles.pressed}>
         <ThemedView type="backgroundElementAlt" style={[styles.card, selected && styles.cardSelected]}>
           <View style={styles.cardHeader}>
-            {selectionActive ? (
-              <Feather
-                name={selected ? 'check-circle' : 'circle'}
-                size={18}
-                color={selected ? ACCENT : theme.textSecondary}
-              />
-            ) : (
-              <Feather
-                name={issue.done ? 'check-circle' : 'circle'}
-                size={18}
-                color={issue.done ? DONE_COLOR : theme.textSecondary}
-              />
-            )}
             <ThemedText
               type="smallBold"
               numberOfLines={expanded ? undefined : 2}
@@ -207,6 +197,35 @@ function IssueRow({
             </Animated.View>
           )}
         </ThemedView>
+      </Pressable>
+      <Pressable
+        onPress={onStatusPress}
+        hitSlop={8}
+        accessibilityRole="button"
+        accessibilityState={{ checked: selectionActive ? selected : issue.done }}
+        accessibilityLabel={
+          selectionActive
+            ? selected
+              ? 'Deselect issue'
+              : 'Select issue'
+            : issue.done
+              ? 'Mark issue not done'
+              : 'Mark issue done'
+        }
+        style={({ pressed }) => [styles.statusButton, pressed && styles.pressed]}>
+        {selectionActive ? (
+          <Feather
+            name={selected ? 'check-circle' : 'circle'}
+            size={18}
+            color={selected ? ACCENT : theme.textSecondary}
+          />
+        ) : (
+          <Feather
+            name={issue.done ? 'check-circle' : 'circle'}
+            size={18}
+            color={issue.done ? DONE_COLOR : theme.textSecondary}
+          />
+        )}
       </Pressable>
       <Pressable
         onPress={handleCopy}
@@ -437,13 +456,31 @@ const styles = StyleSheet.create({
     borderColor: 'transparent',
   },
   cardSelected: { borderColor: ACCENT, backgroundColor: hexToRgba(ACCENT, 0.1) },
-  // Reserve room on the right so the title/badge never slide under the copy button.
-  cardHeader: { flexDirection: 'row', alignItems: 'flex-start', gap: Spacing.two, paddingRight: 44 },
+  // Reserve room on both edges so the title/badge never slide under the left
+  // status toggle or the right copy button.
+  cardHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: Spacing.two,
+    paddingLeft: Spacing.four,
+    paddingRight: 44,
+  },
   cardTitle: { flex: 1 },
   doneTitle: { textDecorationLine: 'line-through', opacity: 0.6 },
   ghBadge: { flexDirection: 'row', alignItems: 'center', gap: 2 },
   ghBadgeText: { color: GITHUB_ACCENT, fontSize: 11 },
   rowWrapper: { position: 'relative' },
+  // One-tap done/undo toggle, overlaid on the card's top-left where the status
+  // icon sits. A sibling (not a child) of the card Pressable so it isn't a
+  // nested button on web and its tap doesn't bubble to the card.
+  statusButton: {
+    position: 'absolute',
+    top: 0,
+    left: Spacing.three,
+    paddingTop: Spacing.three,
+    paddingRight: Spacing.two,
+    paddingBottom: Spacing.two,
+  },
   // Vertically centered on the card's right edge.
   copyButton: {
     position: 'absolute',
