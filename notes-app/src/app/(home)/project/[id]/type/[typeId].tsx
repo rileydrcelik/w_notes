@@ -8,6 +8,7 @@
  * issue's done flag also closes/reopens its mirrored GitHub issue (push-only).
  */
 import Feather from '@expo/vector-icons/Feather';
+import * as Clipboard from 'expo-clipboard';
 import { Stack, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Alert, FlatList, Pressable, StyleSheet, View } from 'react-native';
@@ -42,6 +43,35 @@ import { useTaskSelection } from '@/store/task-selection-store';
 const ACCENT = '#16a394';
 const DONE_COLOR = '#3fb950';
 const GITHUB_ACCENT = '#8250df';
+
+/** A single attribute value rendered as plain text for the clipboard. */
+function attrValueText(attr: AttrDef, v: IssueAttrValue): string | null {
+  if (v == null || (Array.isArray(v) && v.length === 0)) return null;
+  if (attr.type === 'stars' && typeof v === 'number') return v > 0 ? '★'.repeat(v) : null;
+  if (attr.type === 'people' && Array.isArray(v)) return v.map((p) => `@${p}`).join(' ');
+  if (Array.isArray(v)) return v.join(', ');
+  return String(v);
+}
+
+/** Serialize an issue (title, state, attributes, GitHub link, description) as text. */
+function issueToClipboardText(
+  issue: Issue,
+  attributes: AttrDef[],
+  repo: string | undefined,
+): string {
+  const heading = issue.ghNumber != null ? `#${issue.ghNumber} ${issue.title}` : issue.title;
+  const lines: string[] = [heading.trim() || 'Untitled issue'];
+  lines.push(`State: ${issue.done ? 'done' : 'not done'}`);
+  for (const attr of attributes) {
+    const text = attrValueText(attr, issue.attrs[attr.id]);
+    if (text) lines.push(`${attr.name}: ${text}`);
+  }
+  if (repo && issue.ghNumber != null) {
+    lines.push(`GitHub: https://github.com/${repo}/issues/${issue.ghNumber}`);
+  }
+  if (issue.description.trim()) lines.push('', issue.description.trim());
+  return lines.join('\n');
+}
 
 /** Compact chips summarizing an issue's set attribute values. */
 function AttrSummary({ attributes, attrs }: { attributes: AttrDef[]; attrs: Issue['attrs'] }) {
@@ -100,6 +130,7 @@ function IssueRow({
   selected,
   onToggleSelect,
   onToggleDone,
+  onCopy,
 }: {
   issue: Issue;
   attributes: AttrDef[];
@@ -107,64 +138,89 @@ function IssueRow({
   selected: boolean;
   onToggleSelect: () => void;
   onToggleDone: () => void;
+  onCopy: () => void;
 }) {
   const theme = useTheme();
   const [expanded, setExpanded] = useState(false);
+  const [copied, setCopied] = useState(false);
   // Single tap expands the description; double tap toggles done.
   const doubleTap = useDoubleTap(() => setExpanded((v) => !v), onToggleDone);
   const contextMenuRef = useContextMenu(onToggleSelect);
 
+  // Copy this issue to the clipboard, flashing a checkmark for confirmation.
+  const handleCopy = useCallback(() => {
+    onCopy();
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1200);
+  }, [onCopy]);
+
   return (
-    <Pressable
-      ref={contextMenuRef}
-      accessibilityRole="button"
-      accessibilityState={{ selected, checked: issue.done }}
-      accessibilityLabel={`${issue.title || 'Issue'}${issue.done ? ', done' : ''}`}
-      onPress={selectionActive ? onToggleSelect : doubleTap}
-      onLongPress={onToggleSelect}
-      style={({ pressed }) => pressed && styles.pressed}>
-      <ThemedView type="backgroundElementAlt" style={[styles.card, selected && styles.cardSelected]}>
-        <View style={styles.cardHeader}>
-          {selectionActive ? (
-            <Feather
-              name={selected ? 'check-circle' : 'circle'}
-              size={18}
-              color={selected ? ACCENT : theme.textSecondary}
-            />
-          ) : (
-            <Feather
-              name={issue.done ? 'check-circle' : 'circle'}
-              size={18}
-              color={issue.done ? DONE_COLOR : theme.textSecondary}
-            />
-          )}
-          <ThemedText
-            type="smallBold"
-            numberOfLines={expanded ? undefined : 2}
-            style={[styles.cardTitle, issue.done && styles.doneTitle]}>
-            {issue.title || 'Untitled issue'}
-          </ThemedText>
-          {issue.ghNumber != null && (
-            <View style={styles.ghBadge}>
-              <Feather name="github" size={11} color={GITHUB_ACCENT} />
-              <ThemedText type="small" style={styles.ghBadgeText}>
-                #{issue.ghNumber}
-              </ThemedText>
-            </View>
-          )}
-        </View>
-
-        <AttrSummary attributes={attributes} attrs={issue.attrs} />
-
-        {expanded && !!issue.description && (
-          <Animated.View entering={FadeIn.duration(160)}>
-            <ThemedText type="small" themeColor="textSecondary" style={styles.description}>
-              {issue.description}
+    // The copy button is a sibling of the card Pressable (not a child) so it
+    // isn't a nested <button> inside the card's <button> on web.
+    <View style={styles.rowWrapper}>
+      <Pressable
+        ref={contextMenuRef}
+        accessibilityRole="button"
+        accessibilityState={{ selected, checked: issue.done }}
+        accessibilityLabel={`${issue.title || 'Issue'}${issue.done ? ', done' : ''}`}
+        onPress={selectionActive ? onToggleSelect : doubleTap}
+        onLongPress={onToggleSelect}
+        style={({ pressed }) => pressed && styles.pressed}>
+        <ThemedView type="backgroundElementAlt" style={[styles.card, selected && styles.cardSelected]}>
+          <View style={styles.cardHeader}>
+            {selectionActive ? (
+              <Feather
+                name={selected ? 'check-circle' : 'circle'}
+                size={18}
+                color={selected ? ACCENT : theme.textSecondary}
+              />
+            ) : (
+              <Feather
+                name={issue.done ? 'check-circle' : 'circle'}
+                size={18}
+                color={issue.done ? DONE_COLOR : theme.textSecondary}
+              />
+            )}
+            <ThemedText
+              type="smallBold"
+              numberOfLines={expanded ? undefined : 2}
+              style={[styles.cardTitle, issue.done && styles.doneTitle]}>
+              {issue.title || 'Untitled issue'}
             </ThemedText>
-          </Animated.View>
-        )}
-      </ThemedView>
-    </Pressable>
+            {issue.ghNumber != null && (
+              <View style={styles.ghBadge}>
+                <Feather name="github" size={11} color={GITHUB_ACCENT} />
+                <ThemedText type="small" style={styles.ghBadgeText}>
+                  #{issue.ghNumber}
+                </ThemedText>
+              </View>
+            )}
+          </View>
+
+          <AttrSummary attributes={attributes} attrs={issue.attrs} />
+
+          {expanded && !!issue.description && (
+            <Animated.View entering={FadeIn.duration(160)}>
+              <ThemedText type="small" themeColor="textSecondary" style={styles.description}>
+                {issue.description}
+              </ThemedText>
+            </Animated.View>
+          )}
+        </ThemedView>
+      </Pressable>
+      <Pressable
+        onPress={handleCopy}
+        hitSlop={8}
+        accessibilityRole="button"
+        accessibilityLabel="Copy issue"
+        style={({ pressed }) => [styles.copyButton, pressed && styles.pressed]}>
+        <Feather
+          name={copied ? 'check' : 'copy'}
+          size={22}
+          color={copied ? DONE_COLOR : theme.textSecondary}
+        />
+      </Pressable>
+    </View>
   );
 }
 
@@ -339,6 +395,9 @@ export default function IssueTypeScreen() {
               selected={isSelected(item.id)}
               onToggleSelect={() => toggle(item.id)}
               onToggleDone={() => syncDone(item, !item.done)}
+              onCopy={() =>
+                void Clipboard.setStringAsync(issueToClipboardText(item, attributes, repo))
+              }
             />
           )}
           ListEmptyComponent={
@@ -378,11 +437,23 @@ const styles = StyleSheet.create({
     borderColor: 'transparent',
   },
   cardSelected: { borderColor: ACCENT, backgroundColor: hexToRgba(ACCENT, 0.1) },
-  cardHeader: { flexDirection: 'row', alignItems: 'flex-start', gap: Spacing.two },
+  // Reserve room on the right so the title/badge never slide under the copy button.
+  cardHeader: { flexDirection: 'row', alignItems: 'flex-start', gap: Spacing.two, paddingRight: 44 },
   cardTitle: { flex: 1 },
   doneTitle: { textDecorationLine: 'line-through', opacity: 0.6 },
   ghBadge: { flexDirection: 'row', alignItems: 'center', gap: 2 },
   ghBadgeText: { color: GITHUB_ACCENT, fontSize: 11 },
+  rowWrapper: { position: 'relative' },
+  // Vertically centered on the card's right edge.
+  copyButton: {
+    position: 'absolute',
+    top: 0,
+    bottom: 0,
+    right: Spacing.two,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: Spacing.two,
+  },
   summaryRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
