@@ -11,7 +11,7 @@
  * proxy endpoints. Failures surface to the caller (reported to Sentry, shown to
  * the user), never blocking the optimistic local write.
  */
-import type { IssueAttrValue } from '@/data/notes';
+import type { Issue, IssueAttrValue } from '@/data/notes';
 import type { AttrDef } from '@/lib/project';
 import { ApiError, apiFetch } from '@/lib/sync/api';
 
@@ -188,6 +188,26 @@ export async function createGithubIssue(
     },
   });
   return issue.number;
+}
+
+/**
+ * Open a GitHub issue mirroring an already-created local issue, resolving to its
+ * new number. Used to backfill a type's existing issues when it's newly switched
+ * to GitHub-tracked — the same title/body/labels/assignees mapping as a fresh
+ * create, just sourced from a stored {@link Issue} rather than a compose form.
+ */
+export function openGithubIssueForIssue(
+  repo: string,
+  typeName: string | undefined,
+  attributes: AttrDef[],
+  issue: Issue,
+): Promise<number> {
+  return createGithubIssue(repo, {
+    title: issue.title,
+    body: githubIssueBody(issue.description),
+    labels: githubIssueLabels(typeName, attributes, issue.attrs),
+    assignees: githubIssueAssignees(attributes, issue.attrs),
+  });
 }
 
 /** One page of the repo's issues (state=all), for back-sync reconciliation. */

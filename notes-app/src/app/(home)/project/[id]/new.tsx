@@ -65,6 +65,7 @@ export default function NewIssueScreen() {
 
   // Inline "add type" / "add attribute" forms.
   const [newType, setNewType] = useState<string | null>(null); // null = closed
+  const [newTypeConnected, setNewTypeConnected] = useState(true); // GitHub-tracked?
   const [newAttrName, setNewAttrName] = useState<string | null>(null); // null = closed
   const [newAttrOptions, setNewAttrOptions] = useState('');
 
@@ -125,10 +126,11 @@ export default function NewIssueScreen() {
     if (!name) return;
     const nextOrder =
       typeNotes.reduce((m, t) => Math.max(m, parseTypeConfig(t.pluginConfig).order), -1) + 1;
-    // New types made here sync to GitHub by default (the project always has a repo).
-    const created = createIssueTypeNote(id, name, true, nextOrder);
+    // GitHub tracking only means something when the project has a repo.
+    const created = createIssueTypeNote(id, name, !!config?.repo && newTypeConnected, nextOrder);
     setSelectedTypeId(created);
     setNewType(null);
+    setNewTypeConnected(true);
   };
 
   const removeType = (typeId: string) => {
@@ -236,24 +238,52 @@ export default function NewIssueScreen() {
             ) : null}
           </View>
           {newType !== null && (
-            <View style={styles.inlineForm}>
-              <TextInput
-                value={newType}
-                onChangeText={setNewType}
-                onSubmitEditing={confirmAddType}
-                placeholder="New type name"
-                placeholderTextColor={theme.textSecondary}
-                autoFocus
-                returnKeyType="done"
-                style={[styles.input, { color: theme.text, borderColor: border }]}
-              />
-              <Pressable
-                onPress={confirmAddType}
-                accessibilityRole="button"
-                accessibilityLabel="Add type"
-                style={({ pressed }) => [styles.smallCta, pressed && styles.pressed]}>
-                <Feather name="check" size={18} color="#FFFFFF" />
-              </Pressable>
+            <View style={styles.newTypeForm}>
+              <View style={styles.inlineForm}>
+                <TextInput
+                  value={newType}
+                  onChangeText={setNewType}
+                  onSubmitEditing={confirmAddType}
+                  placeholder="New type name"
+                  placeholderTextColor={theme.textSecondary}
+                  autoFocus
+                  returnKeyType="done"
+                  style={[styles.input, { color: theme.text, borderColor: border }]}
+                />
+                <Pressable
+                  onPress={confirmAddType}
+                  accessibilityRole="button"
+                  accessibilityLabel="Add type"
+                  style={({ pressed }) => [styles.smallCta, pressed && styles.pressed]}>
+                  <Feather name="check" size={18} color="#FFFFFF" />
+                </Pressable>
+              </View>
+              {!!config?.repo && (
+                <Pressable
+                  onPress={() => setNewTypeConnected((v) => !v)}
+                  accessibilityRole="switch"
+                  accessibilityState={{ checked: newTypeConnected }}
+                  accessibilityLabel="Track with GitHub"
+                  style={({ pressed }) => [
+                    styles.typeToggle,
+                    { borderColor: border },
+                    pressed && styles.pressed,
+                  ]}>
+                  <Feather name="github" size={15} color={GITHUB_ACCENT} />
+                  <ThemedText type="small" style={styles.typeToggleLabel}>
+                    Track with GitHub
+                  </ThemedText>
+                  <View
+                    style={[
+                      styles.check,
+                      newTypeConnected
+                        ? { backgroundColor: ACCENT, borderColor: ACCENT }
+                        : { borderColor: hexToRgba(theme.textSecondary, 0.4) },
+                    ]}>
+                    {newTypeConnected && <Feather name="check" size={14} color="#FFFFFF" />}
+                  </View>
+                </Pressable>
+              )}
             </View>
           )}
 
@@ -397,7 +427,26 @@ const styles = StyleSheet.create({
     borderWidth: 1.5,
     borderStyle: 'dashed',
   },
+  newTypeForm: { gap: Spacing.two },
   inlineForm: { flexDirection: 'row', alignItems: 'center', gap: Spacing.two },
+  typeToggle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.two,
+    borderWidth: 1.5,
+    borderRadius: Spacing.three,
+    paddingHorizontal: Spacing.three,
+    paddingVertical: Spacing.two,
+  },
+  typeToggleLabel: { flex: 1, fontWeight: '600' },
+  check: {
+    width: 26,
+    height: 26,
+    borderRadius: Spacing.two,
+    borderWidth: 2,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   input: {
     flex: 1,
     borderWidth: 1.5,

@@ -1,7 +1,11 @@
 import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from 'react';
 
-/** A selected note or folder card. */
-export type SelectedItem = { type: 'note' | 'folder'; id: string };
+/**
+ * A selected card. `issuetype` is a note with `pluginType='issuetype'` (a task-
+ * manager issue type) — tracked separately from plain `note`s so the options
+ * sheet can offer type-specific actions (e.g. GitHub tracking).
+ */
+export type SelectedItem = { type: 'note' | 'folder' | 'issuetype'; id: string };
 
 type ItemSelectionValue = {
   /** Every currently selected card (order of selection). */

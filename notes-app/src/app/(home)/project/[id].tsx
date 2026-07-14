@@ -18,8 +18,9 @@ import { ProjectConfig } from '@/components/notes/project-config';
 import { SwipeBackView } from '@/components/swipe-back-view';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
-import { Spacing } from '@/constants/theme';
+import { hexToRgba, Spacing } from '@/constants/theme';
 import { GRID_COLUMNS, gridEdgePadding, trailingSpacers } from '@/lib/grid';
+import { useContextMenu } from '@/hooks/use-context-menu';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
 import { useTheme } from '@/hooks/use-theme';
 import type { Folder, Note } from '@/data/notes';
@@ -33,40 +34,53 @@ import {
 } from '@/lib/project';
 import { Sentry } from '@/lib/sentry';
 import { useIssues } from '@/store/issues-store';
+import { useItemSelection } from '@/store/item-selection-store';
 import { useNotes } from '@/store/notes-store';
 import { useTaskSelection } from '@/store/task-selection-store';
 
 const ACCENT = '#16a394';
 const DONE_COLOR = '#3fb950';
 const GITHUB_ACCENT = '#8250df';
+/** Accent for a long-pressed/right-clicked (selected) card — matches cards.tsx. */
+const SELECT_ACCENT = '#7a89b8';
 
-/** A card for one issue type: name, count, GitHub badge, and an issue preview. */
-function IssueTypeCard({
-  projectId,
-  note,
-  onRemove,
-}: {
-  projectId: string;
-  note: Note;
-  onRemove: () => void;
-}) {
+/**
+ * A card for one issue type: name, count, GitHub badge, and an issue preview.
+ * Long-press / right-click selects it (joining the shared note/folder selection),
+ * so the navbar's "⋯" can act on it — e.g. toggle its GitHub tracking. A plain
+ * tap opens the type's issue list, or toggles selection while selecting.
+ */
+function IssueTypeCard({ projectId, note }: { projectId: string; note: Note }) {
   const router = useRouter();
   const theme = useTheme();
   const { getIssuesForNote } = useIssues();
+  const { active, isSelected, toggle } = useItemSelection();
   const issues = getIssuesForNote(note.id);
   const connected = parseTypeConfig(note.pluginConfig).githubConnected;
   const preview = issues.slice(0, 4);
+  const selected = isSelected('issuetype', note.id);
+  const onSelectToggle = () => toggle({ type: 'issuetype', id: note.id });
+  // Web right-click parity with long-press (no-op on native).
+  const contextMenuRef = useContextMenu(onSelectToggle);
 
   return (
     <Pressable
+      ref={contextMenuRef}
       style={({ pressed }) => [styles.cardWrapper, pressed && styles.pressed]}
-      onPress={() =>
-        router.push({ pathname: '/project/[id]/type/[typeId]', params: { id: projectId, typeId: note.id } })
+      onPress={
+        active
+          ? onSelectToggle
+          : () =>
+              router.push({
+                pathname: '/project/[id]/type/[typeId]',
+                params: { id: projectId, typeId: note.id },
+              })
       }
-      onLongPress={onRemove}
+      onLongPress={onSelectToggle}
       accessibilityRole="button"
+      accessibilityState={{ selected }}
       accessibilityLabel={`${note.title || 'Untitled'} issues`}>
-      <ThemedView type="backgroundElementAlt" style={styles.card}>
+      <ThemedView type="backgroundElementAlt" style={[styles.card, selected && styles.cardSelected]}>
         <View style={styles.cardTop}>
           <Feather name="tag" size={14} color={ACCENT} />
           <ThemedText type="smallBold" numberOfLines={1} style={styles.cardName}>
@@ -122,9 +136,9 @@ export default function ProjectScreen() {
   const theme = useTheme();
   const insets = useSafeAreaInsets();
   const tabBarInset = useTabBarInset();
-  const { getFolder, getNotesInFolder, getSubfolders, updateFolder, createIssueTypeNote, deleteNote } =
+  const { getFolder, getNotesInFolder, getSubfolders, updateFolder, createIssueTypeNote } =
     useNotes();
-  const { issues, hydrated, getIssuesForNote, deleteIssue, createIssue, updateIssue } = useIssues();
+  const { issues, hydrated, createIssue, updateIssue } = useIssues();
   const { registerCompose } = useTaskSelection();
 
   const folder = getFolder(id);
@@ -228,24 +242,6 @@ export default function ProjectScreen() {
     [id, updateFolder, createIssueTypeNote],
   );
 
-  const removeType = (note: Note) => {
-    Alert.alert(
-      `Delete "${note.title || 'Untitled'}"?`,
-      'This removes the issue type and every issue filed under it.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Delete',
-          style: 'destructive',
-          onPress: () => {
-            getIssuesForNote(note.id).forEach((i) => deleteIssue(i.id));
-            deleteNote(note.id);
-          },
-        },
-      ],
-    );
-  };
-
   const items: GridItem[] = [
     ...typeNotes.map((note) => ({ kind: 'type' as const, note })),
     ...subfolders.map((sub) => ({ kind: 'folder' as const, folder: sub })),
@@ -320,9 +316,7 @@ export default function ProjectScreen() {
             if (item.kind === 'spacer') return <View style={styles.spacer} />;
             if (item.kind === 'folder') return <FolderCard folder={item.folder} />;
             if (item.kind === 'note') return <NoteCard note={item.note} />;
-            return (
-              <IssueTypeCard projectId={id} note={item.note} onRemove={() => removeType(item.note)} />
-            );
+            return <IssueTypeCard projectId={id} note={item.note} />;
           }}
           ListEmptyComponent={
             <ThemedText themeColor="textSecondary" style={styles.state}>
@@ -353,6 +347,8 @@ const styles = StyleSheet.create({
     borderWidth: 2,
     borderColor: 'transparent',
   },
+  // Highlight for a selected (long-pressed/right-clicked) type card.
+  cardSelected: { borderColor: SELECT_ACCENT, backgroundColor: hexToRgba(SELECT_ACCENT, 0.12) },
   cardTop: { flexDirection: 'row', alignItems: 'center', gap: Spacing.one },
   cardName: { flex: 1 },
   previewList: { gap: Spacing.half },
