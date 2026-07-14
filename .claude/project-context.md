@@ -60,6 +60,23 @@ w_notes is a cross-platform notes app: Expo/React Native on mobile **and** web, 
 - **Sentry on every surface** (mobile, web, backend).
 - A "Sentry plugin" note kind shows a Sentry project's live issues with Fix/Ignore actions. Autofix: Fix → GitHub Actions → PR (runs Sonnet, target repo `rileydrcelik/w_notes`); Ignore resolves the issue (needs `event:write` on the Sentry token).
 
+## Selection & the "⋯" actions menu (app-wide UI pattern)
+
+Across the app, **you act on things by selecting them, then using the "⋯" (more) button** that appears in the floating navbar's trailing slot (where the create `+` normally sits). The pattern is consistent, but it's backed by **several independent selection stores**, one per domain — each surfaces its own contextual "⋯" menu.
+
+- **How you select:** long-press a card/row, or **right-click on web** (`hooks/use-context-menu.ts` — a no-op on native). The first selection enters "selection mode"; while it's on, a plain tap toggles more items, so you can multi-select. Selection is **ephemeral (in-memory only) — it never touches SQLite/sync.**
+- **The "⋯" button** (`more-horizontal`, with a count badge) replaces the `+`: **tap opens that domain's actions menu/sheet; long-press or right-click cancels the selection.** Tapping empty space (`components/selection-dismiss-view.tsx`) or changing route (`components/selection-backdrop.tsx`) also clears it.
+- **Menus are contextual glass bottom sheets** — the offered actions adapt to what (and how many) items are selected.
+
+The selection stores, and the navbar's precedence when more than one could be active (highest first), all live/branch in `components/floating-tab-bar.tsx`:
+
+1. **Sentry autofix** (`store/autofix-selection-store.tsx`, accent `#7553FF`) — select Sentry issues → **Fix / Dismiss / Copy**.
+2. **GitHub issues** (`store/github-selection-store.tsx`, accent `#8250df`) — select GitHub-view issues → **Close (completed / not planned) / Reopen / Comment / Copy**.
+3. **Task-manager issues** (`store/task-selection-store.tsx`, accent `#16a394`) — select issues within an issue-type screen → **Mark done / not done / Edit attributes / Open on GitHub / Delete**.
+4. **Notes / folders / issue types** (`store/item-selection-store.tsx`) — the shared card selection used on Home, folders, and the task-manager project feed. Its "⋯" opens the **shared `OptionsSheet` in `components/item-options-modal.tsx`**, whose rows adapt: notes/folders get **Favorite / Rename / Move / Share / Delete**; a single **issue type** (`SelectedItem.type === 'issuetype'`) gets **Rename / Track (or Stop tracking) on GitHub / Delete** — favorite/share/move are gated off, and delete cascades to the type's issues. `RenameDialog` and the delete-confirm copy branch on the target type.
+
+When adding a new selectable surface, follow this pattern: a small ephemeral selection store + a branch in `floating-tab-bar.tsx` that swaps the `+` for a "⋯" and mounts a contextual sheet. Reuse `item-selection-store` + `OptionsSheet` when the targets are notes/folders/issue types.
+
 ## Design language (hard rules, from CLAUDE.md)
 
 - Glassmorphic, minimalist.
