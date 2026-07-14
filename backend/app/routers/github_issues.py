@@ -451,11 +451,16 @@ async def create_issue(
 
 
 class UpdateStateRequest(BaseModel):
-    # "closed" to resolve, "open" to reopen.
-    state: str = Field(..., pattern="^(open|closed)$")
+    # "closed" to resolve, "open" to reopen. Optional so a PATCH can carry only
+    # label/assignee changes (a task-manager attribute edit) without touching state.
+    state: str | None = Field(default=None, pattern="^(open|closed)$")
     # Why it closed: "completed" or "not_planned"; "reopened" on reopen. Ignored
     # by GitHub when it doesn't apply.
     state_reason: str | None = Field(default=None, pattern="^(completed|not_planned|reopened)$")
+    # Full replacement sets (task-manager attributes → labels, People → assignees).
+    # None = leave untouched; [] = clear on GitHub.
+    labels: list[str] | None = None
+    assignees: list[str] | None = None
 
 
 class IssueStateResponse(BaseModel):
@@ -471,13 +476,23 @@ async def update_issue_state(
     req: UpdateStateRequest = Body(...),
     user: User = Depends(get_current_user),
 ) -> IssueStateResponse:
-    """Close or reopen an issue. Closing is the app's "resolve" action; the
-    optional ``state_reason`` records whether it was completed or won't be done."""
+    """Update an issue: close/reopen (the app's "resolve"/"undo"), and/or replace
+    its labels and assignees when a task-manager attribute edit is pushed. Every
+    field is optional; only the ones provided are sent to GitHub."""
     _require_token()
     _require_repo(repo)
-    payload: dict[str, object] = {"state": req.state}
+    payload: dict[str, object] = {}
+    if req.state:
+        payload["state"] = req.state
     if req.state_reason:
         payload["state_reason"] = req.state_reason
+    if req.labels is not None:
+        payload["labels"] = req.labels
+    if req.assignees is not None:
+        payload["assignees"] = req.assignees
+    if not payload:
+        # Nothing to change — don't waste a GitHub call.
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "No fields to update.")
     async with _client() as client:
         resp = await client.patch(f"/repos/{repo}/issues/{number}", json=payload)
     _raise_for_upstream(resp)

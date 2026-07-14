@@ -4,6 +4,7 @@ import type { ComponentProps, RefObject } from 'react';
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import {
   Keyboard,
+  Linking,
   Platform,
   Pressable,
   ScrollView,
@@ -42,10 +43,12 @@ import { useTabBarBottom } from '@/hooks/use-tab-bar-inset';
 import { useTheme } from '@/hooks/use-theme';
 import { saveNoteToDevice } from '@/lib/save-note';
 import { useCopa } from '@/store/copa-store';
+import { useCreateOptions } from '@/store/create-options-store';
 import { useNotes } from '@/store/notes-store';
 import { useSidebar } from '@/store/sidebar-store';
 import { useAutofixSelection } from '@/store/autofix-selection-store';
 import { useGithubSelection, type CloseReason } from '@/store/github-selection-store';
+import { useTaskSelection } from '@/store/task-selection-store';
 import { useItemSelection } from '@/store/item-selection-store';
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
@@ -136,6 +139,22 @@ export function FloatingTabBar({ blurTarget }: FloatingTabBarProps) {
   // navbar) so it stacks above the bar rather than under it.
   const [ghComposeOpen, setGhComposeOpen] = useState(false);
   if (!ghComposeRepo && ghComposeOpen) setGhComposeOpen(false);
+  // Same story for task-manager projects: while issues are selected the (+) slot
+  // becomes a "⋯" actions menu; otherwise it routes to the issue-creation screen.
+  const {
+    active: taskSelecting,
+    count: taskSelectedCount,
+    requestMarkDone,
+    requestEditAttrs,
+    requestDelete,
+    clear: clearTaskSelection,
+    composeProjectId,
+    composeTypeId,
+    githubUrl: taskGithubUrl,
+  } = useTaskSelection();
+  const taskMode = !fixMode && !ghMode && taskSelecting && taskSelectedCount > 0;
+  const [taskMenuOpen, setTaskMenuOpen] = useState(false);
+  if (!taskMode && taskMenuOpen) setTaskMenuOpen(false);
   // The autofix setup instructions, opened by the "?" next to the Fix action.
   const [autofixHelpOpen, setAutofixHelpOpen] = useState(false);
   // Long-pressed/right-clicked note/folder cards. While any are selected the
@@ -148,10 +167,13 @@ export function FloatingTabBar({ blurTarget }: FloatingTabBarProps) {
     clear: clearItemSelection,
   } = useItemSelection();
   const { openOptions } = useItemOptions();
-  const itemSelected = itemSelectionActive && !fixMode && !ghMode;
+  const itemSelected = itemSelectionActive && !fixMode && !ghMode && !taskMode;
   // The (+) becomes a "compose issue" button on a configured GitHub screen, when
   // nothing is selected.
-  const ghComposeMode = !!ghComposeRepo && !fixMode && !ghMode && !itemSelected;
+  const ghComposeMode = !!ghComposeRepo && !fixMode && !ghMode && !taskMode && !itemSelected;
+  // …and routes to the issue-creation screen on a configured task-manager project.
+  const taskComposeMode =
+    !!composeProjectId && !fixMode && !ghMode && !taskMode && !itemSelected && !ghComposeMode;
   // Copa is the only sibling tab; everything else lives under the home group.
   // Its editor lives at /copa/[id], so match the whole copa stack.
   const onCopa = pathname === '/copa' || pathname.startsWith('/copa/');
@@ -324,6 +346,19 @@ export function FloatingTabBar({ blurTarget }: FloatingTabBarProps) {
                   onCancel={clearGhSelection}
                 />
               </Animated.View>
+            ) : taskMode ? (
+              <Animated.View
+                key="task-selection"
+                entering={FadeIn.duration(160)}
+                exiting={FadeOut.duration(140)}>
+                <SelectionMenuButton
+                  count={taskSelectedCount}
+                  blurTarget={blurTarget}
+                  tint="#16a394"
+                  onPress={() => setTaskMenuOpen(true)}
+                  onCancel={clearTaskSelection}
+                />
+              </Animated.View>
             ) : itemSelected ? (
               <Animated.View
                 key="item-options"
@@ -346,6 +381,26 @@ export function FloatingTabBar({ blurTarget }: FloatingTabBarProps) {
                 entering={FadeIn.duration(160)}
                 exiting={FadeOut.duration(140)}>
                 <ComposeButton blurTarget={blurTarget} onPress={() => setGhComposeOpen(true)} />
+              </Animated.View>
+            ) : taskComposeMode ? (
+              <Animated.View
+                key="task-compose"
+                entering={FadeIn.duration(160)}
+                exiting={FadeOut.duration(140)}>
+                <ComposeButton
+                  blurTarget={blurTarget}
+                  tint="#16a394"
+                  onPress={() =>
+                    composeProjectId &&
+                    router.push({
+                      pathname: '/project/[id]/new',
+                      params: {
+                        id: composeProjectId,
+                        ...(composeTypeId ? { typeId: composeTypeId } : {}),
+                      },
+                    })
+                  }
+                />
               </Animated.View>
             ) : (
               <Animated.View key="create" entering={FadeIn.duration(160)} exiting={FadeOut.duration(140)}>
@@ -417,6 +472,17 @@ export function FloatingTabBar({ blurTarget }: FloatingTabBarProps) {
         onClose={() => setGhComposeOpen(false)}
         onCreated={emitGhCreated}
       />
+      {/* Actions for the selected task-manager issues, opened by the "⋯" button. */}
+      <TaskSelectionMenu
+        open={taskMenuOpen && taskMode}
+        count={taskSelectedCount}
+        onClose={() => setTaskMenuOpen(false)}
+        onMarkDone={() => requestMarkDone(true)}
+        onMarkNotDone={() => requestMarkDone(false)}
+        onEditAttrs={requestEditAttrs}
+        onOpenGithub={taskGithubUrl ? () => void Linking.openURL(taskGithubUrl) : undefined}
+        onDelete={requestDelete}
+      />
     </>
   );
 }
@@ -442,8 +508,10 @@ function CreateMenu({
   const router = useRouter();
   const pathname = usePathname();
   const { width: winW, height: winH } = useWindowDimensions();
-  const { createNote, createSentryNote, createGithubNote, createFolder, getNote } = useNotes();
+  const { createNote, createSentryNote, createGithubNote, createProject, createFolder, getNote } =
+    useNotes();
   const { createCopa, createFileCopa } = useCopa();
+  const { sentryEnabled, githubEnabled, taskManagerEnabled } = useCreateOptions();
 
   const onCopa = pathname === '/copa' || pathname.startsWith('/copa/');
 
@@ -469,6 +537,14 @@ function CreateMenu({
     router.push({ pathname: '/github/[id]', params: { id } });
   };
 
+  const onCreateProject = () => {
+    onClose();
+    // Create it unconfigured — the project screen collects name + repo and seeds
+    // the default issue types in place.
+    const id = createProject(currentFolderId(pathname, getNote));
+    router.push({ pathname: '/project/[id]', params: { id } });
+  };
+
   const onCreateFolder = () => {
     onClose();
     const id = createFolder(currentFolderId(pathname, getNote));
@@ -488,7 +564,13 @@ function CreateMenu({
     if (id) router.push({ pathname: '/copa/[id]', params: { id } });
   };
 
-  const options: { key: string; label: string; icon: FeatherName; onPress: () => void }[] = onCopa
+  // Plugin create-options can be hidden from Settings; note/folder are always on.
+  const pluginEnabled: Record<string, boolean> = {
+    sentry: sentryEnabled,
+    github: githubEnabled,
+    project: taskManagerEnabled,
+  };
+  const allOptions: { key: string; label: string; icon: FeatherName; onPress: () => void }[] = onCopa
     ? [
         { key: 'block', label: 'New copy block', icon: 'clipboard', onPress: onCreateBlock },
         { key: 'file', label: 'Add file', icon: 'paperclip', onPress: () => void onAddFile() },
@@ -498,7 +580,9 @@ function CreateMenu({
         { key: 'folder', label: 'New folder', icon: 'folder-plus', onPress: onCreateFolder },
         { key: 'sentry', label: 'New Sentry view', icon: 'alert-triangle', onPress: onCreateSentry },
         { key: 'github', label: 'New GitHub view', icon: 'github', onPress: onCreateGithub },
+        { key: 'project', label: 'New task manager', icon: 'columns', onPress: onCreateProject },
       ];
+  const options = allOptions.filter((o) => pluginEnabled[o.key] ?? true);
 
   const card = (
     <GlassSurface
@@ -687,9 +771,12 @@ function CreateButton({
 function ComposeButton({
   blurTarget,
   onPress,
+  tint = '#8250df',
 }: {
   blurTarget?: RefObject<View | null> | null;
   onPress: () => void;
+  /** Icon accent — GitHub purple by default; the task manager passes its own. */
+  tint?: string;
 }) {
   const scale = useSharedValue(1);
   const animatedStyle = useAnimatedStyle(() => ({ transform: [{ scale: scale.value }] }));
@@ -711,7 +798,7 @@ function ComposeButton({
           tintOpacity={0.85}
           blurTarget={blurTarget}
           style={[styles.createButton, { width: TabBar.height, height: TabBar.height }]}>
-          <Feather name="plus" color="#8250df" size={28} />
+          <Feather name="plus" color={tint} size={28} />
         </GlassSurface>
       </Pressable>
     </Animated.View>
@@ -957,6 +1044,94 @@ function GithubSelectionMenu({
     { key: 'reopen', label: `Reopen ${count} ${noun}`, icon: 'rotate-ccw', tint: '#8250df', onPress: onReopen },
     { key: 'comment', label: 'Add a comment', icon: 'message-square', tint: colors.text, onPress: onComment },
     { key: 'copy', label: 'Copy issue details', icon: 'copy', tint: colors.text, onPress: onCopy },
+  ];
+
+  return (
+    <View style={styles.menuOverlay} pointerEvents={open ? 'box-none' : 'none'}>
+      {open && (
+        <>
+          <AnimatedPressable
+            entering={FadeIn.duration(180)}
+            exiting={FadeOut.duration(180)}
+            style={styles.menuBackdrop}
+            onPress={onClose}
+            accessibilityRole="button"
+            accessibilityLabel="Dismiss actions"
+          />
+          <Animated.View
+            entering={SlideInDown.duration(260)}
+            exiting={SlideOutDown.duration(220)}
+            style={[styles.menuHost, { paddingBottom: insets.bottom + Spacing.three }]}>
+            <GlassSurface intensity={75} tintOpacity={0.85} style={styles.menuSheet}>
+              {options.map((option) => (
+                <Pressable
+                  key={option.key}
+                  onPress={() => {
+                    option.onPress();
+                    onClose();
+                  }}
+                  accessibilityRole="button"
+                  accessibilityLabel={option.label}
+                  style={({ pressed }) => [styles.menuRow, pressed && styles.menuRowPressed]}>
+                  <Feather name={option.icon} size={20} color={option.tint} style={styles.menuIcon} />
+                  <ThemedText style={[styles.menuLabel, { color: option.tint }]}>
+                    {option.label}
+                  </ThemedText>
+                </Pressable>
+              ))}
+            </GlassSurface>
+          </Animated.View>
+        </>
+      )}
+    </View>
+  );
+}
+
+/**
+ * Bottom sheet of actions for the selected task-manager issues, opened from the
+ * "⋯" button on a project screen. Mirrors {@link GithubSelectionMenu}. The
+ * mark-done / edit / delete handlers themselves clear the selection.
+ */
+function TaskSelectionMenu({
+  open,
+  count,
+  onClose,
+  onMarkDone,
+  onMarkNotDone,
+  onEditAttrs,
+  onOpenGithub,
+  onDelete,
+}: {
+  open: boolean;
+  count: number;
+  onClose: () => void;
+  onMarkDone: () => void;
+  onMarkNotDone: () => void;
+  onEditAttrs: () => void;
+  /** Present only when a single GitHub-mirrored issue is selected. */
+  onOpenGithub?: () => void;
+  onDelete: () => void;
+}) {
+  const colors = useTheme();
+  const insets = useSafeAreaInsets();
+  const noun = count === 1 ? 'issue' : 'issues';
+
+  const options: { key: string; label: string; icon: FeatherName; tint: string; onPress: () => void }[] = [
+    { key: 'done', label: `Mark ${count} done`, icon: 'check-circle', tint: '#3fb950', onPress: onMarkDone },
+    { key: 'notdone', label: `Mark ${count} not done`, icon: 'circle', tint: colors.text, onPress: onMarkNotDone },
+    { key: 'attrs', label: `Edit attributes`, icon: 'sliders', tint: colors.text, onPress: onEditAttrs },
+    ...(onOpenGithub
+      ? [
+          {
+            key: 'github',
+            label: 'Open on GitHub',
+            icon: 'github' as FeatherName,
+            tint: '#8250df',
+            onPress: onOpenGithub,
+          },
+        ]
+      : []),
+    { key: 'delete', label: `Delete ${count} ${noun}`, icon: 'trash-2', tint: '#e5484d', onPress: onDelete },
   ];
 
   return (

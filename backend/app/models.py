@@ -75,6 +75,13 @@ class Folder(Base):
     parent_id: Mapped[str | None] = mapped_column(String)
     favorite: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
+    # Optional folder "kind" marker + opaque JSON config, mirroring notes'
+    # plugin_type/plugin_config. ``kind='project'`` marks a task-manager folder;
+    # ``config`` holds its repo + shared attribute schema. Null for ordinary
+    # folders. The individual issues live in the separate ``issues`` table.
+    kind: Mapped[str | None] = mapped_column(String)
+    config: Mapped[str | None] = mapped_column(Text)
+
     created_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
     updated_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
     deleted_at: Mapped[int | None] = mapped_column(BigInteger)
@@ -158,3 +165,42 @@ class CopaItem(Base):
     )
 
     __table_args__ = (Index("idx_copa_user_seq", "user_id", "server_seq"),)
+
+
+class Issue(Base):
+    """A single issue in a task-manager project. It belongs to an issue-type note
+    (``note_id``) inside a ``kind='project'`` folder; the project's shared
+    attribute schema lives on that folder's ``config``. Syncs like any other row
+    (LWW on ``updated_at``); ``attrs`` is opaque JSON the client owns."""
+
+    __tablename__ = "issues"
+
+    user_id: Mapped[str] = mapped_column(
+        String, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+
+    # The issue-type note this issue is filed under.
+    note_id: Mapped[str] = mapped_column(String, nullable=False, default="")
+    title: Mapped[str] = mapped_column(String, nullable=False, default="")
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    done: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # Attribute values keyed by attribute id: {attrId: string | number | string[]}.
+    attrs: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    # The mirrored GitHub issue number when the type is GitHub-connected, else null.
+    gh_number: Mapped[int | None] = mapped_column(BigInteger)
+    # Manual ordering within a type.
+    position: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+
+    created_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    updated_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    deleted_at: Mapped[int | None] = mapped_column(BigInteger)
+
+    server_seq: Mapped[int] = mapped_column(
+        BigInteger, server_default=SERVER_SEQ_DEFAULT, nullable=False
+    )
+
+    __table_args__ = (
+        Index("idx_issues_user_seq", "user_id", "server_seq"),
+        Index("idx_issues_user_note", "user_id", "note_id"),
+    )

@@ -24,10 +24,11 @@ from fastapi import APIRouter, Depends, Query
 
 from app.db import get_session
 from app.deps import get_current_user
-from app.models import CopaItem, Folder, Note, User
+from app.models import CopaItem, Folder, Issue, Note, User
 from app.schemas import (
     CopaItemIn,
     FolderIn,
+    IssueIn,
     NoteIn,
     PullResponse,
     PushRequest,
@@ -74,6 +75,8 @@ async def push(
         await _upsert(session, Note, user.id, row.model_dump())
     for row in payload.copa_items:
         await _upsert(session, CopaItem, user.id, row.model_dump())
+    for row in payload.issues:
+        await _upsert(session, Issue, user.id, row.model_dump())
 
     await session.flush()
     return PushResponse(server_seq=await _high_water(session, user.id))
@@ -94,15 +97,17 @@ async def pull(
     folders = await changed(Folder)
     notes = await changed(Note)
     copa = await changed(CopaItem)
+    issues = await changed(Issue)
 
     # New cursor = the highest server_seq in this batch, or the caller's if empty.
     high = max(
-        [since, *[r.server_seq for r in (*folders, *notes, *copa)]]
+        [since, *[r.server_seq for r in (*folders, *notes, *copa, *issues)]]
     )
     return PullResponse(
         folders=[FolderIn.model_validate(r) for r in folders],
         notes=[NoteIn.model_validate(r) for r in notes],
         copa_items=[CopaItemIn.model_validate(r) for r in copa],
+        issues=[IssueIn.model_validate(r) for r in issues],
         server_seq=high,
     )
 
@@ -110,7 +115,7 @@ async def pull(
 async def _high_water(session: AsyncSession, user_id: str) -> int:
     """The largest server_seq this user has across all tables (0 if none)."""
     high = 0
-    for model in (Folder, Note, CopaItem):
+    for model in (Folder, Note, CopaItem, Issue):
         value = await session.scalar(
             select(func.max(model.server_seq)).where(model.user_id == user_id)
         )

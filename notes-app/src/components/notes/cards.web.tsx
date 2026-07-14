@@ -9,6 +9,7 @@ import { hexToRgba, Spacing } from '@/constants/theme';
 import type { Folder, Note } from '@/data/notes';
 import { sentryTarget } from '@/lib/sentry-note';
 import { githubTarget } from '@/lib/github-note';
+import { projectConfig } from '@/lib/project';
 import { useContextMenu } from '@/hooks/use-context-menu';
 import { useDoubleTap } from '@/hooks/use-double-tap';
 import { useTheme } from '@/hooks/use-theme';
@@ -18,11 +19,17 @@ import { useNotes } from '@/store/notes-store';
 
 const SENTRY_ACCENT = '#7553FF';
 const GITHUB_ACCENT = '#8250df';
+const PROJECT_ACCENT = '#16a394';
 /** Accent for a long-pressed/right-clicked (selected) card. */
 const SELECT_ACCENT = '#7a89b8';
 const PREVIEW_TEXT = { fontSize: 14, lineHeight: 20, fontWeight: '500' } as const;
 
 export function FolderCard({ folder }: { folder: Folder }) {
+  if (folder.kind === 'project') return <ProjectFolderCard folder={folder} />;
+  return <PlainFolderCard folder={folder} />;
+}
+
+function PlainFolderCard({ folder }: { folder: Folder }) {
   const router = useRouter();
   const { getNotesInFolder, toggleFolderFavorite } = useNotes();
   const { active, isSelected, toggle } = useItemSelection();
@@ -73,16 +80,66 @@ export function FolderCard({ folder }: { folder: Folder }) {
   );
 }
 
+/** A task-manager project: a distinct card that opens the issue tracker. */
+function ProjectFolderCard({ folder }: { folder: Folder }) {
+  const router = useRouter();
+  const { toggleFolderFavorite } = useNotes();
+  const { active, isSelected, toggle } = useItemSelection();
+  const theme = useTheme();
+  const selected = isSelected('folder', folder.id);
+  const config = projectConfig(folder);
+
+  const openOrFavorite = useDoubleTap(
+    () => router.push({ pathname: '/project/[id]', params: { id: folder.id } }),
+    () => toggleFolderFavorite(folder.id),
+  );
+  const onSelectToggle = () => toggle({ type: 'folder', id: folder.id });
+  const contextMenuRef = useContextMenu(onSelectToggle);
+
+  return (
+    <Pressable
+      ref={contextMenuRef}
+      style={({ pressed }) => [styles.cardWrapper, pressed && styles.pressed]}
+      onPress={active ? onSelectToggle : openOrFavorite}
+      onLongPress={onSelectToggle}>
+      <ThemedView style={styles.folder}>
+        {/* Same folder silhouette as a plain folder, marked as a task manager. */}
+        <View style={styles.folderTabRow}>
+          <View style={[styles.folderTabFlat, { backgroundColor: theme.backgroundElement }]} />
+          <View style={[styles.folderTabSlant, { borderBottomColor: theme.backgroundElement }]} />
+        </View>
+        <ThemedView type="backgroundElement" style={[styles.folderBody, selected && styles.selected]}>
+          <ThemedView type="backgroundElement" style={styles.cardFooter}>
+            <View style={styles.titleRow}>
+              <Feather name="columns" size={13} color={PROJECT_ACCENT} />
+              <ThemedText type="smallBold" numberOfLines={1} style={styles.titleText}>
+                {folder.name || 'Project'}
+              </ThemedText>
+              {folder.favorite && <FavoriteStar size={13} />}
+            </View>
+            <ThemedText type="small" themeColor="textSecondary" numberOfLines={1}>
+              Task manager{config?.repo ? ` · ${config.repo}` : ''}
+            </ThemedText>
+          </ThemedView>
+        </ThemedView>
+      </ThemedView>
+    </Pressable>
+  );
+}
+
 export function NoteCard({ note }: { note: Note }) {
+  // Plugin notes render as distinct cards that open live content instead of the
+  // text editor. Branch before any hooks so those cards keep their own hook order.
+  if (note.pluginType === 'sentry') return <SentryNoteCard note={note} />;
+  if (note.pluginType === 'github') return <GithubNoteCard note={note} />;
+  return <TextNoteCard note={note} />;
+}
+
+function TextNoteCard({ note }: { note: Note }) {
   const router = useRouter();
   const { toggleNoteFavorite } = useNotes();
   const { active, isSelected, toggle } = useItemSelection();
   const selected = isSelected('note', note.id);
-
-  // A Sentry plugin note renders as a distinct card that opens the live issues
-  // screen rather than the text editor.
-  if (note.pluginType === 'sentry') return <SentryNoteCard note={note} />;
-  if (note.pluginType === 'github') return <GithubNoteCard note={note} />;
 
   // Tap opens the note; double-tap favorites it. In selection mode a click
   // instead toggles this card's selection.

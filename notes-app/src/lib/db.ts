@@ -2,7 +2,7 @@ import * as SQLite from 'expo-sqlite';
 
 import { Sentry } from '@/lib/sentry';
 import { removeCopaFiles } from '@/lib/copa-files';
-import type { Folder, Note } from '@/data/notes';
+import type { Folder, Issue, Note } from '@/data/notes';
 import type { CopaItem } from '@/data/copa';
 
 /**
@@ -56,6 +56,25 @@ type FolderRow = {
   updated_at: number;
   deleted_at: number | null;
   trashed_with_folder_id: string | null;
+  // Folder "kind" marker (e.g. 'project') + opaque JSON config; null for
+  // ordinary folders.
+  kind: string | null;
+  config: string | null;
+};
+
+type IssueRow = {
+  id: string;
+  note_id: string;
+  title: string;
+  description: string;
+  done: number;
+  // Attribute values as a JSON string; parsed into an object by `toIssue`.
+  attrs: string;
+  gh_number: number | null;
+  position: number;
+  created_at: number;
+  updated_at: number;
+  deleted_at: number | null;
 };
 
 type CopaRow = {
@@ -110,6 +129,22 @@ export type FolderSync = {
   updated_at: number;
   deleted_at: number | null;
   trashed_with_folder_id: string | null;
+  kind: string | null;
+  config: string | null;
+};
+
+export type IssueSync = {
+  id: string;
+  note_id: string;
+  title: string;
+  description: string;
+  done: number | boolean;
+  attrs: string;
+  gh_number: number | null;
+  position: number;
+  created_at: number;
+  updated_at: number;
+  deleted_at: number | null;
 };
 
 export type NoteSync = {
@@ -146,6 +181,7 @@ export type SyncPayload = {
   folders: FolderSync[];
   notes: NoteSync[];
   copa_items: CopaSync[];
+  issues: IssueSync[];
 };
 
 // ---- Connection (opened + migrated once, lazily) ----
@@ -180,6 +216,8 @@ async function open(): Promise<SQLite.SQLiteDatabase> {
       updated_at             INTEGER NOT NULL DEFAULT 0,
       deleted_at             INTEGER,
       trashed_with_folder_id TEXT,
+      kind                   TEXT,
+      config                 TEXT,
       dirty                  INTEGER NOT NULL DEFAULT 1
     );
 
@@ -216,6 +254,21 @@ async function open(): Promise<SQLite.SQLiteDatabase> {
       remote_key  TEXT
     );
 
+    CREATE TABLE IF NOT EXISTS issues (
+      id           TEXT PRIMARY KEY NOT NULL,
+      note_id      TEXT NOT NULL DEFAULT '',
+      title        TEXT NOT NULL DEFAULT '',
+      description  TEXT NOT NULL DEFAULT '',
+      done         INTEGER NOT NULL DEFAULT 0,
+      attrs        TEXT NOT NULL DEFAULT '{}',
+      gh_number    INTEGER,
+      position     INTEGER NOT NULL DEFAULT 0,
+      created_at   INTEGER NOT NULL,
+      updated_at   INTEGER NOT NULL DEFAULT 0,
+      deleted_at   INTEGER,
+      dirty        INTEGER NOT NULL DEFAULT 1
+    );
+
     CREATE TABLE IF NOT EXISTS settings (
       key    TEXT PRIMARY KEY NOT NULL,
       value  TEXT NOT NULL
@@ -235,6 +288,8 @@ async function open(): Promise<SQLite.SQLiteDatabase> {
     CREATE INDEX IF NOT EXISTS idx_notes_dirty ON notes (dirty);
     CREATE INDEX IF NOT EXISTS idx_folders_dirty ON folders (dirty);
     CREATE INDEX IF NOT EXISTS idx_copa_dirty ON copa_items (dirty);
+    CREATE INDEX IF NOT EXISTS idx_issues_note_id ON issues (note_id);
+    CREATE INDEX IF NOT EXISTS idx_issues_dirty ON issues (dirty);
   `);
   return database;
 }
@@ -248,6 +303,12 @@ async function ensureFolderColumns(database: SQLite.SQLiteDatabase): Promise<voi
   }
   if (!has('trashed_with_folder_id')) {
     await database.execAsync('ALTER TABLE folders ADD COLUMN trashed_with_folder_id TEXT');
+  }
+  // The task-manager subsystem added a folder "kind" marker + opaque config
+  // (mirroring notes' plugin columns); backfill on tables created before it.
+  if (!has('kind')) {
+    await database.execAsync('ALTER TABLE folders ADD COLUMN kind TEXT');
+    await database.execAsync('ALTER TABLE folders ADD COLUMN config TEXT');
   }
 }
 
@@ -330,7 +391,35 @@ function toNote(r: NoteRow): Note {
 }
 
 function toFolder(r: FolderRow): Folder {
-  return { id: r.id, name: r.name, parentId: r.parent_id, favorite: !!r.favorite };
+  return {
+    id: r.id,
+    name: r.name,
+    parentId: r.parent_id,
+    favorite: !!r.favorite,
+    kind: (r.kind ?? undefined) as Folder['kind'],
+    config: r.config ?? undefined,
+  };
+}
+
+function toIssue(r: IssueRow): Issue {
+  let attrs: Issue['attrs'] = {};
+  try {
+    const parsed = JSON.parse(r.attrs) as unknown;
+    if (parsed && typeof parsed === 'object') attrs = parsed as Issue['attrs'];
+  } catch {
+    // Corrupt/missing JSON → empty attributes rather than a crash.
+  }
+  return {
+    id: r.id,
+    noteId: r.note_id,
+    title: r.title,
+    description: r.description,
+    done: !!r.done,
+    attrs,
+    ghNumber: r.gh_number ?? undefined,
+    position: r.position,
+    updatedAt: ymd(r.updated_at),
+  };
 }
 
 function toCopa(r: CopaRow): CopaItem {
@@ -451,22 +540,28 @@ export const db = {
   async createFolder({
     id,
     parentId,
+    kind,
+    config,
   }: {
     id: string;
     parentId: string | null;
+    /** Folder kind marker (e.g. 'project') that renders a special view. */
+    kind?: string;
+    /** Opaque per-kind JSON config (e.g. a project's repo + attribute schema). */
+    config?: string;
   }): Promise<void> {
-    dbCrumb('createFolder', { id, parentId });
+    dbCrumb('createFolder', { id, parentId, kind });
     const database = await getDb();
     const now = Date.now();
     await database.runAsync(
-      'INSERT INTO folders (id, name, parent_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
-      [id, '', parentId, now, now],
+      'INSERT INTO folders (id, name, parent_id, created_at, updated_at, kind, config) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      [id, '', parentId, now, now, kind ?? null, config ?? null],
     );
   },
 
   async updateFolder(
     id: string,
-    patch: Partial<Pick<Folder, 'name' | 'favorite'>>,
+    patch: Partial<Pick<Folder, 'name' | 'favorite' | 'config'>>,
   ): Promise<void> {
     dbCrumb('updateFolder', { id, fields: Object.keys(patch) });
     const database = await getDb();
@@ -475,6 +570,9 @@ export const db = {
     if (patch.name !== undefined) (sets.push('name = ?'), args.push(patch.name));
     if (patch.favorite !== undefined)
       (sets.push('favorite = ?'), args.push(patch.favorite ? 1 : 0));
+    // A project's config (repo + attribute schema) is set after creation when the
+    // user configures it; it syncs like any other column.
+    if (patch.config !== undefined) (sets.push('config = ?'), args.push(patch.config));
     if (sets.length === 0) return;
     sets.push('updated_at = ?', 'dirty = 1');
     args.push(Date.now());
@@ -740,15 +838,104 @@ export const db = {
     );
   },
 
+  // ---- Issues (task-manager project rows) ----
+
+  /** Every live issue across all projects, ordered for stable rendering. */
+  async getIssues(): Promise<Issue[]> {
+    const database = await getDb();
+    const rows = await database.getAllAsync<IssueRow>(
+      'SELECT * FROM issues WHERE deleted_at IS NULL ORDER BY position ASC, created_at ASC',
+    );
+    return rows.map(toIssue);
+  },
+
+  async createIssue({
+    id,
+    noteId,
+    title,
+    description,
+    attrs,
+    ghNumber,
+    position,
+  }: {
+    id: string;
+    noteId: string;
+    title?: string;
+    description?: string;
+    attrs?: Issue['attrs'];
+    ghNumber?: number;
+    position?: number;
+  }): Promise<void> {
+    dbCrumb('createIssue', { id, noteId });
+    const database = await getDb();
+    const now = Date.now();
+    await database.runAsync(
+      `INSERT INTO issues
+         (id, note_id, title, description, done, attrs, gh_number, position, created_at, updated_at)
+       VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?)`,
+      [
+        id,
+        noteId,
+        title ?? '',
+        description ?? '',
+        JSON.stringify(attrs ?? {}),
+        ghNumber ?? null,
+        position ?? 0,
+        now,
+        now,
+      ],
+    );
+  },
+
+  async updateIssue(
+    id: string,
+    patch: {
+      title?: string;
+      description?: string;
+      noteId?: string;
+      done?: boolean;
+      attrs?: Issue['attrs'];
+      ghNumber?: number | null;
+      position?: number;
+    },
+  ): Promise<void> {
+    dbCrumb('updateIssue', { id, fields: Object.keys(patch) });
+    const database = await getDb();
+    const sets: string[] = [];
+    const args: SQLite.SQLiteBindValue[] = [];
+    if (patch.title !== undefined) (sets.push('title = ?'), args.push(patch.title));
+    if (patch.description !== undefined) (sets.push('description = ?'), args.push(patch.description));
+    if (patch.noteId !== undefined) (sets.push('note_id = ?'), args.push(patch.noteId));
+    if (patch.done !== undefined) (sets.push('done = ?'), args.push(patch.done ? 1 : 0));
+    if (patch.attrs !== undefined) (sets.push('attrs = ?'), args.push(JSON.stringify(patch.attrs)));
+    if (patch.ghNumber !== undefined) (sets.push('gh_number = ?'), args.push(patch.ghNumber));
+    if (patch.position !== undefined) (sets.push('position = ?'), args.push(patch.position));
+    if (sets.length === 0) return;
+    sets.push('updated_at = ?', 'dirty = 1');
+    args.push(Date.now());
+    args.push(id);
+    await database.runAsync(`UPDATE issues SET ${sets.join(', ')} WHERE id = ?`, args);
+  },
+
+  async deleteIssue(id: string): Promise<void> {
+    dbCrumb('deleteIssue', { id });
+    const database = await getDb();
+    const now = Date.now();
+    await database.runAsync(
+      'UPDATE issues SET deleted_at = ?, updated_at = ?, dirty = 1 WHERE id = ?',
+      [now, now, id],
+    );
+  },
+
   // ---- Sync support ----
 
   /** All rows with un-pushed local changes, in the backend's wire shape. */
   async getDirty(): Promise<SyncPayload> {
     const database = await getDb();
-    const [folders, notes, copa_items] = await Promise.all([
+    const [folders, notes, copa_items, issues] = await Promise.all([
       database.getAllAsync<FolderSync>(
         `SELECT id, name, parent_id, favorite, created_at, updated_at, deleted_at,
-                trashed_with_folder_id
+                trashed_with_folder_id, kind, config
          FROM folders WHERE dirty = 1`,
       ),
       database.getAllAsync<NoteSync>(
@@ -761,8 +948,13 @@ export const db = {
                 file_name, mime_type, file_size, remote_key
          FROM copa_items WHERE dirty = 1`,
       ),
+      database.getAllAsync<IssueSync>(
+        `SELECT id, note_id, title, description, done, attrs, gh_number, position,
+                created_at, updated_at, deleted_at
+         FROM issues WHERE dirty = 1`,
+      ),
     ]);
-    return { folders, notes, copa_items };
+    return { folders, notes, copa_items, issues };
   },
 
   /**
@@ -791,6 +983,12 @@ export const db = {
           c.updated_at,
         ]);
       }
+      for (const i of payload.issues) {
+        await database.runAsync('UPDATE issues SET dirty = 0 WHERE id = ? AND updated_at = ?', [
+          i.id,
+          i.updated_at,
+        ]);
+      }
     });
   },
 
@@ -810,13 +1008,14 @@ export const db = {
         const r = await database.runAsync(
           `INSERT INTO folders
              (id, name, parent_id, favorite, created_at, updated_at, deleted_at,
-              trashed_with_folder_id, dirty)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)
+              trashed_with_folder_id, kind, config, dirty)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
            ON CONFLICT(id) DO UPDATE SET
              name = excluded.name, parent_id = excluded.parent_id,
              favorite = excluded.favorite, created_at = excluded.created_at,
              updated_at = excluded.updated_at, deleted_at = excluded.deleted_at,
-             trashed_with_folder_id = excluded.trashed_with_folder_id, dirty = 0
+             trashed_with_folder_id = excluded.trashed_with_folder_id,
+             kind = excluded.kind, config = excluded.config, dirty = 0
            WHERE excluded.updated_at >= folders.updated_at`,
           [
             f.id,
@@ -827,6 +1026,8 @@ export const db = {
             f.updated_at,
             f.deleted_at,
             f.trashed_with_folder_id,
+            f.kind ?? null,
+            f.config ?? null,
           ],
         );
         changed += r.changes;
@@ -892,6 +1093,35 @@ export const db = {
         );
         changed += r.changes;
       }
+      for (const i of payload.issues) {
+        const r = await database.runAsync(
+          `INSERT INTO issues
+             (id, note_id, title, description, done, attrs, gh_number, position,
+              created_at, updated_at, deleted_at, dirty)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+           ON CONFLICT(id) DO UPDATE SET
+             note_id = excluded.note_id, title = excluded.title,
+             description = excluded.description, done = excluded.done,
+             attrs = excluded.attrs, gh_number = excluded.gh_number,
+             position = excluded.position, created_at = excluded.created_at,
+             updated_at = excluded.updated_at, deleted_at = excluded.deleted_at, dirty = 0
+           WHERE excluded.updated_at >= issues.updated_at`,
+          [
+            i.id,
+            i.note_id,
+            i.title,
+            i.description,
+            bit(i.done),
+            i.attrs,
+            i.gh_number,
+            i.position,
+            i.created_at,
+            i.updated_at,
+            i.deleted_at,
+          ],
+        );
+        changed += r.changes;
+      }
     });
     return changed;
   },
@@ -903,7 +1133,7 @@ export const db = {
   async markAllDirty(): Promise<void> {
     const database = await getDb();
     await database.execAsync(
-      'UPDATE folders SET dirty = 1; UPDATE notes SET dirty = 1; UPDATE copa_items SET dirty = 1;',
+      'UPDATE folders SET dirty = 1; UPDATE notes SET dirty = 1; UPDATE copa_items SET dirty = 1; UPDATE issues SET dirty = 1;',
     );
   },
 
@@ -914,7 +1144,9 @@ export const db = {
    */
   async clearAllData(): Promise<void> {
     const database = await getDb();
-    await database.execAsync('DELETE FROM folders; DELETE FROM notes; DELETE FROM copa_items;');
+    await database.execAsync(
+      'DELETE FROM folders; DELETE FROM notes; DELETE FROM copa_items; DELETE FROM issues;',
+    );
   },
 
   /** The last server_seq this device has pulled (0 if it has never synced). */

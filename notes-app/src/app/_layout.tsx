@@ -23,8 +23,11 @@ import { NotesProvider } from '@/store/notes-store';
 import { SidebarProvider, useSidebar } from '@/store/sidebar-store';
 import { AutofixSelectionProvider } from '@/store/autofix-selection-store';
 import { GithubSelectionProvider } from '@/store/github-selection-store';
+import { IssuesProvider } from '@/store/issues-store';
+import { TaskSelectionProvider } from '@/store/task-selection-store';
 import { ItemSelectionProvider } from '@/store/item-selection-store';
 import { EditorPrefsProvider, useEditorPrefs } from '@/store/editor-prefs-store';
+import { CreateOptionsProvider } from '@/store/create-options-store';
 import { AppThemeProvider, useThemePref } from '@/store/theme-store';
 import { installSyncFlush } from '@/lib/sync/flush-on-hide';
 import { installSyncPoll } from '@/lib/sync/poll';
@@ -39,7 +42,9 @@ function RootLayout() {
     <GestureHandlerRootView style={styles.root}>
       <AppThemeProvider>
         <EditorPrefsProvider>
-          <AppShell />
+          <CreateOptionsProvider>
+            <AppShell />
+          </CreateOptionsProvider>
         </EditorPrefsProvider>
       </AppThemeProvider>
     </GestureHandlerRootView>
@@ -109,10 +114,12 @@ function AppShell() {
       <StatusBar style={scheme === 'dark' ? 'light' : 'dark'} />
       <AuthProvider>
       <NotesProvider>
+        <IssuesProvider>
         <CopaProvider>
         <SidebarProvider>
         <AutofixSelectionProvider>
         <GithubSelectionProvider>
+        <TaskSelectionProvider>
         <ItemSelectionProvider>
         <ItemOptionsProvider>
         <CopaOptionsProvider>
@@ -144,10 +151,12 @@ function AppShell() {
         </CopaOptionsProvider>
         </ItemOptionsProvider>
         </ItemSelectionProvider>
+        </TaskSelectionProvider>
         </GithubSelectionProvider>
         </AutofixSelectionProvider>
         </SidebarProvider>
         </CopaProvider>
+        </IssuesProvider>
       </NotesProvider>
       </AuthProvider>
     </ThemeProvider>

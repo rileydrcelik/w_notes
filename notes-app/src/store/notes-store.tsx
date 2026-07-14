@@ -74,10 +74,27 @@ type NotesContextValue = {
    * which writes the config in place via `updateNote`.
    */
   createGithubNote: (folderId: string | null, config?: GithubTarget) => string;
+  /**
+   * Creates a task-manager "project" folder (null parent = root) and returns its
+   * id. Created unconfigured — the project screen shows a name/repo setup UI,
+   * which writes the folder's `config` in place via `updateFolder`.
+   */
+  createProject: (parentId: string | null) => string;
+  /**
+   * Creates an issue-type note (`pluginType='issuetype'`) inside a project folder
+   * and returns its id. `title` is the type name (Bug/Feature/…); `connected`
+   * flags whether its issues mirror GitHub; `order` sets its position.
+   */
+  createIssueTypeNote: (
+    folderId: string,
+    title: string,
+    connected: boolean,
+    order: number,
+  ) => string;
   /** Creates an unnamed folder inside the given parent (null = root); returns its id. */
   createFolder: (parentId: string | null) => string;
   updateNote: (id: string, patch: Partial<Pick<Note, 'title' | 'body' | 'pluginConfig'>>) => void;
-  updateFolder: (id: string, patch: Partial<Pick<Folder, 'name'>>) => void;
+  updateFolder: (id: string, patch: Partial<Pick<Folder, 'name' | 'config'>>) => void;
   /** Moves a note into a folder, or to the home screen when folderId is null. */
   moveNote: (id: string, folderId: string | null) => void;
   /** Moves a note to the trash. */
@@ -197,6 +214,39 @@ export function NotesProvider({ children }: { children: ReactNode }) {
       };
       setNotes((prev) => [note, ...prev]);
       persist(db.createNote({ id, folderId, pluginType: 'github', pluginConfig }));
+      return id;
+    },
+    [],
+  );
+
+  const createProject = useCallback<NotesContextValue['createProject']>((parentId) => {
+    const id = rid('folder');
+    // Created unconfigured (kind marks it a project, but no config yet); the
+    // project screen collects name + repo and writes `config` in place.
+    const folder: Folder = { id, name: '', parentId, kind: 'project' };
+    setFolders((prev) => [folder, ...prev]);
+    persist(db.createFolder({ id, parentId, kind: 'project' }));
+    return id;
+  }, []);
+
+  const createIssueTypeNote = useCallback<NotesContextValue['createIssueTypeNote']>(
+    (folderId, title, connected, order) => {
+      const id = rid('note');
+      const pluginConfig = JSON.stringify({ githubConnected: connected, order });
+      const note: Note = {
+        id,
+        title,
+        body: '',
+        folderId,
+        updatedAt: today(),
+        pluginType: 'issuetype',
+        pluginConfig,
+      };
+      setNotes((prev) => [note, ...prev]);
+      // Seed the title too (the type name) — createNote starts a note empty, so
+      // set it right after via updateNote so it persists + syncs.
+      persist(db.createNote({ id, folderId, pluginType: 'issuetype', pluginConfig }));
+      persist(db.updateNote(id, { title }));
       return id;
     },
     [],
@@ -343,6 +393,8 @@ export function NotesProvider({ children }: { children: ReactNode }) {
       createNote,
       createSentryNote,
       createGithubNote,
+      createProject,
+      createIssueTypeNote,
       createFolder,
       updateNote,
       updateFolder,
@@ -362,6 +414,8 @@ export function NotesProvider({ children }: { children: ReactNode }) {
       createNote,
       createSentryNote,
       createGithubNote,
+      createProject,
+      createIssueTypeNote,
       createFolder,
       updateNote,
       updateFolder,

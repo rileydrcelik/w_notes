@@ -89,7 +89,8 @@ async function runSync(): Promise<SyncResult> {
     // 1) Push local changes. The server takes them last-writer-wins; on success
     //    we clear the dirty flags for exactly what we sent.
     const dirty = await db.getDirty();
-    const pushed = dirty.folders.length + dirty.notes.length + dirty.copa_items.length;
+    const pushed =
+      dirty.folders.length + dirty.notes.length + dirty.copa_items.length + dirty.issues.length;
     if (pushed > 0) {
       await apiFetch('/sync/push', { method: 'POST', body: dirty });
       await db.markSynced(dirty);
