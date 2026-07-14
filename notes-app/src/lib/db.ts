@@ -1188,3 +1188,70 @@ export const db = {
     );
   },
 };
+
+// ---- Write serialization ----
+//
+// expo-sqlite's `withTransactionAsync` is NOT exclusive: the v56 docs state it
+// "is not exclusive and can be interrupted by other async queries." We hold one
+// shared connection, so when two mutations overlap — e.g. a background sync's
+// `applyServerRows` transaction running while the user's `deleteFolder`
+// transaction is mid-flight — their BEGIN/COMMIT/ROLLBACK statements interleave.
+// The classic symptom is `cannot rollback - no transaction is active`, and the
+// losing transaction is silently abandoned (the delete that "won't stick").
+//
+// Fix: funnel every mutating method through a single promise chain so at most
+// one write (transactional or single-statement) is ever in flight. Reads are
+// left untouched — WAL allows readers alongside the one writer, so query
+// concurrency and startup latency are unaffected.
+let writeTail: Promise<unknown> = Promise.resolve();
+
+function serializeWrite<A extends unknown[], R>(
+  fn: (...args: A) => Promise<R>,
+): (...args: A) => Promise<R> {
+  return (...args: A): Promise<R> => {
+    // Chain onto the tail regardless of whether the previous write resolved or
+    // rejected, so one failed write can't wedge the whole queue.
+    const run = writeTail.then(
+      () => fn(...args),
+      () => fn(...args),
+    );
+    writeTail = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  };
+}
+
+// Every method that mutates the database. Reads (bootstrap, list*, get*) are
+// deliberately excluded so they keep running concurrently. None of these call
+// another db method internally, so wrapping them can't self-deadlock the chain.
+const WRITE_METHODS = [
+  'createNote',
+  'updateNote',
+  'deleteNote',
+  'createFolder',
+  'updateFolder',
+  'deleteFolder',
+  'restoreFromTrash',
+  'createCopa',
+  'updateCopa',
+  'deleteCopa',
+  'setCopaRemoteKey',
+  'setCopaLocalFile',
+  'resetEphemeralFiles',
+  'createIssue',
+  'updateIssue',
+  'deleteIssue',
+  'markSynced',
+  'applyServerRows',
+  'markAllDirty',
+  'clearAllData',
+  'setCursor',
+  'setSetting',
+] as const;
+
+for (const name of WRITE_METHODS) {
+  const methods = db as Record<string, (...args: unknown[]) => Promise<unknown>>;
+  methods[name] = serializeWrite(methods[name].bind(db));
+}
