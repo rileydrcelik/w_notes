@@ -2,6 +2,12 @@
   "expo": {
     "slug": "notes-app",
     "version": "1.0.0",
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/e8ff4080-689c-4e60-b6e8-3a7df34c239f"
+    },
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "userInterfaceStyle": "automatic",
