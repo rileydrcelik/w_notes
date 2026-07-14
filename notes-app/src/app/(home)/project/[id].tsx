@@ -13,6 +13,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, FlatList, Pressable, RefreshControl, StyleSheet, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { FolderCard, NoteCard } from '@/components/notes/cards';
 import { ProjectConfig } from '@/components/notes/project-config';
 import { SwipeBackView } from '@/components/swipe-back-view';
 import { ThemedText } from '@/components/themed-text';
@@ -21,7 +22,7 @@ import { Spacing } from '@/constants/theme';
 import { GRID_COLUMNS, gridEdgePadding, trailingSpacers } from '@/lib/grid';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
 import { useTheme } from '@/hooks/use-theme';
-import type { Note } from '@/data/notes';
+import type { Folder, Note } from '@/data/notes';
 import { reconcileProjectWithGithub } from '@/lib/github-backsync';
 import { githubSyncErrorMessage } from '@/lib/issue-github';
 import {
@@ -110,14 +111,19 @@ function IssueTypeCard({
   );
 }
 
-type GridItem = { kind: 'type'; note: Note } | { kind: 'spacer' };
+type GridItem =
+  | { kind: 'type'; note: Note }
+  | { kind: 'folder'; folder: Folder }
+  | { kind: 'note'; note: Note }
+  | { kind: 'spacer' };
 
 export default function ProjectScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const theme = useTheme();
   const insets = useSafeAreaInsets();
   const tabBarInset = useTabBarInset();
-  const { getFolder, getNotesInFolder, updateFolder, createIssueTypeNote, deleteNote } = useNotes();
+  const { getFolder, getNotesInFolder, getSubfolders, updateFolder, createIssueTypeNote, deleteNote } =
+    useNotes();
   const { issues, hydrated, getIssuesForNote, deleteIssue, createIssue, updateIssue } = useIssues();
   const { registerCompose } = useTaskSelection();
 
@@ -134,6 +140,15 @@ export default function ProjectScreen() {
         .sort((a, b) => parseTypeConfig(a.pluginConfig).order - parseTypeConfig(b.pluginConfig).order),
     [getNotesInFolder, id],
   );
+
+  // Anything else filed under the project — plain notes, Sentry/GitHub views, and
+  // subfolders (created here via the (+) menu, or moved in) — rendered as normal
+  // cards below the issue types so they aren't hidden.
+  const otherNotes = useMemo(
+    () => getNotesInFolder(id).filter((n) => n.pluginType !== 'issuetype'),
+    [getNotesInFolder, id],
+  );
+  const subfolders = useMemo(() => getSubfolders(id), [getSubfolders, id]);
 
   // GitHub back-sync. A ref carries the latest project data so `runBacksync`
   // stays referentially stable — the focus trigger fires once per focus, not on
@@ -231,7 +246,11 @@ export default function ProjectScreen() {
     );
   };
 
-  const items: GridItem[] = typeNotes.map((note) => ({ kind: 'type' as const, note }));
+  const items: GridItem[] = [
+    ...typeNotes.map((note) => ({ kind: 'type' as const, note })),
+    ...subfolders.map((sub) => ({ kind: 'folder' as const, folder: sub })),
+    ...otherNotes.map((note) => ({ kind: 'note' as const, note })),
+  ];
   for (let i = 0; i < trailingSpacers(items.length); i++) items.push({ kind: 'spacer' });
 
   const headerTop = insets.top + Spacing.four;
@@ -253,7 +272,13 @@ export default function ProjectScreen() {
         <Stack.Screen options={{ headerShown: false }} />
         <FlatList
           data={items}
-          keyExtractor={(item, index) => (item.kind === 'type' ? item.note.id : `spacer-${index}`)}
+          keyExtractor={(item, index) =>
+            item.kind === 'type' || item.kind === 'note'
+              ? item.note.id
+              : item.kind === 'folder'
+                ? item.folder.id
+                : `spacer-${index}`
+          }
           numColumns={GRID_COLUMNS}
           columnWrapperStyle={styles.row}
           refreshControl={
@@ -293,6 +318,8 @@ export default function ProjectScreen() {
           }
           renderItem={({ item }) => {
             if (item.kind === 'spacer') return <View style={styles.spacer} />;
+            if (item.kind === 'folder') return <FolderCard folder={item.folder} />;
+            if (item.kind === 'note') return <NoteCard note={item.note} />;
             return (
               <IssueTypeCard projectId={id} note={item.note} onRemove={() => removeType(item.note)} />
             );

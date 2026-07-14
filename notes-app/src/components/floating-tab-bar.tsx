@@ -400,6 +400,7 @@ export function FloatingTabBar({ blurTarget }: FloatingTabBarProps) {
                       },
                     })
                   }
+                  onOpenMenu={(anchor) => setCreateMenu({ anchor })}
                 />
               </Animated.View>
             ) : (
@@ -512,8 +513,24 @@ function CreateMenu({
     useNotes();
   const { createCopa, createFileCopa } = useCopa();
   const { sentryEnabled, githubEnabled, taskManagerEnabled } = useCreateOptions();
+  // Inside a task-manager project (its feed or a per-type screen), the menu leads
+  // with "New issue" and everything else (note, Sentry/GitHub view…) is created
+  // inside the project rather than at the root.
+  const { composeProjectId, composeTypeId } = useTaskSelection();
+  const inProject = !!composeProjectId;
 
   const onCopa = pathname === '/copa' || pathname.startsWith('/copa/');
+
+  const onCreateIssue = () => {
+    onClose();
+    if (!composeProjectId) return;
+    // Route to the project's issue composer — it shows the type picker (and
+    // pre-selects the type when the menu was opened from a per-type screen).
+    router.push({
+      pathname: '/project/[id]/new',
+      params: { id: composeProjectId, ...(composeTypeId ? { typeId: composeTypeId } : {}) },
+    });
+  };
 
   const onCreateNote = () => {
     onClose();
@@ -576,11 +593,18 @@ function CreateMenu({
         { key: 'file', label: 'Add file', icon: 'paperclip', onPress: () => void onAddFile() },
       ]
     : [
+        // Inside a project the issue is the primary create; the task-manager
+        // option is dropped (no nesting a project inside a project).
+        ...(inProject
+          ? [{ key: 'issue', label: 'New issue', icon: 'check-square' as FeatherName, onPress: onCreateIssue }]
+          : []),
         { key: 'note', label: 'New note', icon: 'file-plus', onPress: onCreateNote },
         { key: 'folder', label: 'New folder', icon: 'folder-plus', onPress: onCreateFolder },
         { key: 'sentry', label: 'New Sentry view', icon: 'alert-triangle', onPress: onCreateSentry },
         { key: 'github', label: 'New GitHub view', icon: 'github', onPress: onCreateGithub },
-        { key: 'project', label: 'New task manager', icon: 'columns', onPress: onCreateProject },
+        ...(inProject
+          ? []
+          : [{ key: 'project', label: 'New task manager', icon: 'columns' as FeatherName, onPress: onCreateProject }]),
       ];
   const options = allOptions.filter((o) => pluginEnabled[o.key] ?? true);
 
@@ -652,6 +676,9 @@ function CreateMenu({
 function currentFolderId(pathname: string, getNote: (id: string) => Note | undefined): string | null {
   const folderMatch = pathname.match(/^\/folder\/([^/]+)/);
   if (folderMatch) return decodeURIComponent(folderMatch[1]);
+  // A task-manager project is itself a folder — new items land inside it.
+  const projectMatch = pathname.match(/^\/project\/([^/]+)/);
+  if (projectMatch) return decodeURIComponent(projectMatch[1]);
   const noteMatch = pathname.match(/^\/note\/([^/]+)/);
   if (noteMatch) return getNote(decodeURIComponent(noteMatch[1]))?.folderId ?? null;
   return null;
@@ -767,23 +794,53 @@ function CreateButton({
  * Trailing (+) on a configured GitHub issues screen: sits where the create button
  * normally does, but a tap opens the new-issue composer for that repo (its accent
  * colour marks it as a GitHub action) instead of the note/folder menu.
+ *
+ * When `onOpenMenu` is supplied (task-manager projects) a long-press — or a
+ * right-click on web — opens the create menu anchored above the button, so the
+ * user can add a note / Sentry view / etc. inside the project while a tap keeps
+ * composing a new issue. The button reports its screen rect for that anchor.
  */
 function ComposeButton({
   blurTarget,
   onPress,
+  onOpenMenu,
   tint = '#8250df',
 }: {
   blurTarget?: RefObject<View | null> | null;
   onPress: () => void;
+  /** Long-press/right-click opens the create menu anchored to this button. */
+  onOpenMenu?: (anchor: Anchor | null) => void;
   /** Icon accent — GitHub purple by default; the task manager passes its own. */
   tint?: string;
 }) {
   const scale = useSharedValue(1);
   const animatedStyle = useAnimatedStyle(() => ({ transform: [{ scale: scale.value }] }));
+  const buttonRef = useRef<View | null>(null);
+
+  // Open the menu anchored to this button's measured screen position.
+  const openAnchoredMenu = () => {
+    if (!onOpenMenu) return;
+    const node = buttonRef.current;
+    if (node) node.measureInWindow((x, y, width, height) => onOpenMenu({ x, y, width, height }));
+    else onOpenMenu(null);
+  };
+  // Right-click parity on web; a no-op ref on native. Registered unconditionally
+  // (hooks rule) — `openAnchoredMenu` self-guards when there's no menu to open.
+  const contextMenuRef = useContextMenu(openAnchoredMenu);
+  const setButtonRef = useCallback(
+    (node: View | null) => {
+      buttonRef.current = node;
+      contextMenuRef?.(node);
+    },
+    [contextMenuRef],
+  );
 
   return (
     <Animated.View style={animatedStyle}>
       <Pressable
+        // Only wire the ref (measuring + web right-click) when there's a menu;
+        // the GitHub compose button keeps its plain-tap behaviour untouched.
+        ref={onOpenMenu ? setButtonRef : undefined}
         accessibilityRole="button"
         accessibilityLabel="New issue"
         onPressIn={() => {
@@ -792,7 +849,8 @@ function ComposeButton({
         onPressOut={() => {
           scale.value = withTiming(1, { duration: 120 });
         }}
-        onPress={onPress}>
+        onPress={onPress}
+        onLongPress={onOpenMenu ? openAnchoredMenu : undefined}>
         <GlassSurface
           intensity={75}
           tintOpacity={0.85}
