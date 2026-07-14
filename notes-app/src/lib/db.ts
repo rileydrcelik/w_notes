@@ -418,6 +418,7 @@ function toIssue(r: IssueRow): Issue {
     attrs,
     ghNumber: r.gh_number ?? undefined,
     position: r.position,
+    createdAt: r.created_at,
     updatedAt: ymd(r.updated_at),
   };
 }

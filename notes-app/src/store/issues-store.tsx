@@ -19,6 +19,17 @@ const today = () => new Date().toISOString().slice(0, 10);
 
 const rid = () => `issue-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
+/**
+ * Display order within a type: incomplete issues first (oldest → newest), then
+ * completed issues (newest → oldest). Enforced here so it holds regardless of
+ * how issues landed in the store (DB load, optimistic create, or sync pull).
+ */
+const orderIssues = (list: Issue[]): Issue[] =>
+  [...list].sort((a, b) => {
+    if (a.done !== b.done) return a.done ? 1 : -1; // incomplete before complete
+    return a.done ? b.createdAt - a.createdAt : a.createdAt - b.createdAt;
+  });
+
 /** Optimistic write-through: report failures to Sentry and schedule a sync. */
 const persist = (write: Promise<unknown>) => {
   write.catch((e) => {
@@ -112,9 +123,12 @@ export function IssuesProvider({ children }: { children: ReactNode }) {
       attrs: input.attrs ?? {},
       ghNumber: input.ghNumber,
       position: 0,
+      createdAt: Date.now(),
       updatedAt: today(),
     };
-    setIssues((prev) => [issue, ...prev]);
+    // Order is enforced at read time (orderIssues in getIssuesForNote), so the
+    // insert position here is irrelevant — append and let the sort place it.
+    setIssues((prev) => [...prev, issue]);
     persist(
       db.createIssue({
         id,
@@ -167,7 +181,7 @@ export function IssuesProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const getIssuesForNote = useCallback(
-    (noteId: string) => issues.filter((i) => i.noteId === noteId),
+    (noteId: string) => orderIssues(issues.filter((i) => i.noteId === noteId)),
     [issues],
   );
 

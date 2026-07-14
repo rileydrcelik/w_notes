@@ -71,5 +71,7 @@ export type Issue = {
   ghNumber?: number;
   /** Manual ordering within a type. */
   position: number;
+  /** Raw creation timestamp (ms) — used to sort issues within a type. */
+  createdAt: number;
   updatedAt: string;
 };
