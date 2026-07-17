@@ -58,7 +58,10 @@ _PRESERVE_IF_NULL = {
     Folder: ("kind", "config"),
     Note: ("plugin_type", "plugin_config"),
     CopaItem: ("file_name", "mime_type", "file_size", "remote_key"),
-    Issue: (),
+    # type_ids: an older client can't send it (multi-type came later); a NULL
+    # push must not wipe the stored set. An issue always keeps ≥1 type, so it's
+    # never legitimately cleared to NULL by the UI — COALESCE-preserve is safe.
+    Issue: ("type_ids",),
 }
 
 

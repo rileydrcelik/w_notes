@@ -180,8 +180,11 @@ class Issue(Base):
     )
     id: Mapped[str] = mapped_column(String, primary_key=True)
 
-    # The issue-type note this issue is filed under.
+    # The issue's primary/home issue-type note (also the first entry of type_ids).
     note_id: Mapped[str] = mapped_column(String, nullable=False, default="")
+    # JSON array of every issue-type note this issue is filed under (multi-type).
+    # Nullable for cross-version safety; NULL reads as [note_id] on the client.
+    type_ids: Mapped[str | None] = mapped_column(Text)
     title: Mapped[str] = mapped_column(String, nullable=False, default="")
     description: Mapped[str] = mapped_column(Text, nullable=False, default="")
     done: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)

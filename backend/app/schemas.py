@@ -57,6 +57,9 @@ class CopaItemIn(_Syncable):
 
 class IssueIn(_Syncable):
     note_id: str = ""
+    # JSON array of issue-type note ids (multi-type). None from clients that
+    # predate it; the upsert preserves the stored value on NULL.
+    type_ids: str | None = None
     title: str = ""
     description: str = ""
     done: bool = False
