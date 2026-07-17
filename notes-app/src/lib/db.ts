@@ -2,6 +2,7 @@ import * as SQLite from 'expo-sqlite';
 
 import { Sentry } from '@/lib/sentry';
 import { removeCopaFiles } from '@/lib/copa-files';
+import { whenDbOwner } from '@/lib/web-db-lock';
 import type { Folder, Issue, Note } from '@/data/notes';
 import type { CopaItem } from '@/data/copa';
 
@@ -203,6 +204,11 @@ function getDb(): Promise<SQLite.SQLiteDatabase> {
 }
 
 async function open(): Promise<SQLite.SQLiteDatabase> {
+  // On web, wait until this tab owns the DB before touching the OPFS file. A
+  // follower that opened it would fail (another tab holds the exclusive handle)
+  // and, worse, leave wa-sqlite's VFS wedged for the whole page — so the open
+  // after promotion couldn't recover. Native / no-Web-Locks resolves instantly.
+  await whenDbOwner();
   const database = await SQLite.openDatabaseAsync(DB_NAME);
   await database.execAsync(`
     PRAGMA journal_mode = WAL;
@@ -468,15 +474,26 @@ async function buildTrash(database: SQLite.SQLiteDatabase): Promise<TrashEntry[]
 // ---- Public API (mirrors the data the stores need) ----
 
 export const db = {
+  /**
+   * Open (and migrate) the database if it isn't already, resolving once it's
+   * ready. Throws the "another tab owns the OPFS lock" error on web when this
+   * tab can't take the connection — callers that just took DB ownership use it
+   * to wait out the previous owner releasing the file (see reopenDbAndRefresh).
+   */
+  async ensureOpen(): Promise<void> {
+    await getDb();
+  },
+
   /** Load everything for the notes/folders/trash store in one shot. */
   async bootstrap(): Promise<BootstrapData> {
     const database = await getDb();
     const [noteRows, folderRows, trash] = await Promise.all([
       database.getAllAsync<NoteRow>(
-        'SELECT * FROM notes WHERE deleted_at IS NULL ORDER BY created_at DESC',
+        // Most-recently-modified first; created_at breaks ties deterministically.
+        'SELECT * FROM notes WHERE deleted_at IS NULL ORDER BY updated_at DESC, created_at DESC',
       ),
       database.getAllAsync<FolderRow>(
-        'SELECT * FROM folders WHERE deleted_at IS NULL ORDER BY created_at DESC',
+        'SELECT * FROM folders WHERE deleted_at IS NULL ORDER BY updated_at DESC, created_at DESC',
       ),
       buildTrash(database),
     ]);

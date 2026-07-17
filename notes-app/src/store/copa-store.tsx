@@ -24,10 +24,21 @@ const syncFailed = (e: unknown) => {
   Sentry.captureException(e, { tags: { source: 'copa-store' } });
 };
 
-/** Persist a write optimistically + schedule a sync. Module-scoped (not a hook dep). */
+/**
+ * How soon a copa change kicks off a sync. Copa is a cross-device clipboard, so
+ * it should reach other devices right away — far shorter than the notes typing
+ * debounce, but non-zero so a burst still coalesces and the trailing edit lands.
+ */
+const COPA_SYNC_MS = 150;
+
+/**
+ * Persist a write optimistically, then sync as soon as it commits. Scheduling the
+ * sync *after* the write (rather than firing it immediately, debounced) means the
+ * dirty row is already in the DB when the push reads it — no waiting a full
+ * debounce for the change to go out. Module-scoped (not a hook dep).
+ */
 const persist = (write: Promise<unknown>) => {
-  write.catch(syncFailed);
-  requestSync();
+  write.then(() => requestSync(COPA_SYNC_MS)).catch(syncFailed);
 };
 
 type CopaContextValue = {

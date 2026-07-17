@@ -47,6 +47,31 @@ function emitSynced(): void {
   }
 }
 
+/**
+ * Tell every data store to re-read from the local database. Used when this tab
+ * takes ownership of the web DB (a promoted follower tab, see web-db-lock.ts) so
+ * its content appears without a page reload; sync itself emits this after a pull.
+ */
+export function refreshFromDb(): void {
+  emitSynced();
+}
+
+/**
+ * Called when this tab has just taken ownership of the web database (a promoted
+ * follower — see web-db-lock.ts). Because the DB layer gates opens on ownership
+ * (whenDbOwner), the OPFS file was never touched while we were a follower, so
+ * this open starts from a clean VFS and succeeds in place. Then tell every store
+ * (and the theme) to hydrate from it — filling the UI without a page reload.
+ */
+export async function reopenDbAndRefresh(): Promise<void> {
+  try {
+    await db.ensureOpen();
+  } catch (e) {
+    Sentry.captureException(e, { tags: { source: 'sync-engine', op: 'reopen' } });
+  }
+  refreshFromDb();
+}
+
 // ---- Core pass (deduped so overlapping triggers share one in-flight run) ----
 
 let inflight: Promise<SyncResult> | null = null;
@@ -219,11 +244,17 @@ const DEBOUNCE_MS = 800;
  * Fire-and-forget sync, coalesced so a burst of edits results in a single pass
  * shortly after the user stops typing. Errors are swallowed (already reported to
  * Sentry inside the pass) so callers in the optimistic write path stay simple.
+ *
+ * `delayMs` tunes the debounce: notes use the default (typing-friendly), while
+ * near-instant surfaces like copa pass a short delay so a change reaches other
+ * devices right away. A short delay (rather than 0) still coalesces bursts and
+ * captures the trailing edit — syncNow() alone would drop an edit that lands
+ * mid-pass, since concurrent calls return the same in-flight promise.
  */
-export function requestSync(): void {
+export function requestSync(delayMs: number = DEBOUNCE_MS): void {
   if (debounceTimer) clearTimeout(debounceTimer);
   debounceTimer = setTimeout(() => {
     debounceTimer = null;
     void syncNow().catch(() => {});
-  }, DEBOUNCE_MS);
+  }, delayMs);
 }

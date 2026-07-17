@@ -27,6 +27,18 @@ const rid = (prefix: string) =>
   `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
 /**
+ * Applies `patch` to the item with `id` and moves it to the front of the list.
+ * Modifying an item bumps its `updated_at` in the database (which orders the
+ * lists newest-first), so the optimistic state mirrors that by floating the
+ * touched item to the top — no wait for the next reload to reorder.
+ */
+const touch = <T extends { id: string }>(list: T[], id: string, patch: NoInfer<Partial<T>>): T[] => {
+  const idx = list.findIndex((item) => item.id === id);
+  if (idx === -1) return list;
+  return [{ ...list[idx], ...patch }, ...list.slice(0, idx), ...list.slice(idx + 1)];
+};
+
+/**
  * Reports a failed background persist/sync without disturbing the optimistic UI.
  * The write already failed silently to the user (state was updated optimistically),
  * so this is the only place it surfaces: a console warning for dev plus a Sentry
@@ -261,21 +273,17 @@ export function NotesProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const updateNote = useCallback<NotesContextValue['updateNote']>((id, patch) => {
-    setNotes((prev) =>
-      prev.map((note) => (note.id === id ? { ...note, ...patch, updatedAt: today() } : note)),
-    );
+    setNotes((prev) => touch(prev, id, { ...patch, updatedAt: today() }));
     persist(db.updateNote(id, patch));
   }, []);
 
   const updateFolder = useCallback<NotesContextValue['updateFolder']>((id, patch) => {
-    setFolders((prev) => prev.map((folder) => (folder.id === id ? { ...folder, ...patch } : folder)));
+    setFolders((prev) => touch(prev, id, patch));
     persist(db.updateFolder(id, patch));
   }, []);
 
   const moveNote = useCallback<NotesContextValue['moveNote']>((id, folderId) => {
-    setNotes((prev) =>
-      prev.map((note) => (note.id === id ? { ...note, folderId, updatedAt: today() } : note)),
-    );
+    setNotes((prev) => touch(prev, id, { folderId, updatedAt: today() }));
     persist(db.updateNote(id, { folderId }));
   }, []);
 
@@ -354,16 +362,14 @@ export function NotesProvider({ children }: { children: ReactNode }) {
   );
 
   const markNoteShared = useCallback<NotesContextValue['markNoteShared']>((id) => {
-    setNotes((prev) => prev.map((note) => (note.id === id ? { ...note, shared: true } : note)));
+    setNotes((prev) => touch(prev, id, { shared: true, updatedAt: today() }));
     persist(db.updateNote(id, { shared: true }));
   }, []);
 
   const toggleNoteFavorite = useCallback<NotesContextValue['toggleNoteFavorite']>(
     (id) => {
       const next = !notes.find((n) => n.id === id)?.favorite;
-      setNotes((prev) =>
-        prev.map((note) => (note.id === id ? { ...note, favorite: next } : note)),
-      );
+      setNotes((prev) => touch(prev, id, { favorite: next, updatedAt: today() }));
       persist(db.updateNote(id, { favorite: next }));
     },
     [notes],
@@ -372,9 +378,7 @@ export function NotesProvider({ children }: { children: ReactNode }) {
   const toggleFolderFavorite = useCallback<NotesContextValue['toggleFolderFavorite']>(
     (id) => {
       const next = !folders.find((f) => f.id === id)?.favorite;
-      setFolders((prev) =>
-        prev.map((folder) => (folder.id === id ? { ...folder, favorite: next } : folder)),
-      );
+      setFolders((prev) => touch(prev, id, { favorite: next }));
       persist(db.updateFolder(id, { favorite: next }));
     },
     [folders],

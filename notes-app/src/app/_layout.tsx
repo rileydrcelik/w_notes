@@ -31,6 +31,8 @@ import { CreateOptionsProvider } from '@/store/create-options-store';
 import { AppThemeProvider, useThemePref } from '@/store/theme-store';
 import { installSyncFlush } from '@/lib/sync/flush-on-hide';
 import { installSyncPoll } from '@/lib/sync/poll';
+import { reopenDbAndRefresh } from '@/lib/sync/sync-engine';
+import { subscribeDbRole } from '@/lib/web-db-lock';
 
 // Top-level routes that the pager slides between. Everything else (a folder or
 // note) lives inside the home group's stack, which keeps its own back-swipe.
@@ -97,6 +99,15 @@ function AppShell() {
   // another device (e.g. the web client) land without needing a local edit or an
   // app-foreground transition. Pauses when backgrounded/hidden.
   useEffect(() => installSyncPoll(), []);
+
+  // Web: when this tab is promoted from follower to leader (the user pressed
+  // "Use here", or the owning tab closed), it can finally open the DB. Open it
+  // (retrying past the previous owner's file-handle release) and re-hydrate the
+  // stores + theme in place — the promotion no longer reloads the page.
+  useEffect(
+    () => subscribeDbRole((role) => role === 'leader' && void reopenDbAndRefresh()),
+    [],
+  );
 
   // Android backdrop blur is capture-based: the navbar's BlurView blurs the
   // content of a BlurTargetView, which must wrap the screens but NOT the navbar

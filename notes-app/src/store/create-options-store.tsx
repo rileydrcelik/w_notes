@@ -9,6 +9,7 @@ import {
 } from 'react';
 
 import { db } from '@/lib/db';
+import { subscribeSynced } from '@/lib/sync/sync-engine';
 
 /**
  * Which plugin options appear in the navbar's create menu, plus (for now inert)
@@ -64,26 +65,34 @@ const CreateOptionsContext = createContext<CreateOptions | null>(null);
 export function CreateOptionsProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<CreateOptionsState>(DEFAULTS);
 
-  // Hydrate every saved value once on mount; unset keys keep their default.
+  // Hydrate every saved value from SQLite; unset keys keep their default. Runs
+  // on mount and on every data refresh, so a web tab that just took the DB over
+  // from another tab (see reopenDbAndRefresh) picks up settings it couldn't read
+  // while it was a follower.
   useEffect(() => {
     let cancelled = false;
     const keys = Object.keys(KEYS) as (keyof CreateOptionsState)[];
-    Promise.all(keys.map((k) => db.getSetting(KEYS[k]).then((v) => [k, v] as const)))
-      .then((entries) => {
-        if (cancelled) return;
-        setState((prev) => {
-          const next = { ...prev };
-          for (const [k, saved] of entries) {
-            if (saved == null) continue;
-            if (isToggle(k)) next[k] = saved === 'true';
-            else next[k] = saved;
-          }
-          return next;
-        });
-      })
-      .catch((e) => console.warn('[create-options] failed to load:', e));
+    const hydrate = () => {
+      Promise.all(keys.map((k) => db.getSetting(KEYS[k]).then((v) => [k, v] as const)))
+        .then((entries) => {
+          if (cancelled) return;
+          setState((prev) => {
+            const next = { ...prev };
+            for (const [k, saved] of entries) {
+              if (saved == null) continue;
+              if (isToggle(k)) next[k] = saved === 'true';
+              else next[k] = saved;
+            }
+            return next;
+          });
+        })
+        .catch((e) => console.warn('[create-options] failed to load:', e));
+    };
+    hydrate();
+    const unsub = subscribeSynced(hydrate);
     return () => {
       cancelled = true;
+      unsub();
     };
   }, []);
 

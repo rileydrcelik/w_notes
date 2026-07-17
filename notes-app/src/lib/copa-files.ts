@@ -157,26 +157,41 @@ export async function openCopaFile(item: CopaItem): Promise<void> {
 
 /**
  * Handles the download action for a file block. Media (image/video/audio) is
- * saved straight into the device's media library after a write permission
- * prompt; any other type falls back to the share sheet (which offers "Save to
- * Files"). Surfaces a short alert on success/denial.
+ * saved straight into the device's media library; any other type (or a media
+ * save we couldn't complete) falls back to the share sheet, which offers "Save
+ * to Files" / "Save image" and needs no permission — so there's always a path.
+ *
+ * Android note: `writeOnly` is effectively an iOS-only hint. On Android 13+ the
+ * request is for broad read-media access, and picking "Select photos" (partial
+ * access) resolves to `granted: false` with `accessPrivileges: 'limited'`. That
+ * limited grant is still enough to add our *own* asset, so we treat it as OK and
+ * only fall through to sharing on a hard denial (which previously dead-ended).
  */
 export async function downloadCopaFile(item: CopaItem): Promise<void> {
   if (!item.fileUri) return;
 
   if (isSaveableMedia(item.mimeType)) {
     try {
-      // Write-only is all we need to save, and asks for the least access.
-      const perm = await MediaLibrary.requestPermissionsAsync(true);
-      if (!perm.granted) {
-        Alert.alert('Permission needed', 'Allow media access to save files to your device.');
+      // Write-only is all we need to save, and asks for the least access. Only
+      // (re)prompt when it can actually help — a permanently denied permission
+      // (canAskAgain: false) skips straight to the share-sheet fallback below.
+      let perm = await MediaLibrary.getPermissionsAsync(true);
+      if (!perm.granted && perm.canAskAgain) {
+        perm = await MediaLibrary.requestPermissionsAsync(true);
+      }
+      if (perm.granted) {
+        await MediaLibrary.Asset.create(item.fileUri);
+        Alert.alert('Saved', 'The file was saved to your device.');
         return;
       }
-      await MediaLibrary.Asset.create(item.fileUri);
-      Alert.alert('Saved', 'The file was saved to your device.');
-      return;
+      // Denied, or a partial "Select photos" grant (Android 13+) — which this
+      // SDK reports as not-granted: fall through to the share sheet instead of
+      // dead-ending. It saves the file ("Save image" / "Save to Files") with no
+      // media permission at all, so there's always a way out. A user declining
+      // the prompt isn't an error, so it isn't reported to Sentry.
     } catch (e) {
-      // Fall through to sharing so the user can still get the file out.
+      // An unexpected native failure during the save itself: fall through to
+      // sharing so the user can still get the file out.
       console.warn('[copa] save to device failed:', e);
       Sentry.captureException(e, { tags: { source: 'copa-files', op: 'save' } });
     }
