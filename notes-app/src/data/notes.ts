@@ -60,8 +60,19 @@ export type IssueAttrValue = string | number | string[];
  */
 export type Issue = {
   id: string;
-  /** The issue-type note this issue is filed under. */
+  /**
+   * The issue's *primary* issue-type note (its home type). Kept for GitHub
+   * connection, ordering, and back-compat; it is always the first entry of
+   * `typeIds`.
+   */
   noteId: string;
+  /**
+   * Every issue-type note this issue is filed under (an issue can have several
+   * types). Includes `noteId` as its first entry. Older issues predating
+   * multi-type have an empty array and read as `[noteId]` (see
+   * `effectiveTypeIds`).
+   */
+  typeIds: string[];
   title: string;
   description: string;
   done: boolean;
@@ -75,3 +86,24 @@ export type Issue = {
   createdAt: number;
   updatedAt: string;
 };
+
+/**
+ * The issue-type note ids an issue effectively belongs to. Uses `typeIds` when
+ * present, else falls back to `[noteId]` so pre-multi-type issues (empty
+ * `typeIds`) still show under their single home type.
+ */
+export function effectiveTypeIds(issue: Pick<Issue, 'noteId' | 'typeIds'>): string[] {
+  return issue.typeIds.length > 0 ? issue.typeIds : issue.noteId ? [issue.noteId] : [];
+}
+
+/**
+ * Normalizes a chosen set of type ids into the `{ noteId, typeIds }` pair stored
+ * on an issue: dedupes, drops falsy ids, and pins `noteId` (the primary/home
+ * type) to the first entry. Returns null when the set is empty (an issue must
+ * keep at least one type).
+ */
+export function normalizeTypeIds(ids: string[]): { noteId: string; typeIds: string[] } | null {
+  const unique = ids.filter((id, i) => id && ids.indexOf(id) === i);
+  if (unique.length === 0) return null;
+  return { noteId: unique[0], typeIds: unique };
+}

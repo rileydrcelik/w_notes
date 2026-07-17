@@ -66,6 +66,8 @@ type FolderRow = {
 type IssueRow = {
   id: string;
   note_id: string;
+  // JSON array of issue-type note ids; parsed into `typeIds` by `toIssue`.
+  type_ids: string;
   title: string;
   description: string;
   done: number;
@@ -137,6 +139,9 @@ export type FolderSync = {
 export type IssueSync = {
   id: string;
   note_id: string;
+  // NOT NULL locally ('[]' default); may be null when pulled from a backend that
+  // predates multi-type — the upsert coalesces it to keep the stored value.
+  type_ids: string | null;
   title: string;
   description: string;
   done: number | boolean;
@@ -263,6 +268,7 @@ async function open(): Promise<SQLite.SQLiteDatabase> {
     CREATE TABLE IF NOT EXISTS issues (
       id           TEXT PRIMARY KEY NOT NULL,
       note_id      TEXT NOT NULL DEFAULT '',
+      type_ids     TEXT NOT NULL DEFAULT '[]',
       title        TEXT NOT NULL DEFAULT '',
       description  TEXT NOT NULL DEFAULT '',
       done         INTEGER NOT NULL DEFAULT 0,
@@ -376,6 +382,14 @@ async function ensureSyncColumns(database: SQLite.SQLiteDatabase): Promise<void>
   if (!copaCols.includes('remote_key')) {
     await database.execAsync('ALTER TABLE copa_items ADD COLUMN remote_key TEXT');
   }
+
+  // Multi-type issues were added later: an issue can be filed under several
+  // issue-type notes. `type_ids` is a JSON array of note ids; an empty array
+  // reads as `[note_id]` (see effectiveTypeIds), so old rows need no backfill.
+  const issueCols = await colsOf('issues');
+  if (!issueCols.includes('type_ids')) {
+    await database.execAsync("ALTER TABLE issues ADD COLUMN type_ids TEXT NOT NULL DEFAULT '[]'");
+  }
 }
 
 // ---- Row -> app-shape converters ----
@@ -415,9 +429,17 @@ function toIssue(r: IssueRow): Issue {
   } catch {
     // Corrupt/missing JSON → empty attributes rather than a crash.
   }
+  let typeIds: string[] = [];
+  try {
+    const parsed = JSON.parse(r.type_ids) as unknown;
+    if (Array.isArray(parsed)) typeIds = parsed.filter((v): v is string => typeof v === 'string');
+  } catch {
+    // Corrupt/missing JSON → empty (reads as [note_id] via effectiveTypeIds).
+  }
   return {
     id: r.id,
     noteId: r.note_id,
+    typeIds,
     title: r.title,
     description: r.description,
     done: !!r.done,
@@ -870,6 +892,7 @@ export const db = {
   async createIssue({
     id,
     noteId,
+    typeIds,
     title,
     description,
     attrs,
@@ -878,6 +901,7 @@ export const db = {
   }: {
     id: string;
     noteId: string;
+    typeIds?: string[];
     title?: string;
     description?: string;
     attrs?: Issue['attrs'];
@@ -889,11 +913,12 @@ export const db = {
     const now = Date.now();
     await database.runAsync(
       `INSERT INTO issues
-         (id, note_id, title, description, done, attrs, gh_number, position, created_at, updated_at)
-       VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?)`,
+         (id, note_id, type_ids, title, description, done, attrs, gh_number, position, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)`,
       [
         id,
         noteId,
+        JSON.stringify(typeIds ?? (noteId ? [noteId] : [])),
         title ?? '',
         description ?? '',
         JSON.stringify(attrs ?? {}),
@@ -911,6 +936,7 @@ export const db = {
       title?: string;
       description?: string;
       noteId?: string;
+      typeIds?: string[];
       done?: boolean;
       attrs?: Issue['attrs'];
       ghNumber?: number | null;
@@ -924,6 +950,8 @@ export const db = {
     if (patch.title !== undefined) (sets.push('title = ?'), args.push(patch.title));
     if (patch.description !== undefined) (sets.push('description = ?'), args.push(patch.description));
     if (patch.noteId !== undefined) (sets.push('note_id = ?'), args.push(patch.noteId));
+    if (patch.typeIds !== undefined)
+      (sets.push('type_ids = ?'), args.push(JSON.stringify(patch.typeIds)));
     if (patch.done !== undefined) (sets.push('done = ?'), args.push(patch.done ? 1 : 0));
     if (patch.attrs !== undefined) (sets.push('attrs = ?'), args.push(JSON.stringify(patch.attrs)));
     if (patch.ghNumber !== undefined) (sets.push('gh_number = ?'), args.push(patch.ghNumber));
@@ -967,7 +995,7 @@ export const db = {
          FROM copa_items WHERE dirty = 1`,
       ),
       database.getAllAsync<IssueSync>(
-        `SELECT id, note_id, title, description, done, attrs, gh_number, position,
+        `SELECT id, note_id, type_ids, title, description, done, attrs, gh_number, position,
                 created_at, updated_at, deleted_at
          FROM issues WHERE dirty = 1`,
       ),
@@ -1114,11 +1142,15 @@ export const db = {
       for (const i of payload.issues) {
         const r = await database.runAsync(
           `INSERT INTO issues
-             (id, note_id, title, description, done, attrs, gh_number, position,
+             (id, note_id, type_ids, title, description, done, attrs, gh_number, position,
               created_at, updated_at, deleted_at, dirty)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
            ON CONFLICT(id) DO UPDATE SET
-             note_id = excluded.note_id, title = excluded.title,
+             note_id = excluded.note_id,
+             -- An older client that predates multi-type can't send type_ids
+             -- (arrives NULL); keep the stored value rather than wiping it.
+             type_ids = COALESCE(excluded.type_ids, issues.type_ids),
+             title = excluded.title,
              description = excluded.description, done = excluded.done,
              attrs = excluded.attrs, gh_number = excluded.gh_number,
              position = excluded.position, created_at = excluded.created_at,
@@ -1127,6 +1159,7 @@ export const db = {
           [
             i.id,
             i.note_id,
+            i.type_ids ?? '[]',
             i.title,
             i.description,
             bit(i.done),

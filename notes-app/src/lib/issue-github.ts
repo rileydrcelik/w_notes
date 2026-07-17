@@ -52,19 +52,27 @@ export function githubIssueBody(description: string | undefined): string | undef
 }
 
 /**
- * The managed GitHub labels for an issue: the issue type's name, plus one
- * `Name: value` label per set `select`/`stars` attribute. `people` attributes
- * map to assignees ({@link githubIssueAssignees}), not labels. This is the full
- * set this app owns; labels a user added on GitHub are preserved separately via
- * {@link mergeManagedLabels}.
+ * The managed GitHub labels for an issue: one label per issue type it belongs to
+ * (an issue can have several), plus one `Name: value` label per set
+ * `select`/`stars` attribute. `people` attributes map to assignees
+ * ({@link githubIssueAssignees}), not labels. This is the full set this app
+ * owns; labels a user added on GitHub are preserved separately via
+ * {@link mergeManagedLabels}. `typeNames` accepts a single name or a list.
  */
 export function githubIssueLabels(
-  typeName: string | undefined,
+  typeNames: string | string[] | undefined,
   attributes: AttrDef[],
   values: Record<string, IssueAttrValue>,
 ): string[] {
   const labels: string[] = [];
-  if (typeName?.trim()) labels.push(typeName.trim());
+  const names = typeNames == null ? [] : Array.isArray(typeNames) ? typeNames : [typeNames];
+  for (const name of names) {
+    const trimmed = name?.trim();
+    // De-dupe (case-insensitively) so two types with the same name don't double up.
+    if (trimmed && !labels.some((l) => l.toLowerCase() === trimmed.toLowerCase())) {
+      labels.push(trimmed);
+    }
+  }
   for (const attr of attributes) {
     const v = values[attr.id];
     if (attr.type === 'select' && typeof v === 'string' && v.trim()) {
@@ -226,9 +234,9 @@ export async function getGithubIssueLabels(repo: string, number: number): Promis
 }
 
 /**
- * Update a mirrored GitHub issue: any of state (close/reopen), labels, and
- * assignees. Provided fields replace their GitHub value; omitted fields are left
- * untouched (the backend sends only what's present).
+ * Update a mirrored GitHub issue: any of state (close/reopen), title, body,
+ * labels, and assignees. Provided fields replace their GitHub value; omitted
+ * fields are left untouched (the backend sends only what's present).
  */
 export async function updateGithubIssue(
   repo: string,
@@ -236,6 +244,8 @@ export async function updateGithubIssue(
   fields: {
     state?: 'open' | 'closed';
     stateReason?: string;
+    title?: string;
+    body?: string;
     labels?: string[];
     assignees?: string[];
   },
@@ -245,6 +255,8 @@ export async function updateGithubIssue(
     body: {
       ...(fields.state ? { state: fields.state } : {}),
       ...(fields.stateReason ? { state_reason: fields.stateReason } : {}),
+      ...(fields.title !== undefined ? { title: fields.title } : {}),
+      ...(fields.body !== undefined ? { body: fields.body } : {}),
       ...(fields.labels ? { labels: fields.labels } : {}),
       ...(fields.assignees ? { assignees: fields.assignees } : {}),
     },

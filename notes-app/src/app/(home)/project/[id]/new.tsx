@@ -55,9 +55,13 @@ export default function NewIssueScreen() {
     [getNotesInFolder, id],
   );
 
-  // Pre-select the type the (+) was pressed on, falling back to the first type.
-  const [selectedTypeId, setSelectedTypeId] = useState<string | null>(typeId ?? null);
-  const activeTypeId = selectedTypeId ?? typeNotes[0]?.id ?? null;
+  // An issue can carry several types. Pre-select the type the (+) was pressed on
+  // (else none — the user picks). The first selected type is the *primary* one
+  // that drives the GitHub mirror.
+  const [selectedTypeIds, setSelectedTypeIds] = useState<string[]>(typeId ? [typeId] : []);
+  const toggleType = (t: string) =>
+    setSelectedTypeIds((prev) => (prev.includes(t) ? prev.filter((x) => x !== t) : [...prev, t]));
+  const primaryTypeId = selectedTypeIds[0] ?? null;
 
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
@@ -128,7 +132,7 @@ export default function NewIssueScreen() {
       typeNotes.reduce((m, t) => Math.max(m, parseTypeConfig(t.pluginConfig).order), -1) + 1;
     // GitHub tracking only means something when the project has a repo.
     const created = createIssueTypeNote(id, name, !!config?.repo && newTypeConnected, nextOrder);
-    setSelectedTypeId(created);
+    setSelectedTypeIds((prev) => [...prev, created]);
     setNewType(null);
     setNewTypeConnected(true);
   };
@@ -136,34 +140,38 @@ export default function NewIssueScreen() {
   const removeType = (typeId: string) => {
     getIssuesForNote(typeId).forEach((i) => deleteIssue(i.id));
     deleteNote(typeId);
-    if (activeTypeId === typeId) {
-      setSelectedTypeId(typeNotes.find((t) => t.id !== typeId)?.id ?? null);
-    }
+    setSelectedTypeIds((prev) => prev.filter((t) => t !== typeId));
   };
 
-  const activeType = typeNotes.find((t) => t.id === activeTypeId);
-  const activeConnected = parseTypeConfig(activeType?.pluginConfig).githubConnected;
-  const canSave = !!activeTypeId && title.trim().length > 0;
+  // The primary (first-selected) type decides whether the issue mirrors to
+  // GitHub; every selected type becomes a label so GitHub reflects them all.
+  const primaryType = typeNotes.find((t) => t.id === primaryTypeId);
+  const activeConnected = parseTypeConfig(primaryType?.pluginConfig).githubConnected;
+  const selectedTypeTitles = selectedTypeIds
+    .map((tid) => typeNotes.find((t) => t.id === tid)?.title)
+    .filter((t): t is string => !!t);
+  const canSave = selectedTypeIds.length > 0 && title.trim().length > 0;
 
   const save = () => {
-    if (!activeTypeId || !title.trim()) return;
+    if (selectedTypeIds.length === 0 || !title.trim()) return;
     const trimmedTitle = title.trim();
     const trimmedDesc = description.trim();
     const issueId = createIssue({
-      noteId: activeTypeId,
+      noteId: selectedTypeIds[0],
+      typeIds: selectedTypeIds,
       title: trimmedTitle,
       description: trimmedDesc || undefined,
       attrs: values,
     });
-    // Connected type + a project repo → open a matching GitHub issue in the
-    // background and record its number (best-effort; failures stay local). The
-    // type rides along as a label, attributes fold into the body, and People
-    // values map to native GitHub assignees.
+    // Connected primary type + a project repo → open a matching GitHub issue in
+    // the background and record its number (best-effort; failures stay local).
+    // Every selected type rides along as a label, attributes fold into labels,
+    // and People values map to native GitHub assignees.
     if (activeConnected && config?.repo) {
       createGithubIssue(config.repo, {
         title: trimmedTitle,
         body: githubIssueBody(trimmedDesc),
-        labels: githubIssueLabels(activeType?.title, attributes, values),
+        labels: githubIssueLabels(selectedTypeTitles, attributes, values),
         assignees: githubIssueAssignees(attributes, values),
       })
         .then((number) => updateIssue(issueId, { ghNumber: number }))
@@ -190,13 +198,14 @@ export default function NewIssueScreen() {
             <ThemedText type="subtitle">New issue</ThemedText>
           </View>
 
-          {/* Type picker */}
+          {/* Type picker — an issue can belong to several types. */}
           <ThemedText type="small" themeColor="textSecondary" style={styles.sectionLabel}>
-            Type
+            Types
           </ThemedText>
           <View style={styles.chips}>
             {typeNotes.map((t) => {
-              const selected = activeTypeId === t.id;
+              const selected = selectedTypeIds.includes(t.id);
+              const primary = primaryTypeId === t.id;
               // Two sibling Pressables inside a plain View — never a button nested
               // inside a button (which is invalid DOM on web).
               return (
@@ -207,12 +216,22 @@ export default function NewIssueScreen() {
                     { borderColor: selected ? ACCENT : border, backgroundColor: selected ? hexToRgba(ACCENT, 0.16) : 'transparent' },
                   ]}>
                   <Pressable
-                    onPress={() => setSelectedTypeId(t.id)}
-                    accessibilityRole="button"
-                    accessibilityState={{ selected }}
+                    onPress={() => toggleType(t.id)}
+                    accessibilityRole="checkbox"
+                    accessibilityState={{ checked: selected }}
                     accessibilityLabel={`Type ${t.title}`}
                     style={({ pressed }) => [styles.typeChipSelect, pressed && styles.pressed]}>
-                    <ThemedText type="small" numberOfLines={1}>
+                    {selected && (
+                      <Feather
+                        name="check"
+                        size={12}
+                        color={ACCENT}
+                        style={styles.typeChipCheck}
+                      />
+                    )}
+                    <ThemedText
+                      type={primary && selectedTypeIds.length > 1 ? 'smallBold' : 'small'}
+                      numberOfLines={1}>
                       {t.title || 'Untitled'}
                     </ThemedText>
                   </Pressable>
@@ -420,6 +439,7 @@ const styles = StyleSheet.create({
     borderWidth: 1.5,
   },
   typeChipSelect: { flexDirection: 'row', alignItems: 'center' },
+  typeChipCheck: { marginRight: Spacing.one },
   addChip: {
     paddingVertical: Spacing.one,
     paddingHorizontal: Spacing.two,

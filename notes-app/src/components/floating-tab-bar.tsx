@@ -1177,7 +1177,7 @@ function TaskSelectionMenu({
   const options: { key: string; label: string; icon: FeatherName; tint: string; onPress: () => void }[] = [
     { key: 'done', label: `Mark ${count} done`, icon: 'check-circle', tint: '#3fb950', onPress: onMarkDone },
     { key: 'notdone', label: `Mark ${count} not done`, icon: 'circle', tint: colors.text, onPress: onMarkNotDone },
-    { key: 'attrs', label: `Edit attributes`, icon: 'sliders', tint: colors.text, onPress: onEditAttrs },
+    { key: 'attrs', label: count === 1 ? 'Edit issue' : 'Edit attributes', icon: 'sliders', tint: colors.text, onPress: onEditAttrs },
     ...(onOpenGithub
       ? [
           {

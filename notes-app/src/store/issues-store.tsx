@@ -13,7 +13,7 @@ import { Sentry } from '@/lib/sentry';
 import { db } from '@/lib/db';
 import { isDbLockedError } from '@/lib/web-db-lock';
 import { requestSync, subscribeSynced, syncNow } from '@/lib/sync/sync-engine';
-import type { Issue, IssueAttrValue } from '@/data/notes';
+import { effectiveTypeIds, type Issue, type IssueAttrValue } from '@/data/notes';
 
 const today = () => new Date().toISOString().slice(0, 10);
 
@@ -43,6 +43,7 @@ type IssuePatch = {
   title?: string;
   description?: string;
   noteId?: string;
+  typeIds?: string[];
   done?: boolean;
   attrs?: Record<string, IssueAttrValue>;
   ghNumber?: number | null;
@@ -54,11 +55,12 @@ type IssuesContextValue = {
   /** True once the initial load from SQLite has completed (guards GitHub back-
    *  sync from treating a not-yet-loaded store as "no issues" and re-importing). */
   hydrated: boolean;
-  /** Live issues filed under a given issue-type note. */
+  /** Live issues filed under a given issue-type note (matches any of its types). */
   getIssuesForNote: (noteId: string) => Issue[];
-  /** Creates an issue under a type-note and returns its id. */
+  /** Creates an issue under one or more type-notes and returns its id. */
   createIssue: (input: {
     noteId: string;
+    typeIds?: string[];
     title: string;
     description?: string;
     attrs?: Record<string, IssueAttrValue>;
@@ -114,9 +116,12 @@ export function IssuesProvider({ children }: { children: ReactNode }) {
 
   const createIssue = useCallback<IssuesContextValue['createIssue']>((input) => {
     const id = rid();
+    // Default to the single home type when no explicit set is given.
+    const typeIds = input.typeIds ?? (input.noteId ? [input.noteId] : []);
     const issue: Issue = {
       id,
       noteId: input.noteId,
+      typeIds,
       title: input.title,
       description: input.description ?? '',
       done: false,
@@ -133,6 +138,7 @@ export function IssuesProvider({ children }: { children: ReactNode }) {
       db.createIssue({
         id,
         noteId: input.noteId,
+        typeIds,
         title: input.title,
         description: input.description,
         attrs: input.attrs,
@@ -181,7 +187,7 @@ export function IssuesProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const getIssuesForNote = useCallback(
-    (noteId: string) => orderIssues(issues.filter((i) => i.noteId === noteId)),
+    (noteId: string) => orderIssues(issues.filter((i) => effectiveTypeIds(i).includes(noteId))),
     [issues],
   );
 

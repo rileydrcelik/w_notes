@@ -24,11 +24,12 @@ import { useContextMenu } from '@/hooks/use-context-menu';
 import { useDoubleTap } from '@/hooks/use-double-tap';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
 import { useTheme } from '@/hooks/use-theme';
-import type { Issue, IssueAttrValue } from '@/data/notes';
+import { effectiveTypeIds, normalizeTypeIds, type Issue, type IssueAttrValue } from '@/data/notes';
 import { parseTypeConfig, projectConfig, type AttrDef } from '@/lib/project';
 import {
   getGithubIssueLabels,
   githubIssueAssignees,
+  githubIssueBody,
   githubIssueLabels,
   githubSyncErrorMessage,
   mergeManagedLabels,
@@ -104,6 +105,7 @@ function AttrSummary({ attributes, attrs }: { attributes: AttrDef[]; attrs: Issu
 function IssueRow({
   issue,
   attributes,
+  otherTypes,
   selectionActive,
   selected,
   onToggleSelect,
@@ -112,6 +114,8 @@ function IssueRow({
 }: {
   issue: Issue;
   attributes: AttrDef[];
+  /** Titles of the issue's other types (besides this screen's) — shown as chips. */
+  otherTypes: string[];
   selectionActive: boolean;
   selected: boolean;
   onToggleSelect: () => void;
@@ -164,6 +168,19 @@ function IssueRow({
               </View>
             )}
           </View>
+
+          {otherTypes.length > 0 && (
+            <View style={styles.typeTagRow}>
+              {otherTypes.map((t) => (
+                <View key={t} style={[styles.typeTag, { borderColor: hexToRgba(ACCENT, 0.4) }]}>
+                  <Feather name="columns" size={9} color={ACCENT} />
+                  <ThemedText type="small" numberOfLines={1} style={styles.typeTagText}>
+                    {t}
+                  </ThemedText>
+                </View>
+              ))}
+            </View>
+          )}
 
           <AttrSummary attributes={attributes} attrs={issue.attrs} />
 
@@ -250,12 +267,24 @@ export default function IssueTypeScreen() {
   const attributes = useMemo(() => config?.attributes ?? [], [config]);
   const connected = parseTypeConfig(typeNote?.pluginConfig).githubConnected;
   const data = useMemo(() => getIssuesForNote(typeId), [getIssuesForNote, typeId]);
-  // All the project's issue-type names — used to tell this app's managed labels
-  // apart from labels a user added on GitHub, so an edit preserves the latter.
-  const typeNames = useMemo(
-    () => getNotesInFolder(id).filter((n) => n.pluginType === 'issuetype').map((n) => n.title),
+  // The project's issue-type notes (id + title), ordered — powers both the Types
+  // picker in the edit sheet and the "other types" chips on each card.
+  const typeNotesList = useMemo(
+    () =>
+      getNotesInFolder(id)
+        .filter((n) => n.pluginType === 'issuetype')
+        .sort((a, b) => parseTypeConfig(a.pluginConfig).order - parseTypeConfig(b.pluginConfig).order)
+        .map((n) => ({ id: n.id, title: n.title })),
     [getNotesInFolder, id],
   );
+  const typeTitleById = useMemo(() => {
+    const m = new Map<string, string>();
+    typeNotesList.forEach((t) => m.set(t.id, t.title));
+    return m;
+  }, [typeNotesList]);
+  // All the project's issue-type names — used to tell this app's managed labels
+  // apart from labels a user added on GitHub, so an edit preserves the latter.
+  const typeNames = useMemo(() => typeNotesList.map((t) => t.title), [typeNotesList]);
 
   // Which issues the edit-attributes sheet is acting on (null = closed).
   const [editingIds, setEditingIds] = useState<string[] | null>(null);
@@ -263,6 +292,15 @@ export default function IssueTypeScreen() {
     if (!editingIds || editingIds.length === 0) return {};
     return issues.find((i) => i.id === editingIds[0])?.attrs ?? {};
   }, [editingIds, issues]);
+  // Seed the Types picker + Details fields (shown only for a single-issue edit).
+  const editSingle = useMemo(() => {
+    if (!editingIds || editingIds.length !== 1) return undefined;
+    return issues.find((i) => i.id === editingIds[0]);
+  }, [editingIds, issues]);
+  const editInitialTypeIds = useMemo<string[] | undefined>(
+    () => (editSingle ? effectiveTypeIds(editSingle) : undefined),
+    [editSingle],
+  );
 
   // Toggle done locally and, for a GitHub-connected mirrored issue, push the
   // close/reopen to GitHub (best-effort — a failure leaves the local flag set).
@@ -322,37 +360,76 @@ export default function IssueTypeScreen() {
     return () => registerGithubUrl(null);
   }, [selectedIds, data, repo, registerGithubUrl]);
 
-  // Push an issue's new attribute values to its mirrored GitHub issue: select/
-  // stars → labels (merged over the issue's current labels so foreign ones
-  // survive), People → assignees. Best-effort; a failure leaves the local edit.
+  // Push an issue's edited fields to its mirrored GitHub issue: title/body (when
+  // the Details fields were edited), every type + select/stars → labels (merged
+  // over the issue's current labels so foreign ones survive), People →
+  // assignees. Best-effort; a failure leaves the local edit. `typeTitles` is the
+  // issue's full (post-edit) type set.
   const pushAttrsToGithub = useCallback(
-    async (ghNumber: number, attrs: Record<string, IssueAttrValue>) => {
+    async (
+      ghNumber: number,
+      attrs: Record<string, IssueAttrValue>,
+      typeTitles: string[],
+      details?: { title: string; description: string },
+    ) => {
       if (!connected || !repo) return;
-      const managed = githubIssueLabels(typeNote?.title, attributes, attrs);
+      const managed = githubIssueLabels(typeTitles, attributes, attrs);
       const assignees = githubIssueAssignees(attributes, attrs);
       try {
         const current = await getGithubIssueLabels(repo, ghNumber);
         const labels = mergeManagedLabels(current, managed, attributes, typeNames);
-        await updateGithubIssue(repo, ghNumber, { labels, assignees });
+        await updateGithubIssue(repo, ghNumber, {
+          labels,
+          assignees,
+          ...(details
+            ? { title: details.title || 'Untitled issue', body: githubIssueBody(details.description) ?? '' }
+            : {}),
+        });
       } catch (e) {
         Sentry.captureException(e, { tags: { source: 'issue-github', op: 'attrs' } });
-        Alert.alert('Attributes not synced to GitHub', githubSyncErrorMessage(e));
+        Alert.alert('Changes not synced to GitHub', githubSyncErrorMessage(e));
       }
     },
-    [connected, repo, typeNote?.title, attributes, typeNames],
+    [connected, repo, attributes, typeNames],
   );
 
   const applyEdit = useCallback(
-    (attrs: Record<string, IssueAttrValue>) => {
+    (
+      attrs: Record<string, IssueAttrValue>,
+      single?: { title: string; description: string; typeIds?: string[] },
+    ) => {
+      // Title/description/type edits only come from a single-issue edit (the
+      // sheet only shows those fields then). Normalize types so noteId stays the
+      // first/primary type.
+      const typePatch = single?.typeIds ? normalizeTypeIds(single.typeIds) : null;
       editingIds?.forEach((issueId) => {
-        updateIssue(issueId, { attrs });
+        updateIssue(issueId, {
+          attrs,
+          ...(single ? { title: single.title, description: single.description } : {}),
+          ...(typePatch ? { noteId: typePatch.noteId, typeIds: typePatch.typeIds } : {}),
+        });
         const issue = issues.find((i) => i.id === issueId);
-        if (issue?.ghNumber != null) void pushAttrsToGithub(issue.ghNumber, attrs);
+        if (issue?.ghNumber != null) {
+          // Push the issue's full (post-edit) type set as labels, not just this
+          // screen's type — so GitHub reflects every type the issue carries.
+          const effTypeIds = typePatch ? typePatch.typeIds : effectiveTypeIds(issue);
+          const typeTitles = effTypeIds
+            .map((tid) => typeTitleById.get(tid))
+            .filter((t): t is string => !!t);
+          // Only push title/body to GitHub when they actually changed, so a
+          // pure attribute/type edit can't clobber a GitHub-side body edit
+          // (the body is never back-synced into the local description).
+          const details =
+            single && (single.title !== issue.title || single.description !== issue.description)
+              ? single
+              : undefined;
+          void pushAttrsToGithub(issue.ghNumber, attrs, typeTitles, details);
+        }
       });
       setEditingIds(null);
       clear();
     },
-    [editingIds, updateIssue, clear, issues, pushAttrsToGithub],
+    [editingIds, updateIssue, clear, issues, pushAttrsToGithub, typeTitleById],
   );
 
   const headerTop = insets.top + Spacing.four;
@@ -388,6 +465,10 @@ export default function IssueTypeScreen() {
             <IssueRow
               issue={item}
               attributes={attributes}
+              otherTypes={effectiveTypeIds(item)
+                .filter((tid) => tid !== typeId)
+                .map((tid) => typeTitleById.get(tid))
+                .filter((t): t is string => !!t)}
               selectionActive={selectionActive}
               selected={isSelected(item.id)}
               onToggleSelect={() => toggle(item.id)}
@@ -407,6 +488,10 @@ export default function IssueTypeScreen() {
           attributes={attributes}
           repo={repo}
           initial={editInitial}
+          types={editingIds?.length === 1 ? typeNotesList : undefined}
+          initialTypeIds={editInitialTypeIds}
+          initialTitle={editSingle?.title}
+          initialDescription={editSingle?.description}
           onClose={() => {
             setEditingIds(null);
             clear();
@@ -481,6 +566,23 @@ const styles = StyleSheet.create({
     borderWidth: 1,
   },
   summaryStars: { flexDirection: 'row', gap: 1 },
+  typeTagRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    gap: Spacing.one,
+    marginLeft: Spacing.four,
+  },
+  typeTag: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    paddingVertical: 1,
+    paddingHorizontal: Spacing.one,
+    borderRadius: Spacing.one,
+    borderWidth: 1,
+  },
+  typeTagText: { color: ACCENT, fontSize: 11 },
   description: { marginLeft: Spacing.four, lineHeight: 19 },
   state: { textAlign: 'center', marginTop: Spacing.five },
   pressed: { opacity: 0.6 },
