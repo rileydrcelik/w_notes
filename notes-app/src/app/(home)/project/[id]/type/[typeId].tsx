@@ -44,31 +44,9 @@ const ACCENT = '#16a394';
 const DONE_COLOR = '#3fb950';
 const GITHUB_ACCENT = '#8250df';
 
-/** A single attribute value rendered as plain text for the clipboard. */
-function attrValueText(attr: AttrDef, v: IssueAttrValue): string | null {
-  if (v == null || (Array.isArray(v) && v.length === 0)) return null;
-  if (attr.type === 'stars' && typeof v === 'number') return v > 0 ? '★'.repeat(v) : null;
-  if (attr.type === 'people' && Array.isArray(v)) return v.map((p) => `@${p}`).join(' ');
-  if (Array.isArray(v)) return v.join(', ');
-  return String(v);
-}
-
-/** Serialize an issue (title, state, attributes, GitHub link, description) as text. */
-function issueToClipboardText(
-  issue: Issue,
-  attributes: AttrDef[],
-  repo: string | undefined,
-): string {
-  const heading = issue.ghNumber != null ? `#${issue.ghNumber} ${issue.title}` : issue.title;
-  const lines: string[] = [heading.trim() || 'Untitled issue'];
-  lines.push(`State: ${issue.done ? 'done' : 'not done'}`);
-  for (const attr of attributes) {
-    const text = attrValueText(attr, issue.attrs[attr.id]);
-    if (text) lines.push(`${attr.name}: ${text}`);
-  }
-  if (repo && issue.ghNumber != null) {
-    lines.push(`GitHub: https://github.com/${repo}/issues/${issue.ghNumber}`);
-  }
+/** Serialize an issue's title and description as text. */
+function issueToClipboardText(issue: Issue): string {
+  const lines: string[] = [issue.title.trim() || 'Untitled issue'];
   if (issue.description.trim()) lines.push('', issue.description.trim());
   return lines.join('\n');
 }
@@ -414,9 +392,7 @@ export default function IssueTypeScreen() {
               selected={isSelected(item.id)}
               onToggleSelect={() => toggle(item.id)}
               onToggleDone={() => syncDone(item, !item.done)}
-              onCopy={() =>
-                void Clipboard.setStringAsync(issueToClipboardText(item, attributes, repo))
-              }
+              onCopy={() => void Clipboard.setStringAsync(issueToClipboardText(item))}
             />
           )}
           ListEmptyComponent={
