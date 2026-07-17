@@ -457,6 +457,10 @@ class UpdateStateRequest(BaseModel):
     # Why it closed: "completed" or "not_planned"; "reopened" on reopen. Ignored
     # by GitHub when it doesn't apply.
     state_reason: str | None = Field(default=None, pattern="^(completed|not_planned|reopened)$")
+    # Edited issue title/body (a task-manager Details edit). None = leave the
+    # GitHub value untouched. Title is capped to GitHub's 256-char limit.
+    title: str | None = Field(default=None, max_length=256)
+    body: str | None = None
     # Full replacement sets (task-manager attributes → labels, People → assignees).
     # None = leave untouched; [] = clear on GitHub.
     labels: list[str] | None = None
@@ -476,9 +480,10 @@ async def update_issue_state(
     req: UpdateStateRequest = Body(...),
     user: User = Depends(get_current_user),
 ) -> IssueStateResponse:
-    """Update an issue: close/reopen (the app's "resolve"/"undo"), and/or replace
-    its labels and assignees when a task-manager attribute edit is pushed. Every
-    field is optional; only the ones provided are sent to GitHub."""
+    """Update an issue: close/reopen (the app's "resolve"/"undo"), edit its
+    title/body (a Details edit), and/or replace its labels and assignees when a
+    task-manager attribute edit is pushed. Every field is optional; only the ones
+    provided are sent to GitHub."""
     _require_token()
     _require_repo(repo)
     payload: dict[str, object] = {}
@@ -486,6 +491,10 @@ async def update_issue_state(
         payload["state"] = req.state
     if req.state_reason:
         payload["state_reason"] = req.state_reason
+    if req.title is not None:
+        payload["title"] = req.title
+    if req.body is not None:
+        payload["body"] = req.body
     if req.labels is not None:
         payload["labels"] = req.labels
     if req.assignees is not None:
