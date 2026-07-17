@@ -27,7 +27,7 @@ import { useTheme } from '@/hooks/use-theme';
 import { effectiveTypeIds, normalizeTypeIds, type Issue, type IssueAttrValue } from '@/data/notes';
 import { parseTypeConfig, projectConfig, type AttrDef } from '@/lib/project';
 import {
-  getGithubIssueLabels,
+  getGithubIssueDetail,
   githubIssueAssignees,
   githubIssueBody,
   githubIssueLabels,
@@ -35,6 +35,7 @@ import {
   mergeManagedLabels,
   setGithubIssueState,
   updateGithubIssue,
+  upsertAttrsBlock,
 } from '@/lib/issue-github';
 import { Sentry } from '@/lib/sentry';
 import { useIssues } from '@/store/issues-store';
@@ -360,10 +361,11 @@ export default function IssueTypeScreen() {
     return () => registerGithubUrl(null);
   }, [selectedIds, data, repo, registerGithubUrl]);
 
-  // Push an issue's edited fields to its mirrored GitHub issue: title/body (when
-  // the Details fields were edited), every type + select/stars → labels (merged
-  // over the issue's current labels so foreign ones survive), People →
-  // assignees. Best-effort; a failure leaves the local edit. `typeTitles` is the
+  // Push an issue's edited fields to its mirrored GitHub issue: every type →
+  // labels (merged over the issue's current labels so foreign ones survive),
+  // attributes → the managed block in the issue body (preserving the user's
+  // description), People → assignees, and title/body when the Details fields were
+  // edited. Best-effort; a failure leaves the local edit. `typeTitles` is the
   // issue's full (post-edit) type set.
   const pushAttrsToGithub = useCallback(
     async (
@@ -373,17 +375,22 @@ export default function IssueTypeScreen() {
       details?: { title: string; description: string },
     ) => {
       if (!connected || !repo) return;
-      const managed = githubIssueLabels(typeTitles, attributes, attrs);
+      const typeLabels = githubIssueLabels(typeTitles);
       const assignees = githubIssueAssignees(attributes, attrs);
       try {
-        const current = await getGithubIssueLabels(repo, ghNumber);
-        const labels = mergeManagedLabels(current, managed, attributes, typeNames);
+        const { labels: current, body: currentBody } = await getGithubIssueDetail(repo, ghNumber);
+        const labels = mergeManagedLabels(current, typeLabels, attributes, typeNames);
+        // When Details were edited, rebuild the body from the new description +
+        // attributes; otherwise refresh only the attributes block, keeping the
+        // description GitHub already has.
+        const body = details
+          ? (githubIssueBody(details.description, attributes, attrs) ?? '')
+          : upsertAttrsBlock(currentBody, attributes, attrs);
         await updateGithubIssue(repo, ghNumber, {
           labels,
           assignees,
-          ...(details
-            ? { title: details.title || 'Untitled issue', body: githubIssueBody(details.description) ?? '' }
-            : {}),
+          body,
+          ...(details ? { title: details.title || 'Untitled issue' } : {}),
         });
       } catch (e) {
         Sentry.captureException(e, { tags: { source: 'issue-github', op: 'attrs' } });

@@ -165,13 +165,13 @@ export default function NewIssueScreen() {
     });
     // Connected primary type + a project repo → open a matching GitHub issue in
     // the background and record its number (best-effort; failures stay local).
-    // Every selected type rides along as a label, attributes fold into labels,
-    // and People values map to native GitHub assignees.
+    // Every selected type rides along as a label, attributes render into the
+    // issue body's managed block, and People values map to native GitHub assignees.
     if (activeConnected && config?.repo) {
       createGithubIssue(config.repo, {
         title: trimmedTitle,
-        body: githubIssueBody(trimmedDesc),
-        labels: githubIssueLabels(selectedTypeTitles, attributes, values),
+        body: githubIssueBody(trimmedDesc, attributes, values),
+        labels: githubIssueLabels(selectedTypeTitles),
         assignees: githubIssueAssignees(attributes, values),
       })
         .then((number) => updateIssue(issueId, { ghNumber: number }))

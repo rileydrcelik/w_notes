@@ -5,8 +5,10 @@
  *
  *  - **Matched** local issue → its mirrored fields follow GitHub (done from
  *    open/closed, title, and the built-in Status/Priority/People attributes via
- *    {@link githubToAttrs}). Its *type* (which note it's filed under) and *custom*
- *    attributes are w-notes-only overlays and are never touched by a pull.
+ *    {@link githubToAttrs} — Status/Priority read from the managed block in the
+ *    issue body, People from assignees). Its *type* (which note it's filed under)
+ *    and *custom* attributes are w-notes-only overlays and are never touched by a
+ *    pull.
  *  - **Unmatched** GitHub issue → imported into the project's "Unorganized" type
  *    (auto-created on first need), so the user can re-file and enrich it.
  *
@@ -15,7 +17,12 @@
  * which sidesteps the fact that local `updatedAt` is only date-granular.
  */
 import type { Issue, IssueAttrValue } from '@/data/notes';
-import { githubDone, githubToAttrs, listGithubIssues } from '@/lib/issue-github';
+import {
+  githubDone,
+  githubIssueDescription,
+  githubToAttrs,
+  listGithubIssues,
+} from '@/lib/issue-github';
 import type { AttrDef } from '@/lib/project';
 
 /** Store actions the reconciler drives (kept minimal so it stays testable). */
@@ -95,7 +102,7 @@ export async function reconcileProjectWithGithub(params: {
     const done = githubDone(gh.state);
     const local = byNumber.get(gh.number);
     if (local) {
-      const attrs = githubToAttrs(attributes, gh.labels, gh.assignees, local.attrs);
+      const attrs = githubToAttrs(attributes, gh.body, gh.assignees, local.attrs);
       const patch: { title?: string; done?: boolean; attrs?: Record<string, IssueAttrValue> } = {};
       if (gh.title && gh.title !== local.title) patch.title = gh.title;
       if (done !== local.done) patch.done = done;
@@ -106,11 +113,11 @@ export async function reconcileProjectWithGithub(params: {
       }
     } else {
       const noteId = actions.ensureUnorganizedType();
-      const attrs = githubToAttrs(attributes, gh.labels, gh.assignees, {});
+      const attrs = githubToAttrs(attributes, gh.body, gh.assignees, {});
       const newId = actions.createIssue({
         noteId,
         title: gh.title,
-        description: gh.body ?? undefined,
+        description: githubIssueDescription(gh.body),
         attrs,
         ghNumber: gh.number,
       });

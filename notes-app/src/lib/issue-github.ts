@@ -2,9 +2,11 @@
  * Two-way bridge between task-manager issues and real GitHub issues. When an
  * issue lives under a *GitHub-connected* issue type (see {@link IssueTypeConfig})
  * in a project with a `repo`:
- *  - creating it opens a matching GitHub issue (title, description, type + select/
- *    stars attributes as labels, People as assignees) and records its number;
- *  - toggling done closes/reopens it; editing attributes re-pushes labels/assignees;
+ *  - creating it opens a matching GitHub issue (title, description + attributes as
+ *    a managed body block, issue types as labels, People as assignees) and records
+ *    its number;
+ *  - toggling done closes/reopens it; editing attributes re-writes the body block
+ *    (and re-pushes type labels / assignees);
  *  - back-sync ({@link ../lib/github-backsync}) pulls GitHub changes the other way.
  *
  * The GitHub REST token stays on the server; these just call the `/github/issues`
@@ -16,9 +18,11 @@ import type { AttrDef } from '@/lib/project';
 import { ApiError, apiFetch } from '@/lib/sync/api';
 
 /**
- * Separator between an attribute's name and value in a GitHub label, e.g.
- * `Status: In Progress`. This `Name: value` shape is how select/stars attributes
- * round-trip through GitHub labels (People uses assignees instead).
+ * Separator between an attribute's name and value in a *legacy* GitHub label,
+ * e.g. `Status: In Progress`. Attributes are no longer written as labels (they
+ * live in the body's managed block), but this shape is still recognized so that
+ * {@link isManagedLabel} can strip stale attribute labels left by older versions
+ * on the next edit.
  */
 const LABEL_SEP = ': ';
 
@@ -44,26 +48,132 @@ type GithubIssueList = { issues: GithubIssue[]; next_cursor: string | null };
 /** True when a GitHub issue in this state should be `done` locally. */
 export const githubDone = (state?: string | null): boolean => state === 'closed';
 
-/** The issue body sent to GitHub — just the user's description (attributes live
- *  in labels/assignees, which GitHub renders natively and can round-trip). */
-export function githubIssueBody(description: string | undefined): string | undefined {
-  const desc = description?.trim();
+/**
+ * Delimiters bounding the app-managed *attributes* block inside a GitHub issue
+ * body. w-notes owns everything between them and rewrites it on every push; text
+ * outside the markers is the user's own description and is preserved untouched.
+ * Issue types map to GitHub labels and `people` to assignees; every other set
+ * attribute (built-in Status/Priority + custom selects) is rendered here so it
+ * shows as readable content instead of cluttering the issue's labels.
+ */
+const ATTR_BLOCK_START = '<!-- w-notes:attributes -->';
+const ATTR_BLOCK_END = '<!-- /w-notes:attributes -->';
+
+/** Sentinel standing in for an escaped table pipe while splitting a row (keeps
+ *  the parser off regex lookbehind, which isn't guaranteed on all JS engines). */
+const PIPE_HOLD = '\u0000';
+
+/** Escape a value so a literal '|' or newline can't break the markdown table. */
+function escapeCell(v: string): string {
+  return v.replace(/\r?\n/g, ' ').replace(/\|/g, '\\|').trim();
+}
+
+/**
+ * Render the managed attributes table for an issue: one row per set `select`
+ * (its value) or `stars` (as filled stars) attribute, built-in or custom.
+ * `people` is omitted — it maps to GitHub assignees. Returns '' when nothing is
+ * set, so no empty block is written.
+ */
+function renderAttrsBlock(attributes: AttrDef[], values: Record<string, IssueAttrValue>): string {
+  const rows: string[] = [];
+  for (const attr of attributes) {
+    const v = values[attr.id];
+    if (attr.type === 'select' && typeof v === 'string' && v.trim()) {
+      rows.push(`| ${escapeCell(attr.name)} | ${escapeCell(v.trim())} |`);
+    } else if (attr.type === 'stars' && typeof v === 'number' && v > 0) {
+      rows.push(`| ${escapeCell(attr.name)} | ${'★'.repeat(Math.min(5, v))} |`);
+    }
+  }
+  if (rows.length === 0) return '';
+  return [ATTR_BLOCK_START, '| Attribute | Value |', '| --- | --- |', ...rows, ATTR_BLOCK_END].join('\n');
+}
+
+/** Strip the managed attributes block from a body, leaving the user's description. */
+function stripAttrsBlock(body: string): string {
+  const start = body.indexOf(ATTR_BLOCK_START);
+  if (start === -1) return body.trim();
+  const endMarker = body.indexOf(ATTR_BLOCK_END, start);
+  const end = endMarker === -1 ? body.length : endMarker + ATTR_BLOCK_END.length;
+  return (body.slice(0, start) + body.slice(end)).trim();
+}
+
+/**
+ * Replace (or insert) the managed attributes block in an existing GitHub issue
+ * body, preserving the user's description above it. Used when an attribute edit
+ * is pushed to an already-open issue.
+ */
+export function upsertAttrsBlock(
+  body: string | null | undefined,
+  attributes: AttrDef[],
+  values: Record<string, IssueAttrValue>,
+): string {
+  const desc = stripAttrsBlock(body ?? '');
+  const block = renderAttrsBlock(attributes, values);
+  if (!block) return desc;
+  return desc ? `${desc}\n\n${block}` : block;
+}
+
+/** Parse the managed attributes block back into a name→value map (lowercased
+ *  keys). Null when the block is absent — so a pull can tell "no managed data"
+ *  apart from "block present but this attribute cleared". */
+function parseAttrsBlock(body: string | null | undefined): Map<string, string> | null {
+  if (!body) return null;
+  const start = body.indexOf(ATTR_BLOCK_START);
+  if (start === -1) return null;
+  const endMarker = body.indexOf(ATTR_BLOCK_END, start);
+  const inner = body.slice(start + ATTR_BLOCK_START.length, endMarker === -1 ? undefined : endMarker);
+  const map = new Map<string, string>();
+  for (const line of inner.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith('|')) continue;
+    const cells = trimmed
+      .replace(/\\\|/g, PIPE_HOLD)
+      .split('|')
+      .slice(1, -1)
+      .map((c) => c.split(PIPE_HOLD).join('|').trim());
+    if (cells.length < 2) continue;
+    const name = cells[0].toLowerCase();
+    // Skip the header row and the |---|---| separator.
+    if (name === 'attribute' || /^-+$/.test(cells[0].replace(/\s/g, ''))) continue;
+    map.set(name, cells[1]);
+  }
+  return map;
+}
+
+/**
+ * The issue body sent to GitHub on create: the user's description followed by the
+ * managed attributes block (when any attribute is set). Attributes render as a
+ * table here rather than as labels, so GitHub shows them as readable content and
+ * the issue's labels stay to types only. Returns undefined when empty.
+ */
+export function githubIssueBody(
+  description: string | undefined,
+  attributes?: AttrDef[],
+  values?: Record<string, IssueAttrValue>,
+): string | undefined {
+  const desc = description?.trim() ?? '';
+  const block = attributes && values ? renderAttrsBlock(attributes, values) : '';
+  const combined = block ? (desc ? `${desc}\n\n${block}` : block) : desc;
+  return combined || undefined;
+}
+
+/** The user-facing description of a GitHub issue body — the managed attributes
+ *  block removed. Used when importing an unmirrored issue so the block markup
+ *  doesn't leak into the local description. */
+export function githubIssueDescription(body: string | null | undefined): string | undefined {
+  const desc = stripAttrsBlock(body ?? '');
   return desc || undefined;
 }
 
 /**
  * The managed GitHub labels for an issue: one label per issue type it belongs to
- * (an issue can have several), plus one `Name: value` label per set
- * `select`/`stars` attribute. `people` attributes map to assignees
- * ({@link githubIssueAssignees}), not labels. This is the full set this app
- * owns; labels a user added on GitHub are preserved separately via
- * {@link mergeManagedLabels}. `typeNames` accepts a single name or a list.
+ * (an issue can have several). Attribute values are NOT labels — they live in the
+ * issue body's managed block ({@link githubIssueBody}); `people` maps to
+ * assignees ({@link githubIssueAssignees}). Labels a user added on GitHub are
+ * preserved separately via {@link mergeManagedLabels}. `typeNames` accepts a
+ * single name or a list.
  */
-export function githubIssueLabels(
-  typeNames: string | string[] | undefined,
-  attributes: AttrDef[],
-  values: Record<string, IssueAttrValue>,
-): string[] {
+export function githubIssueLabels(typeNames: string | string[] | undefined): string[] {
   const labels: string[] = [];
   const names = typeNames == null ? [] : Array.isArray(typeNames) ? typeNames : [typeNames];
   for (const name of names) {
@@ -71,14 +181,6 @@ export function githubIssueLabels(
     // De-dupe (case-insensitively) so two types with the same name don't double up.
     if (trimmed && !labels.some((l) => l.toLowerCase() === trimmed.toLowerCase())) {
       labels.push(trimmed);
-    }
-  }
-  for (const attr of attributes) {
-    const v = values[attr.id];
-    if (attr.type === 'select' && typeof v === 'string' && v.trim()) {
-      labels.push(`${attr.name}${LABEL_SEP}${v.trim()}`);
-    } else if (attr.type === 'stars' && typeof v === 'number' && v > 0) {
-      labels.push(`${attr.name}${LABEL_SEP}${v}`);
     }
   }
   return labels;
@@ -104,9 +206,11 @@ export function githubIssueAssignees(
 
 /**
  * Whether `label` is one this app manages for the given project — either it
- * equals an issue-type name, or it has the `Name: value` shape of a known
- * `select`/`stars` attribute. Used to strip stale managed labels on push while
- * leaving foreign labels (added directly on GitHub) untouched.
+ * equals an issue-type name, or it has the legacy `Name: value` shape of a known
+ * `select`/`stars` attribute. Used to strip managed labels on push while leaving
+ * foreign labels (added directly on GitHub) untouched; the attribute-shape check
+ * also cleans up stale attribute labels written by versions that used labels for
+ * attributes (they're never re-added, since attributes now live in the body).
  */
 export function isManagedLabel(label: string, attributes: AttrDef[], typeNames: string[]): boolean {
   const lower = label.toLowerCase();
@@ -142,20 +246,23 @@ export function mergeManagedLabels(
 }
 
 /**
- * Derive attribute *values* for a mirrored issue from its GitHub labels +
- * assignees, updating only the project's **built-in** attributes (Status,
- * Priority, People) — GitHub is source-of-truth for those. Custom attributes are
- * left exactly as `existing` has them (they're w-notes-only overlays). A
- * built-in with no corresponding label/assignee is cleared.
+ * Derive attribute *values* for a mirrored issue from GitHub, updating only the
+ * project's **built-in** attributes (Status, Priority, People) — GitHub is
+ * source-of-truth for those. Status/Priority come from the managed attributes
+ * block in the issue `body`; People from `assignees`. Custom attributes are left
+ * exactly as `existing` has them (they're w-notes-only overlays). When the body
+ * carries a managed block, a built-in with no matching row is cleared; when the
+ * block is absent entirely, built-ins are left untouched (so a pull can't wipe
+ * them, e.g. if a user deleted the block on GitHub).
  */
 export function githubToAttrs(
   attributes: AttrDef[],
-  labels: GithubLabel[],
+  body: string | null | undefined,
   assignees: string[],
   existing: Record<string, IssueAttrValue>,
 ): Record<string, IssueAttrValue> {
   const next: Record<string, IssueAttrValue> = { ...existing };
-  const names = labels.map((l) => l.name);
+  const parsed = parseAttrsBlock(body);
   for (const attr of attributes) {
     if (!attr.builtin) continue;
     if (attr.type === 'people') {
@@ -163,17 +270,19 @@ export function githubToAttrs(
       else delete next[attr.id];
       continue;
     }
-    const prefix = `${attr.name.toLowerCase()}${LABEL_SEP}`;
-    const match = names.find((n) => n.toLowerCase().startsWith(prefix));
-    if (!match) {
+    // No managed block → leave built-in select/stars untouched.
+    if (!parsed) continue;
+    const raw = parsed.get(attr.name.toLowerCase());
+    if (raw == null || raw === '') {
       delete next[attr.id];
       continue;
     }
-    const value = match.slice(match.indexOf(LABEL_SEP) + LABEL_SEP.length).trim();
     if (attr.type === 'select') {
-      next[attr.id] = value;
+      next[attr.id] = raw;
     } else if (attr.type === 'stars') {
-      const n = parseInt(value, 10);
+      // Stars render as filled '★'; fall back to a bare number if a user typed one.
+      const stars = (raw.match(/★/g) ?? []).length;
+      const n = stars > 0 ? stars : parseInt(raw, 10);
       if (Number.isFinite(n) && n > 0) next[attr.id] = Math.min(5, n);
       else delete next[attr.id];
     }
@@ -212,8 +321,8 @@ export function openGithubIssueForIssue(
 ): Promise<number> {
   return createGithubIssue(repo, {
     title: issue.title,
-    body: githubIssueBody(issue.description),
-    labels: githubIssueLabels(typeName, attributes, issue.attrs),
+    body: githubIssueBody(issue.description, attributes, issue.attrs),
+    labels: githubIssueLabels(typeName),
     assignees: githubIssueAssignees(attributes, issue.attrs),
   });
 }
@@ -225,12 +334,17 @@ export function listGithubIssues(repo: string, cursor?: string): Promise<GithubI
   return apiFetch<GithubIssueList>(`/github/issues?${params.toString()}`);
 }
 
-/** The labels currently on a single GitHub issue (for foreign-label-preserving edits). */
-export async function getGithubIssueLabels(repo: string, number: number): Promise<string[]> {
-  const issue = await apiFetch<{ labels: GithubLabel[] }>(
+/** The current labels + body of a single GitHub issue — enough to push an edit
+ *  that preserves foreign labels and the user's description while rewriting the
+ *  managed type labels / attributes block. */
+export async function getGithubIssueDetail(
+  repo: string,
+  number: number,
+): Promise<{ labels: string[]; body: string | null }> {
+  const issue = await apiFetch<{ labels: GithubLabel[]; body?: string | null }>(
     `/github/issues/${number}?repo=${encodeURIComponent(repo)}`,
   );
-  return (issue.labels ?? []).map((l) => l.name);
+  return { labels: (issue.labels ?? []).map((l) => l.name), body: issue.body ?? null };
 }
 
 /**
