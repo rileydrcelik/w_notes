@@ -9,6 +9,7 @@ import { hexToRgba, Spacing } from '@/constants/theme';
 import type { Folder, Note } from '@/data/notes';
 import { sentryTarget } from '@/lib/sentry-note';
 import { githubTarget } from '@/lib/github-note';
+import { useTileHeight } from '@/lib/grid';
 import { projectConfig } from '@/lib/project';
 import { useContextMenu } from '@/hooks/use-context-menu';
 import { useDoubleTap } from '@/hooks/use-double-tap';
@@ -47,11 +48,12 @@ function PlainFolderCard({ folder }: { folder: Folder }) {
 
   // Right-click mirrors the mobile long-press (toggles selection).
   const contextMenuRef = useContextMenu(onSelectToggle);
+  const tileHeight = useTileHeight();
 
   return (
     <Pressable
       ref={contextMenuRef}
-      style={({ pressed }) => [styles.cardWrapper, pressed && styles.pressed]}
+      style={({ pressed }) => [styles.cardWrapper, { height: tileHeight }, pressed && styles.pressed]}
       onPress={active ? onSelectToggle : openOrFavorite}
       onLongPress={onSelectToggle}>
       <ThemedView style={styles.folder}>
@@ -95,11 +97,12 @@ function ProjectFolderCard({ folder }: { folder: Folder }) {
   );
   const onSelectToggle = () => toggle({ type: 'folder', id: folder.id });
   const contextMenuRef = useContextMenu(onSelectToggle);
+  const tileHeight = useTileHeight();
 
   return (
     <Pressable
       ref={contextMenuRef}
-      style={({ pressed }) => [styles.cardWrapper, pressed && styles.pressed]}
+      style={({ pressed }) => [styles.cardWrapper, { height: tileHeight }, pressed && styles.pressed]}
       onPress={active ? onSelectToggle : openOrFavorite}
       onLongPress={onSelectToggle}>
       <ThemedView style={styles.folder}>
@@ -151,6 +154,7 @@ function TextNoteCard({ note }: { note: Note }) {
 
   // Right-click mirrors the mobile long-press (toggles selection).
   const contextMenuRef = useContextMenu(onSelectToggle);
+  const tileHeight = useTileHeight();
 
   // No native rich-text renderer on web — flatten the HTML body to plain text
   // for the preview (same helper the copa list uses).
@@ -159,7 +163,7 @@ function TextNoteCard({ note }: { note: Note }) {
   return (
     <Pressable
       ref={contextMenuRef}
-      style={({ pressed }) => [styles.cardWrapper, pressed && styles.pressed]}
+      style={({ pressed }) => [styles.cardWrapper, { height: tileHeight }, pressed && styles.pressed]}
       onPress={active ? onSelectToggle : openOrFavorite}
       onLongPress={onSelectToggle}>
       <ThemedView type="backgroundElementAlt" style={[styles.card, selected && styles.selected]}>
@@ -199,11 +203,12 @@ function SentryNoteCard({ note }: { note: Note }) {
   const onSelectToggle = () => toggle({ type: 'note', id: note.id });
 
   const contextMenuRef = useContextMenu(onSelectToggle);
+  const tileHeight = useTileHeight();
 
   return (
     <Pressable
       ref={contextMenuRef}
-      style={({ pressed }) => [styles.cardWrapper, pressed && styles.pressed]}
+      style={({ pressed }) => [styles.cardWrapper, { height: tileHeight }, pressed && styles.pressed]}
       onPress={active ? onSelectToggle : openOrFavorite}
       onLongPress={onSelectToggle}>
       <ThemedView type="backgroundElementAlt" style={[styles.card, selected && styles.selected]}>
@@ -238,11 +243,12 @@ function GithubNoteCard({ note }: { note: Note }) {
   const onSelectToggle = () => toggle({ type: 'note', id: note.id });
 
   const contextMenuRef = useContextMenu(onSelectToggle);
+  const tileHeight = useTileHeight();
 
   return (
     <Pressable
       ref={contextMenuRef}
-      style={({ pressed }) => [styles.cardWrapper, pressed && styles.pressed]}
+      style={({ pressed }) => [styles.cardWrapper, { height: tileHeight }, pressed && styles.pressed]}
       onPress={active ? onSelectToggle : openOrFavorite}
       onLongPress={onSelectToggle}>
       <ThemedView type="backgroundElementAlt" style={[styles.card, selected && styles.selected]}>
@@ -263,14 +269,19 @@ function GithubNoteCard({ note }: { note: Note }) {
 
 const styles = StyleSheet.create({
   cardWrapper: {
-    flex: 1,
+    // The surrounding View cell (in each grid screen) is the flex item that
+    // sets the column width; this card stretches to that width and takes its
+    // explicit per-tile height (applied inline). No `flex: 1` here — inside the
+    // height-less cell it would fight the explicit height and make row heights
+    // inconsistent. minWidth:0 lets a nowrap title ellipsize instead of pushing
+    // the card wider than its column on web.
+    minWidth: 0,
   },
   pressed: {
     opacity: 0.6,
   },
   card: {
     flex: 1,
-    minHeight: 200,
     borderRadius: Spacing.three,
     padding: Spacing.three,
     gap: Spacing.two,
@@ -285,7 +296,6 @@ const styles = StyleSheet.create({
   },
   folder: {
     flex: 1,
-    minHeight: 200,
     backgroundColor: 'transparent',
   },
   folderTabRow: {
@@ -328,5 +338,8 @@ const styles = StyleSheet.create({
   },
   titleText: {
     flexShrink: 1,
+    // Allow the nowrap title to ellipsize within the narrowed cell instead of
+    // forcing the card wider than its column (web min-content floor).
+    minWidth: 0,
   },
 });

@@ -8,7 +8,7 @@ import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Spacing } from '@/constants/theme';
 import type { Folder, Note } from '@/data/notes';
-import { GRID_COLUMNS, gridEdgePadding, trailingSpacers } from '@/lib/grid';
+import { GRID_COLUMNS, gridEdgePadding, trailingSpacers, useGridColumnWidth } from '@/lib/grid';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
 import { useTheme } from '@/hooks/use-theme';
 import { useNotes } from '@/store/notes-store';
@@ -27,6 +27,7 @@ export default function FolderScreen() {
   const notes = folder ? getNotesInFolder(folder.id) : [];
   const tabBarInset = useTabBarInset();
   const insets = useSafeAreaInsets();
+  const columnWidth = useGridColumnWidth();
 
   // Subfolders sit above the notes, mirroring the home screen's ordering.
   const items: GridItem[] = [
@@ -76,9 +77,21 @@ export default function FolderScreen() {
             </ThemedText>
           }
           renderItem={({ item }) => {
-            if (item.kind === 'spacer') return <View style={styles.spacer} />;
-            if (item.kind === 'folder') return <FolderCard folder={item.folder} />;
-            return <NoteCard note={item.note} />;
+            // Wrap every cell in a View so the row distributes evenly on web
+            // (a Pressable flex child sizes differently from a View one).
+            if (item.kind === 'spacer') return <View style={[styles.cardCell, { width: columnWidth }]} />;
+            if (item.kind === 'folder') {
+              return (
+                <View style={[styles.cardCell, { width: columnWidth }]}>
+                  <FolderCard folder={item.folder} />
+                </View>
+              );
+            }
+            return (
+              <View style={[styles.cardCell, { width: columnWidth }]}>
+                <NoteCard note={item.note} />
+              </View>
+            );
           }}
         />
       </ThemedView>
@@ -104,9 +117,15 @@ const styles = StyleSheet.create({
   },
   row: {
     gap: Spacing.three,
+    alignItems: 'flex-start',
   },
-  spacer: {
-    flex: 1,
+  cardCell: {
+    // Fixed one-column width (inline) + flexGrow:0 so a card can't stretch past
+    // its column into a partial row's empty space (what made them too wide).
+    flexGrow: 0,
+    flexShrink: 1,
+    minWidth: 0,
+    overflow: 'hidden',
   },
   empty: {
     paddingVertical: Spacing.four,

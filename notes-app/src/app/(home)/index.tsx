@@ -11,7 +11,7 @@ import { SearchBar, SEARCH_BAR_HEIGHT } from '@/components/search-bar';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Spacing } from '@/constants/theme';
-import { GRID_COLUMNS, gridEdgePadding, trailingSpacers } from '@/lib/grid';
+import { GRID_COLUMNS, gridEdgePadding, trailingSpacers, useGridColumnWidth } from '@/lib/grid';
 import { useScreenFadeStyle } from '@/hooks/use-screen-fade';
 import { useSyncRefresh } from '@/hooks/use-sync-refresh';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
@@ -35,6 +35,7 @@ export default function HomeScreen() {
   const theme = useTheme();
   const { openSidebar } = useSidebar();
   const { refreshing, onRefresh } = useSyncRefresh();
+  const columnWidth = useGridColumnWidth();
   const [query, setQuery] = useState('');
   // Web has no native stack transition; fade/slide the screen in when it gains
   // focus (incl. when revealed by backing out of a note).
@@ -113,13 +114,26 @@ export default function HomeScreen() {
             ) : null
           }
           renderItem={({ item }) => {
-            if (item.type === 'spacer') return <View style={styles.spacer} />;
+            // Every cell is a plain View so the row's flex distribution is
+            // uniform: react-native-web sizes a Pressable flex child differently
+            // from a View one, so a partial row mixing card Pressables with View
+            // spacers came out uneven (cards too wide). Wrapping the card in a
+            // View makes every cell the same element and every column equal.
+            if (item.type === 'spacer') return <View style={[styles.cardCell, { width: columnWidth }]} />;
             if (item.type === 'folder') {
               const folder = folders.find((f) => f.id === item.id)!;
-              return <FolderCard folder={folder} />;
+              return (
+                <View style={[styles.cardCell, { width: columnWidth }]}>
+                  <FolderCard folder={folder} />
+                </View>
+              );
             }
             const note = notes.find((n) => n.id === item.id)!;
-            return <NoteCard note={note} />;
+            return (
+              <View style={[styles.cardCell, { width: columnWidth }]}>
+                <NoteCard note={note} />
+              </View>
+            );
           }}
         />
         {/* Fades scrolling cards out behind the floating search field. */}
@@ -166,9 +180,20 @@ const styles = StyleSheet.create({
   },
   row: {
     gap: Spacing.three,
+    // Don't stretch cards to the row's height; their fixed aspect ratio drives
+    // height from the column width, so stretching would distort widths in a
+    // partial last row and break alignment with the columns above.
+    alignItems: 'flex-start',
   },
-  spacer: {
-    flex: 1,
+  cardCell: {
+    // Fixed one-column width (applied inline) with flexGrow:0 so a card can
+    // never stretch past its column into a partial row's empty spacer space —
+    // the cause of partial-row cards rendering too wide. flexShrink keeps a
+    // rounding/scrollbar overshoot from overflowing; overflow clips content.
+    flexGrow: 0,
+    flexShrink: 1,
+    minWidth: 0,
+    overflow: 'hidden',
   },
   empty: {
     textAlign: 'center',

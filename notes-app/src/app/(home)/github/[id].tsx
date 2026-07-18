@@ -18,6 +18,7 @@ import { SwipeBackView } from '@/components/swipe-back-view';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { hexToRgba, Spacing } from '@/constants/theme';
+import { GRID_COLUMNS, gridEdgePadding, trailingSpacers, useGridColumnWidth, useTileHeight } from '@/lib/grid';
 import { useContextMenu } from '@/hooks/use-context-menu';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
 import { useTheme } from '@/hooks/use-theme';
@@ -141,6 +142,9 @@ function IssueCard({
 }) {
   const theme = useTheme();
   const dot = stateColor(issue);
+  // Same shared tile height as the note/folder feed so issue cards line up
+  // uniformly; expanding grows the card past it (copa pattern) to show details.
+  const tileHeight = useTileHeight();
   const [expanded, setExpanded] = useState(false);
   const [comments, setComments] = useState<Comment[] | null>(null);
   const [loadingComments, setLoadingComments] = useState(false);
@@ -199,10 +203,12 @@ function IssueCard({
       onPress={onPress}
       onLongPress={onToggleSelect}
       style={({ pressed }) => pressed && styles.pressed}>
-      <ThemedView type="backgroundElementAlt" style={[styles.card, selected && styles.cardSelected]}>
+      <ThemedView
+        type="backgroundElementAlt"
+        style={[styles.card, { height: expanded ? undefined : tileHeight }, selected && styles.cardSelected]}>
         <View style={styles.cardHeader}>
           <View style={[styles.stateDot, { backgroundColor: dot }]} />
-          <ThemedText type="smallBold" numberOfLines={expanded ? undefined : 1} style={styles.cardTitle}>
+          <ThemedText type="smallBold" numberOfLines={expanded ? undefined : 2} style={styles.cardTitle}>
             {issue.title || `Issue #${issue.number}`}
           </ThemedText>
           {selectionActive ? (
@@ -332,6 +338,7 @@ export default function GithubIssuesScreen() {
   const theme = useTheme();
   const insets = useSafeAreaInsets();
   const tabBarInset = useTabBarInset();
+  const columnWidth = useGridColumnWidth();
   const {
     active: selectionActive,
     selectedIds,
@@ -354,6 +361,14 @@ export default function GithubIssuesScreen() {
   );
 
   const [issues, setIssues] = useState<Issue[]>([]);
+  // Grid rows: issues plus transparent spacers padding the last row so its cards
+  // stay one column wide (same layout as the note/folder feed).
+  type GridRow = Issue | { spacer: true; key: string };
+  const gridData = useMemo<GridRow[]>(() => {
+    const rows: GridRow[] = [...issues];
+    for (let i = 0; i < trailingSpacers(issues.length); i++) rows.push({ spacer: true, key: `spacer-${i}` });
+    return rows;
+  }, [issues]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -537,11 +552,14 @@ export default function GithubIssuesScreen() {
           <GithubConfig paddingTop={headerTop} paddingBottom={tabBarInset} onSubmit={handleConfigure} />
         ) : (
           <FlatList
-              data={issues}
-              keyExtractor={(item) => String(item.number)}
+              data={gridData}
+              keyExtractor={(item) => ('spacer' in item ? item.key : String(item.number))}
+              numColumns={GRID_COLUMNS}
+              columnWrapperStyle={styles.row}
               extraData={{ selectionActive, selectedIds, filter }}
               contentContainerStyle={[
                 styles.content,
+                gridEdgePadding,
                 { paddingTop: headerTop, paddingBottom: tabBarInset },
               ]}
               ListHeaderComponent={
@@ -579,15 +597,20 @@ export default function GithubIssuesScreen() {
                   </ThemedText>
                 )
               }
-              renderItem={({ item }) => (
-                <IssueCard
-                  issue={item}
-                  repo={target.repo}
-                  selectionActive={selectionActive}
-                  selected={isSelected(String(item.number))}
-                  onToggleSelect={() => toggle(String(item.number))}
-                />
-              )}
+              renderItem={({ item }) => {
+                if ('spacer' in item) return <View style={[styles.cardCell, { width: columnWidth }]} />;
+                return (
+                  <View style={[styles.cardCell, { width: columnWidth }]}>
+                    <IssueCard
+                      issue={item}
+                      repo={target.repo}
+                      selectionActive={selectionActive}
+                      selected={isSelected(String(item.number))}
+                      onToggleSelect={() => toggle(String(item.number))}
+                    />
+                  </View>
+                );
+              }}
             />
         )}
       </ThemedView>
@@ -601,8 +624,12 @@ const styles = StyleSheet.create({
   },
   content: {
     paddingHorizontal: Spacing.three,
-    gap: Spacing.two,
+    gap: Spacing.three,
   },
+  // Grid row/cell — mirrors the note/folder feed: fixed one-column width (inline)
+  // with flexGrow:0 so a card can't stretch into a partial row's empty space.
+  row: { gap: Spacing.three, alignItems: 'flex-start' },
+  cardCell: { flexGrow: 0, flexShrink: 1, minWidth: 0, overflow: 'hidden' },
   header: {
     gap: Spacing.one,
     marginBottom: Spacing.three,
@@ -635,6 +662,8 @@ const styles = StyleSheet.create({
     gap: Spacing.half,
     borderWidth: 1.5,
     borderColor: 'transparent',
+    // Clip to the tile when collapsed (fixed height); grows to fit when expanded.
+    overflow: 'hidden',
   },
   cardSelected: {
     borderColor: ACCENT,
@@ -652,6 +681,7 @@ const styles = StyleSheet.create({
   },
   cardTitle: {
     flex: 1,
+    minWidth: 0,
   },
   chevronOpen: {
     transform: [{ rotate: '180deg' }],

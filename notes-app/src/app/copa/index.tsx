@@ -35,11 +35,23 @@ import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
 import { useTheme } from '@/hooks/use-theme';
 import { useCopa } from '@/store/copa-store';
 
-// Geometry of a card used to keep its collapsed height from exceeding its width.
+// Every copa tile is the same fixed height so rows line up uniformly (file
+// cards already used this height; text cards now match it and clamp overflowing
+// content to fit — the chevron still expands a card past this height on demand).
+const COPA_CARD_HEIGHT = 180;
+
+// Geometry used to derive how many content lines fit inside the fixed height.
 const CARD_PADDING = Spacing.three;
 const LABEL_BLOCK = 20 + Spacing.half; // label lineHeight + gap to content
 const FOOTER_BLOCK = 18 + Spacing.two; // copy icon height + gap above it
 const CONTENT_LINE_HEIGHT = 24; // default ThemedText lineHeight
+
+// Content lines that fit in a collapsed card before it would overflow the fixed
+// height. Constant now (height-derived) rather than measured per card width.
+const CARD_MAX_LINES = Math.max(
+  1,
+  Math.floor((COPA_CARD_HEIGHT - CARD_PADDING * 2 - LABEL_BLOCK - FOOTER_BLOCK) / CONTENT_LINE_HEIGHT),
+);
 
 // One column on phones (full-width cards read fine there); a multi-column grid
 // on web, where a single column would stretch each card into a wide ribbon.
@@ -64,10 +76,10 @@ function CopaCard({ item }: { item: CopaItem }) {
   const overflowing = maxLines !== undefined && totalLines !== undefined && totalLines > maxLines;
   const clamp = overflowing && !expanded;
 
-  const onLayout = (e: LayoutChangeEvent) => {
-    const { width } = e.nativeEvent.layout;
-    const available = width - CARD_PADDING * 2 - LABEL_BLOCK - FOOTER_BLOCK;
-    setMaxLines(Math.max(1, Math.floor(available / CONTENT_LINE_HEIGHT)));
+  // Defer clamping to after the first (unclamped) render so onTextLayout can
+  // capture the true total line count before the constant clamp is applied.
+  const onLayout = (_e: LayoutChangeEvent) => {
+    setMaxLines(CARD_MAX_LINES);
   };
 
   const onTextLayout = (e: { nativeEvent: TextLayoutEventData }) => {
@@ -105,7 +117,9 @@ function CopaCard({ item }: { item: CopaItem }) {
       {({ pressed }) => (
         <ThemedView
           type="backgroundElement"
-          style={[styles.card, pressed && styles.pressed]}
+          // Fixed height keeps every tile uniform; expanding a card lets it grow
+          // past the fixed height to reveal the full content.
+          style={[styles.card, { height: expanded ? undefined : COPA_CARD_HEIGHT }, pressed && styles.pressed]}
           onLayout={onLayout}>
           <View style={styles.header}>
             {overflowing && (
@@ -126,9 +140,13 @@ function CopaCard({ item }: { item: CopaItem }) {
             </ThemedText>
             {item.favorite && <FavoriteStar size={14} style={styles.favoriteStar} />}
           </View>
-          <ThemedText numberOfLines={clamp ? maxLines : undefined} onTextLayout={onTextLayout}>
-            {text}
-          </ThemedText>
+          {/* Flexes to fill the fixed height and clips overflow so the footer
+              stays pinned to the bottom edge of every tile. */}
+          <View style={styles.contentWrap}>
+            <ThemedText numberOfLines={clamp ? maxLines : undefined} onTextLayout={onTextLayout}>
+              {text}
+            </ThemedText>
+          </View>
           <View style={styles.footer}>
             <Feather name={copied ? 'check' : 'copy'} size={18} color={theme.textSecondary} />
           </View>
@@ -341,6 +359,12 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: Spacing.one,
   },
+  // Takes the slack between header and footer inside the fixed-height card and
+  // clips any text that runs past the clamped line count.
+  contentWrap: {
+    flex: 1,
+    overflow: 'hidden',
+  },
   footer: {
     marginTop: Spacing.two,
     alignItems: 'flex-end',
@@ -352,8 +376,9 @@ const styles = StyleSheet.create({
     opacity: 0.6,
   },
   // File-block card: a full-bleed thumbnail with the footer overlaid on a scrim.
+  // Shares the fixed tile height so file and text blocks line up in a row.
   fileCard: {
-    height: 180,
+    height: COPA_CARD_HEIGHT,
     borderRadius: Spacing.three,
     overflow: 'hidden',
     justifyContent: 'flex-end',

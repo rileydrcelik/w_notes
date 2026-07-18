@@ -11,6 +11,7 @@ import { hexToRgba, Spacing, type Palette } from '@/constants/theme';
 import type { Folder, Note } from '@/data/notes';
 import { sentryTarget } from '@/lib/sentry-note';
 import { githubTarget } from '@/lib/github-note';
+import { useTileHeight } from '@/lib/grid';
 import { projectConfig } from '@/lib/project';
 import { useDoubleTap } from '@/hooks/use-double-tap';
 import { useTheme } from '@/hooks/use-theme';
@@ -55,6 +56,7 @@ function PlainFolderCard({ folder }: { folder: Folder }) {
   const theme = useTheme();
   const count = getNotesInFolder(folder.id).length;
   const selected = isSelected('folder', folder.id);
+  const tileHeight = useTileHeight();
 
   // Tap opens the folder; double-tap favorites it. In selection mode a tap
   // instead toggles this card's selection.
@@ -66,7 +68,7 @@ function PlainFolderCard({ folder }: { folder: Folder }) {
 
   return (
     <Pressable
-      style={({ pressed }) => [styles.cardWrapper, pressed && styles.pressed]}
+      style={({ pressed }) => [styles.cardWrapper, { height: tileHeight }, pressed && styles.pressed]}
       onPress={active ? onSelectToggle : openOrFavorite}
       onLongPress={onSelectToggle}>
       <ThemedView style={styles.folder}>
@@ -103,6 +105,7 @@ function ProjectFolderCard({ folder }: { folder: Folder }) {
   const theme = useTheme();
   const selected = isSelected('folder', folder.id);
   const config = projectConfig(folder);
+  const tileHeight = useTileHeight();
 
   const openOrFavorite = useDoubleTap(
     () => router.push({ pathname: '/project/[id]', params: { id: folder.id } }),
@@ -112,7 +115,7 @@ function ProjectFolderCard({ folder }: { folder: Folder }) {
 
   return (
     <Pressable
-      style={({ pressed }) => [styles.cardWrapper, pressed && styles.pressed]}
+      style={({ pressed }) => [styles.cardWrapper, { height: tileHeight }, pressed && styles.pressed]}
       onPress={active ? onSelectToggle : openOrFavorite}
       onLongPress={onSelectToggle}>
       <ThemedView style={styles.folder}>
@@ -167,10 +170,11 @@ function TextNoteCard({ note }: { note: Note }) {
   // (bold, italics, lists, checkboxes, …) rather than stripped plain text.
   const html = useMemo(() => previewHtmlStyle(theme), [theme]);
   const textStyle = useMemo(() => ({ ...PREVIEW_TEXT, color: theme.textSecondary }), [theme]);
+  const tileHeight = useTileHeight();
 
   return (
     <Pressable
-      style={({ pressed }) => [styles.cardWrapper, pressed && styles.pressed]}
+      style={({ pressed }) => [styles.cardWrapper, { height: tileHeight }, pressed && styles.pressed]}
       onPress={active ? onSelectToggle : openOrFavorite}
       onLongPress={onSelectToggle}>
       <ThemedView type="backgroundElementAlt" style={[styles.card, selected && styles.selected]}>
@@ -202,6 +206,7 @@ function SentryNoteCard({ note }: { note: Note }) {
   const selected = isSelected('note', note.id);
 
   const target = sentryTarget(note);
+  const tileHeight = useTileHeight();
 
   const openOrFavorite = useDoubleTap(
     () => router.push({ pathname: '/sentry/[id]', params: { id: note.id } }),
@@ -211,7 +216,7 @@ function SentryNoteCard({ note }: { note: Note }) {
 
   return (
     <Pressable
-      style={({ pressed }) => [styles.cardWrapper, pressed && styles.pressed]}
+      style={({ pressed }) => [styles.cardWrapper, { height: tileHeight }, pressed && styles.pressed]}
       onPress={active ? onSelectToggle : openOrFavorite}
       onLongPress={onSelectToggle}>
       <ThemedView type="backgroundElementAlt" style={[styles.card, selected && styles.selected]}>
@@ -238,6 +243,7 @@ function GithubNoteCard({ note }: { note: Note }) {
   const selected = isSelected('note', note.id);
 
   const target = githubTarget(note);
+  const tileHeight = useTileHeight();
 
   const openOrFavorite = useDoubleTap(
     () => router.push({ pathname: '/github/[id]', params: { id: note.id } }),
@@ -247,7 +253,7 @@ function GithubNoteCard({ note }: { note: Note }) {
 
   return (
     <Pressable
-      style={({ pressed }) => [styles.cardWrapper, pressed && styles.pressed]}
+      style={({ pressed }) => [styles.cardWrapper, { height: tileHeight }, pressed && styles.pressed]}
       onPress={active ? onSelectToggle : openOrFavorite}
       onLongPress={onSelectToggle}>
       <ThemedView type="backgroundElementAlt" style={[styles.card, selected && styles.selected]}>
@@ -268,14 +274,17 @@ function GithubNoteCard({ note }: { note: Note }) {
 
 const styles = StyleSheet.create({
   cardWrapper: {
-    flex: 1,
+    // The surrounding View cell (in each grid screen) is the flex item that
+    // sets the column width; this card stretches to it and takes its explicit
+    // per-tile height (applied inline). No `flex: 1` — inside the height-less
+    // cell it would fight the explicit height and make row heights inconsistent.
+    minWidth: 0,
   },
   pressed: {
     opacity: 0.6,
   },
   card: {
     flex: 1,
-    minHeight: 120,
     borderRadius: Spacing.three,
     padding: Spacing.three,
     gap: Spacing.two,
@@ -290,7 +299,6 @@ const styles = StyleSheet.create({
   },
   folder: {
     flex: 1,
-    minHeight: 120,
     backgroundColor: 'transparent',
   },
   folderTabRow: {

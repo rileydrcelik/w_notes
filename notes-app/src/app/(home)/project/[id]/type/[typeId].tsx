@@ -12,7 +12,6 @@ import * as Clipboard from 'expo-clipboard';
 import { Stack, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Alert, FlatList, Pressable, StyleSheet, View } from 'react-native';
-import Animated, { FadeIn } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { IssueAttributesSheet } from '@/components/notes/issue-attributes-sheet';
@@ -25,6 +24,7 @@ import { useDoubleTap } from '@/hooks/use-double-tap';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
 import { useTheme } from '@/hooks/use-theme';
 import { effectiveTypeIds, normalizeTypeIds, type Issue, type IssueAttrValue } from '@/data/notes';
+import { GRID_COLUMNS, gridEdgePadding, trailingSpacers, useGridColumnWidth, useTileHeight } from '@/lib/grid';
 import { parseTypeConfig, projectConfig, type AttrDef } from '@/lib/project';
 import {
   getGithubIssueDetail,
@@ -103,7 +103,7 @@ function AttrSummary({ attributes, attrs }: { attributes: AttrDef[]; attrs: Issu
   );
 }
 
-function IssueRow({
+function IssueCard({
   issue,
   attributes,
   otherTypes,
@@ -124,12 +124,16 @@ function IssueRow({
   onCopy: () => void;
 }) {
   const theme = useTheme();
+  // Same shared tile height the note/folder feed uses, so issue cards line up
+  // uniformly. Expanding a card lets it grow past the fixed height to reveal the
+  // full description (the copa pattern) rather than clipping it forever.
+  const tileHeight = useTileHeight();
   const [expanded, setExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
   // Single tap expands the description; double tap toggles done.
   const doubleTap = useDoubleTap(() => setExpanded((v) => !v), onToggleDone);
   const contextMenuRef = useContextMenu(onToggleSelect);
-  // The left status icon is a one-tap shortcut: mark done / undo (or, in
+  // The corner status icon is a one-tap shortcut: mark done / undo (or, in
   // selection mode, toggle this issue's selection like the rest of the card).
   const onStatusPress = selectionActive ? onToggleSelect : onToggleDone;
 
@@ -141,9 +145,9 @@ function IssueRow({
   }, [onCopy]);
 
   return (
-    // The copy button is a sibling of the card Pressable (not a child) so it
-    // isn't a nested <button> inside the card's <button> on web.
-    <View style={styles.rowWrapper}>
+    // The status/copy buttons are siblings of the card Pressable (not children)
+    // so they aren't nested <button>s inside the card's <button> on web.
+    <View style={styles.tile}>
       <Pressable
         ref={contextMenuRef}
         accessibilityRole="button"
@@ -151,8 +155,10 @@ function IssueRow({
         accessibilityLabel={`${issue.title || 'Issue'}${issue.done ? ', done' : ''}`}
         onPress={selectionActive ? onToggleSelect : doubleTap}
         onLongPress={onToggleSelect}
-        style={({ pressed }) => pressed && styles.pressed}>
-        <ThemedView type="backgroundElementAlt" style={[styles.card, selected && styles.cardSelected]}>
+        style={({ pressed }) => [styles.cardPressable, pressed && styles.pressed]}>
+        <ThemedView
+          type="backgroundElementAlt"
+          style={[styles.card, { height: expanded ? undefined : tileHeight }, selected && styles.cardSelected]}>
           <View style={styles.cardHeader}>
             <ThemedText
               type="smallBold"
@@ -185,12 +191,14 @@ function IssueRow({
 
           <AttrSummary attributes={attributes} attrs={issue.attrs} />
 
-          {expanded && !!issue.description && (
-            <Animated.View entering={FadeIn.duration(160)}>
-              <ThemedText type="small" themeColor="textSecondary" style={styles.description}>
-                {issue.description}
-              </ThemedText>
-            </Animated.View>
+          {!!issue.description && (
+            <ThemedText
+              type="small"
+              themeColor="textSecondary"
+              numberOfLines={expanded ? undefined : 4}
+              style={styles.description}>
+              {issue.description}
+            </ThemedText>
           )}
         </ThemedView>
       </Pressable>
@@ -231,7 +239,7 @@ function IssueRow({
         style={({ pressed }) => [styles.copyButton, pressed && styles.pressed]}>
         <Feather
           name={copied ? 'check' : 'copy'}
-          size={22}
+          size={18}
           color={copied ? DONE_COLOR : theme.textSecondary}
         />
       </Pressable>
@@ -243,6 +251,7 @@ export default function IssueTypeScreen() {
   const { id, typeId } = useLocalSearchParams<{ id: string; typeId: string }>();
   const insets = useSafeAreaInsets();
   const tabBarInset = useTabBarInset();
+  const columnWidth = useGridColumnWidth();
   const { getFolder, getNote, getNotesInFolder } = useNotes();
   const { issues, getIssuesForNote, setDone, updateIssue, deleteIssue } = useIssues();
   const {
@@ -268,6 +277,14 @@ export default function IssueTypeScreen() {
   const attributes = useMemo(() => config?.attributes ?? [], [config]);
   const connected = parseTypeConfig(typeNote?.pluginConfig).githubConnected;
   const data = useMemo(() => getIssuesForNote(typeId), [getIssuesForNote, typeId]);
+  // Grid rows: the issues plus transparent spacers padding the last row so its
+  // cards stay one column wide (same layout as the note/folder feed).
+  type GridRow = Issue | { spacer: true; id: string };
+  const gridData = useMemo<GridRow[]>(() => {
+    const rows: GridRow[] = [...data];
+    for (let i = 0; i < trailingSpacers(data.length); i++) rows.push({ spacer: true, id: `spacer-${i}` });
+    return rows;
+  }, [data]);
   // The project's issue-type notes (id + title), ordered — powers both the Types
   // picker in the edit sheet and the "other types" chips on each card.
   const typeNotesList = useMemo(
@@ -446,11 +463,14 @@ export default function IssueTypeScreen() {
       <ThemedView style={styles.container}>
         <Stack.Screen options={{ headerShown: false }} />
         <FlatList
-          data={data}
+          data={gridData}
           keyExtractor={(item) => item.id}
+          numColumns={GRID_COLUMNS}
+          columnWrapperStyle={styles.row}
           extraData={{ selectionActive, selectedIds }}
           contentContainerStyle={[
             styles.content,
+            gridEdgePadding,
             { paddingTop: headerTop, paddingBottom: tabBarInset },
           ]}
           ListHeaderComponent={
@@ -468,21 +488,26 @@ export default function IssueTypeScreen() {
               </ThemedText>
             </View>
           }
-          renderItem={({ item }) => (
-            <IssueRow
-              issue={item}
-              attributes={attributes}
-              otherTypes={effectiveTypeIds(item)
-                .filter((tid) => tid !== typeId)
-                .map((tid) => typeTitleById.get(tid))
-                .filter((t): t is string => !!t)}
-              selectionActive={selectionActive}
-              selected={isSelected(item.id)}
-              onToggleSelect={() => toggle(item.id)}
-              onToggleDone={() => syncDone(item, !item.done)}
-              onCopy={() => void Clipboard.setStringAsync(issueToClipboardText(item))}
-            />
-          )}
+          renderItem={({ item }) => {
+            if ('spacer' in item) return <View style={[styles.cardCell, { width: columnWidth }]} />;
+            return (
+              <View style={[styles.cardCell, { width: columnWidth }]}>
+                <IssueCard
+                  issue={item}
+                  attributes={attributes}
+                  otherTypes={effectiveTypeIds(item)
+                    .filter((tid) => tid !== typeId)
+                    .map((tid) => typeTitleById.get(tid))
+                    .filter((t): t is string => !!t)}
+                  selectionActive={selectionActive}
+                  selected={isSelected(item.id)}
+                  onToggleSelect={() => toggle(item.id)}
+                  onToggleDone={() => syncDone(item, !item.done)}
+                  onCopy={() => void Clipboard.setStringAsync(issueToClipboardText(item))}
+                />
+              </View>
+            );
+          }}
           ListEmptyComponent={
             <ThemedText themeColor="textSecondary" style={styles.state}>
               No issues yet. Tap + to add one.
@@ -512,59 +537,63 @@ export default function IssueTypeScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
-  content: { paddingHorizontal: Spacing.three, gap: Spacing.two },
+  content: { paddingHorizontal: Spacing.three, gap: Spacing.three },
   header: { gap: Spacing.one, marginBottom: Spacing.two },
   headerTitleRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.two },
   headerTitle: { flexShrink: 1 },
+  // Grid row/cell — mirrors the note/folder feed: fixed one-column width (inline)
+  // with flexGrow:0 so a card can't stretch into a partial row's empty space.
+  row: { gap: Spacing.three, alignItems: 'flex-start' },
+  cardCell: { flexGrow: 0, flexShrink: 1, minWidth: 0, overflow: 'hidden' },
+  // Positioning context for the status/copy overlay buttons; wraps the card
+  // Pressable so those buttons stay siblings (not nested <button>s on web).
+  tile: { position: 'relative' },
+  cardPressable: {},
   card: {
     borderRadius: Spacing.three,
     padding: Spacing.three,
     gap: Spacing.two,
     borderWidth: 1.5,
     borderColor: 'transparent',
+    // Clip content to the tile when collapsed (fixed height); the card grows to
+    // fit when expanded so nothing is lost.
+    overflow: 'hidden',
   },
   cardSelected: { borderColor: ACCENT, backgroundColor: hexToRgba(ACCENT, 0.1) },
-  // Reserve room on both edges so the title/badge never slide under the left
-  // status toggle or the right copy button.
+  // Reserve room on the left so the title/badges never slide under the top-left
+  // status toggle.
   cardHeader: {
     flexDirection: 'row',
     alignItems: 'flex-start',
     gap: Spacing.two,
-    paddingLeft: Spacing.four,
-    paddingRight: 44,
+    paddingLeft: Spacing.three,
   },
-  cardTitle: { flex: 1 },
+  cardTitle: { flex: 1, minWidth: 0 },
   doneTitle: { textDecorationLine: 'line-through', opacity: 0.6 },
   ghBadge: { flexDirection: 'row', alignItems: 'center', gap: 2 },
   ghBadgeText: { color: GITHUB_ACCENT, fontSize: 11 },
-  rowWrapper: { position: 'relative' },
-  // One-tap done/undo toggle, overlaid on the card's top-left where the status
-  // icon sits. A sibling (not a child) of the card Pressable so it isn't a
-  // nested button on web and its tap doesn't bubble to the card.
+  // One-tap done/undo toggle, overlaid on the card's top-left corner. A sibling
+  // (not a child) of the card Pressable so it isn't a nested button on web and
+  // its tap doesn't bubble to the card.
   statusButton: {
     position: 'absolute',
-    top: 0,
-    left: Spacing.three,
-    paddingTop: Spacing.three,
-    paddingRight: Spacing.two,
-    paddingBottom: Spacing.two,
+    top: Spacing.two,
+    left: Spacing.two,
+    padding: Spacing.half,
   },
-  // Vertically centered on the card's right edge.
+  // Overlaid on the card's bottom-right corner.
   copyButton: {
     position: 'absolute',
-    top: 0,
-    bottom: 0,
+    bottom: Spacing.two,
     right: Spacing.two,
-    justifyContent: 'center',
-    alignItems: 'center',
-    paddingHorizontal: Spacing.two,
+    padding: Spacing.half,
   },
   summaryRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
     alignItems: 'center',
     gap: Spacing.two,
-    marginLeft: Spacing.four,
+    marginLeft: Spacing.three,
   },
   summaryChip: {
     paddingVertical: 1,
@@ -578,7 +607,7 @@ const styles = StyleSheet.create({
     flexWrap: 'wrap',
     alignItems: 'center',
     gap: Spacing.one,
-    marginLeft: Spacing.four,
+    marginLeft: Spacing.three,
   },
   typeTag: {
     flexDirection: 'row',
@@ -590,7 +619,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
   },
   typeTagText: { color: ACCENT, fontSize: 11 },
-  description: { marginLeft: Spacing.four, lineHeight: 19 },
+  description: { marginLeft: Spacing.three, lineHeight: 19 },
   state: { textAlign: 'center', marginTop: Spacing.five },
   pressed: { opacity: 0.6 },
 });

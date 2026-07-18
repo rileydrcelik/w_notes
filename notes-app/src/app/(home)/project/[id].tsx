@@ -19,7 +19,7 @@ import { SwipeBackView } from '@/components/swipe-back-view';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { hexToRgba, Spacing } from '@/constants/theme';
-import { GRID_COLUMNS, gridEdgePadding, trailingSpacers } from '@/lib/grid';
+import { GRID_COLUMNS, gridEdgePadding, trailingSpacers, useGridColumnWidth, useTileHeight } from '@/lib/grid';
 import { useContextMenu } from '@/hooks/use-context-menu';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
 import { useTheme } from '@/hooks/use-theme';
@@ -62,11 +62,12 @@ function IssueTypeCard({ projectId, note }: { projectId: string; note: Note }) {
   const onSelectToggle = () => toggle({ type: 'issuetype', id: note.id });
   // Web right-click parity with long-press (no-op on native).
   const contextMenuRef = useContextMenu(onSelectToggle);
+  const tileHeight = useTileHeight();
 
   return (
     <Pressable
       ref={contextMenuRef}
-      style={({ pressed }) => [styles.cardWrapper, pressed && styles.pressed]}
+      style={({ pressed }) => [styles.cardWrapper, { height: tileHeight }, pressed && styles.pressed]}
       onPress={
         active
           ? onSelectToggle
@@ -136,6 +137,7 @@ export default function ProjectScreen() {
   const theme = useTheme();
   const insets = useSafeAreaInsets();
   const tabBarInset = useTabBarInset();
+  const columnWidth = useGridColumnWidth();
   const { getFolder, getNotesInFolder, getSubfolders, updateFolder, createIssueTypeNote } =
     useNotes();
   const { issues, hydrated, createIssue, updateIssue } = useIssues();
@@ -313,10 +315,18 @@ export default function ProjectScreen() {
             </View>
           }
           renderItem={({ item }) => {
-            if (item.kind === 'spacer') return <View style={styles.spacer} />;
-            if (item.kind === 'folder') return <FolderCard folder={item.folder} />;
-            if (item.kind === 'note') return <NoteCard note={item.note} />;
-            return <IssueTypeCard projectId={id} note={item.note} />;
+            // Wrap every cell in a View so the row distributes evenly on web
+            // (a Pressable flex child sizes differently from a View one).
+            if (item.kind === 'spacer') return <View style={[styles.cardCell, { width: columnWidth }]} />;
+            const card =
+              item.kind === 'folder' ? (
+                <FolderCard folder={item.folder} />
+              ) : item.kind === 'note' ? (
+                <NoteCard note={item.note} />
+              ) : (
+                <IssueTypeCard projectId={id} note={item.note} />
+              );
+            return <View style={[styles.cardCell, { width: columnWidth }]}>{card}</View>;
           }}
           ListEmptyComponent={
             <ThemedText themeColor="textSecondary" style={styles.state}>
@@ -335,12 +345,15 @@ const styles = StyleSheet.create({
   header: { gap: Spacing.one, marginBottom: Spacing.one },
   headerTitleRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.two },
   titleInput: { flex: 1, fontSize: 24, lineHeight: 30, fontWeight: '700' },
-  row: { gap: Spacing.three },
-  spacer: { flex: 1 },
-  cardWrapper: { flex: 1 },
+  row: { gap: Spacing.three, alignItems: 'flex-start' },
+  // Fixed one-column width (applied inline) + flexGrow:0 so a card can't stretch
+  // past its column into a partial row's empty space (what made them too wide).
+  cardCell: { flexGrow: 0, flexShrink: 1, minWidth: 0, overflow: 'hidden' },
+  // No `flex: 1` — the cardCell sets width; the card stretches to it and takes
+  // its explicit height (flex here would fight the height, skewing row heights).
+  cardWrapper: { minWidth: 0 },
   card: {
     flex: 1,
-    minHeight: 120,
     borderRadius: Spacing.three,
     padding: Spacing.three,
     gap: Spacing.two,
@@ -350,10 +363,12 @@ const styles = StyleSheet.create({
   // Highlight for a selected (long-pressed/right-clicked) type card.
   cardSelected: { borderColor: SELECT_ACCENT, backgroundColor: hexToRgba(SELECT_ACCENT, 0.12) },
   cardTop: { flexDirection: 'row', alignItems: 'center', gap: Spacing.one },
-  cardName: { flex: 1 },
+  // minWidth:0 lets the nowrap title/rows ellipsize within the cell on web
+  // instead of forcing the card wider than its column.
+  cardName: { flex: 1, minWidth: 0 },
   previewList: { gap: Spacing.half },
   previewRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.one },
-  previewText: { flex: 1 },
+  previewText: { flex: 1, minWidth: 0 },
   previewDone: { textDecorationLine: 'line-through', opacity: 0.6 },
   state: { textAlign: 'center', marginTop: Spacing.five },
   pressed: { opacity: 0.6 },
