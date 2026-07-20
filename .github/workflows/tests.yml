@@ -70,6 +70,17 @@ jobs:
       - name: Run tests
         run: pytest -q
 
+      # Kept as a separate step rather than folded into the run above, so a
+      # failure says at a glance whether a deterministic contract test broke or
+      # a probabilistic race test did — they warrant very different reactions.
+      # Running them per-push rather than nightly is deliberate: pushes here are
+      # about daily anyway, so the cadence is the same, but a per-push failure
+      # is attributable to one commit instead of to a day's worth. And since the
+      # seq-gap test catches its regression ~3 runs in 4, repeated runs compound
+      # (1 - 0.25^n) — more runs is strictly better detection.
+      - name: Run slow tests
+        run: pytest -q -m slow
+
   web:
     name: Client (vitest)
     runs-on: ubuntu-latest
