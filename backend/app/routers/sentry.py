@@ -208,6 +208,22 @@ def _client() -> httpx.AsyncClient:
     )
 
 
+async def _guarded(call, upstream: str = "Sentry") -> httpx.Response:
+    """Run an upstream httpx call, turning a timeout/connection failure into a
+    clean HTTPException instead of letting it bubble up as an unhandled 500
+    (which is exactly what was reaching Sentry as a ReadTimeout crash)."""
+    try:
+        return await call
+    except httpx.TimeoutException as exc:
+        raise HTTPException(
+            status.HTTP_504_GATEWAY_TIMEOUT, f"{upstream} API request timed out"
+        ) from exc
+    except httpx.RequestError as exc:
+        raise HTTPException(
+            status.HTTP_502_BAD_GATEWAY, f"{upstream} API request failed"
+        ) from exc
+
+
 def _raise_for_upstream(resp: httpx.Response) -> None:
     """Turn a non-2xx Sentry response into an HTTPException. A 401/403 means our
     server token is bad/under-scoped — that's a server misconfig, not the
@@ -363,7 +379,7 @@ async def list_issues(
     if cursor:
         params["cursor"] = cursor
     async with _client() as client:
-        resp = await client.get(f"/projects/{org}/{project}/issues/", params=params)
+        resp = await _guarded(client.get(f"/projects/{org}/{project}/issues/", params=params))
     _raise_for_upstream(resp)
     return IssueList(
         issues=[IssueSummary.model_validate(item) for item in resp.json()],
@@ -378,7 +394,7 @@ async def get_issue(
 ) -> IssueSummary:
     _require_token()
     async with _client() as client:
-        resp = await client.get(f"/issues/{issue_id}/")
+        resp = await _guarded(client.get(f"/issues/{issue_id}/"))
     _raise_for_upstream(resp)
     return IssueSummary.model_validate(resp.json())
 
@@ -397,7 +413,7 @@ async def list_projects(
     async with _client() as client:
         for _ in range(20):
             params = {"cursor": cursor} if cursor else {}
-            resp = await client.get("/projects/", params=params)
+            resp = await _guarded(client.get("/projects/", params=params))
             _raise_for_upstream(resp)
             projects.extend(ProjectSummary.model_validate(p) for p in resp.json())
             cursor = _next_cursor(resp)
@@ -423,7 +439,7 @@ async def resolve_issue(
     Same PUT the autofix workflow makes after opening a PR."""
     _require_token()
     async with _client() as client:
-        resp = await client.put(f"/issues/{issue_id}/", json={"status": "resolved"})
+        resp = await _guarded(client.put(f"/issues/{issue_id}/", json={"status": "resolved"}))
     _raise_for_upstream(resp)
     return ResolveResponse(resolved=True, issue_id=issue_id)
 
@@ -435,7 +451,7 @@ async def latest_event(
 ) -> LatestEvent:
     _require_token()
     async with _client() as client:
-        resp = await client.get(f"/issues/{issue_id}/events/latest/")
+        resp = await _guarded(client.get(f"/issues/{issue_id}/events/latest/"))
     _raise_for_upstream(resp)
     event = resp.json()
     exc_type, exc_value = _exception_head(event)
@@ -631,11 +647,11 @@ async def _autofix_in_flight(gh: httpx.AsyncClient, repo: str, branch: str) -> b
     the pushed branch) — so we don't dispatch a second billed agent run to redo
     work that's already done or in progress. Mirrors the checks in
     ``autofix_status``."""
-    pulls = await gh.get(f"/repos/{repo}/pulls", params={"state": "all", "per_page": 30})
+    pulls = await _guarded(gh.get(f"/repos/{repo}/pulls", params={"state": "all", "per_page": 30}), "GitHub")
     _raise_for_github(pulls)
     if any((pr.get("head") or {}).get("ref") == branch for pr in pulls.json()):
         return True
-    br = await gh.get(f"/repos/{repo}/branches/{branch}")
+    br = await _guarded(gh.get(f"/repos/{repo}/branches/{branch}"), "GitHub")
     if br.status_code == 404:
         return False
     _raise_for_github(br)
@@ -653,10 +669,10 @@ async def autofix(
 
     # Pull issue detail + latest event to build the context bundle.
     async with _client() as client:
-        issue_resp = await client.get(f"/issues/{req.issue_id}/")
+        issue_resp = await _guarded(client.get(f"/issues/{req.issue_id}/"))
         _raise_for_upstream(issue_resp)
         issue = issue_resp.json()
-        event_resp = await client.get(f"/issues/{req.issue_id}/events/latest/")
+        event_resp = await _guarded(client.get(f"/issues/{req.issue_id}/events/latest/"))
         _raise_for_upstream(event_resp)
         event = event_resp.json()
 
@@ -674,9 +690,12 @@ async def autofix(
             )
 
         payload = _autofix_payload(issue, event, branch, model)
-        resp = await gh.post(
-            f"/repos/{repo}/dispatches",
-            json={"event_type": "sentry-autofix", "client_payload": payload},
+        resp = await _guarded(
+            gh.post(
+                f"/repos/{repo}/dispatches",
+                json={"event_type": "sentry-autofix", "client_payload": payload},
+            ),
+            "GitHub",
         )
     _raise_for_github(resp)
 
@@ -699,7 +718,7 @@ async def autofix_status(
 
     async with _github_client() as gh:
         # A PR is the strongest signal — check first (covers open/merged/closed).
-        pulls = await gh.get(f"/repos/{repo}/pulls", params={"state": "all", "per_page": 30})
+        pulls = await _guarded(gh.get(f"/repos/{repo}/pulls", params={"state": "all", "per_page": 30}), "GitHub")
         _raise_for_github(pulls)
         for pr in pulls.json():
             if (pr.get("head") or {}).get("ref") == branch:
@@ -718,7 +737,7 @@ async def autofix_status(
                 )
 
         # No PR yet — has the agent at least pushed the branch?
-        br = await gh.get(f"/repos/{repo}/branches/{branch}")
+        br = await _guarded(gh.get(f"/repos/{repo}/branches/{branch}"), "GitHub")
     if br.status_code == 404:
         return AutofixStatus(state="none", branch=branch)
     _raise_for_github(br)
