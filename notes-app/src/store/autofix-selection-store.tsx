@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useMemo, useRef, useState, type ReactNode } from 'react';
 
-type FixHandler = (ids: string[]) => void;
+type SelectionHandler = (ids: string[]) => void;
 
 type AutofixSelectionValue = {
   /** Whether issue-selection mode is active (a long-press/right-click turned it on). */
@@ -15,9 +15,17 @@ type AutofixSelectionValue = {
   /** Exit selection mode and drop every selection. */
   clear: () => void;
   /** The Sentry screen registers what "Fix" does; pass null on unmount. */
-  registerFixHandler: (fn: FixHandler | null) => void;
-  /** Invoked by the navbar's Fix button — runs the registered handler on the selection. */
+  registerFixHandler: (fn: SelectionHandler | null) => void;
+  /** The Sentry screen registers what "Dismiss" does (resolve in Sentry); null on unmount. */
+  registerIgnoreHandler: (fn: SelectionHandler | null) => void;
+  /** The Sentry screen registers what "Copy error message" does; null on unmount. */
+  registerCopyHandler: (fn: SelectionHandler | null) => void;
+  /** Invoked by the navbar's Fix action — runs the registered fix handler on the selection. */
   requestFix: () => void;
+  /** Invoked by the navbar's Dismiss action — resolves the selected issues in Sentry. */
+  requestIgnore: () => void;
+  /** Invoked by the navbar's Copy action — copies the selected issues' error text. */
+  requestCopy: () => void;
 };
 
 const AutofixSelectionContext = createContext<AutofixSelectionValue | null>(null);
@@ -38,11 +46,13 @@ export function AutofixSelectionProvider({ children }: { children: ReactNode }) 
   // deselecting the last issue automatically drops back to normal (tap-to-expand)
   // mode rather than getting stuck in an empty selection.
   const active = selectedIds.length > 0;
-  // A ref so registering/replacing the handler never re-renders consumers, and so
-  // `requestFix` stays stable.
-  const fixHandlerRef = useRef<FixHandler | null>(null);
-  // Mirror the selection into a ref so `requestFix` reads the latest without being
-  // recreated on every toggle.
+  // Refs so registering/replacing a handler never re-renders consumers, and so
+  // `requestFix`/`requestIgnore` stay stable.
+  const fixHandlerRef = useRef<SelectionHandler | null>(null);
+  const ignoreHandlerRef = useRef<SelectionHandler | null>(null);
+  const copyHandlerRef = useRef<SelectionHandler | null>(null);
+  // Mirror the selection into a ref so the request callbacks read the latest
+  // without being recreated on every toggle.
   const selectedRef = useRef<string[]>(selectedIds);
   selectedRef.current = selectedIds;
 
@@ -54,13 +64,31 @@ export function AutofixSelectionProvider({ children }: { children: ReactNode }) 
 
   const clear = useCallback(() => setSelectedIds([]), []);
 
-  const registerFixHandler = useCallback((fn: FixHandler | null) => {
+  const registerFixHandler = useCallback((fn: SelectionHandler | null) => {
     fixHandlerRef.current = fn;
+  }, []);
+
+  const registerIgnoreHandler = useCallback((fn: SelectionHandler | null) => {
+    ignoreHandlerRef.current = fn;
+  }, []);
+
+  const registerCopyHandler = useCallback((fn: SelectionHandler | null) => {
+    copyHandlerRef.current = fn;
   }, []);
 
   const requestFix = useCallback(() => {
     const ids = selectedRef.current;
     if (ids.length > 0) fixHandlerRef.current?.(ids);
+  }, []);
+
+  const requestIgnore = useCallback(() => {
+    const ids = selectedRef.current;
+    if (ids.length > 0) ignoreHandlerRef.current?.(ids);
+  }, []);
+
+  const requestCopy = useCallback(() => {
+    const ids = selectedRef.current;
+    if (ids.length > 0) copyHandlerRef.current?.(ids);
   }, []);
 
   const isSelected = useCallback((id: string) => selectedIds.includes(id), [selectedIds]);
@@ -74,9 +102,25 @@ export function AutofixSelectionProvider({ children }: { children: ReactNode }) 
       toggle,
       clear,
       registerFixHandler,
+      registerIgnoreHandler,
+      registerCopyHandler,
       requestFix,
+      requestIgnore,
+      requestCopy,
     }),
-    [active, selectedIds, isSelected, toggle, clear, registerFixHandler, requestFix],
+    [
+      active,
+      selectedIds,
+      isSelected,
+      toggle,
+      clear,
+      registerFixHandler,
+      registerIgnoreHandler,
+      registerCopyHandler,
+      requestFix,
+      requestIgnore,
+      requestCopy,
+    ],
   );
 
   return (

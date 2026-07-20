@@ -1,4 +1,5 @@
 import Feather from '@expo/vector-icons/Feather';
+import * as Clipboard from 'expo-clipboard';
 import { Stack, useLocalSearchParams } from 'expo-router';
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -21,7 +22,8 @@ import { useContextMenu } from '@/hooks/use-context-menu';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
 import { useTheme } from '@/hooks/use-theme';
 import { apiFetch } from '@/lib/sync/api';
-import { sentryTarget } from '@/lib/sentry-note';
+import { sentryTarget, type SentryTarget } from '@/lib/sentry-note';
+import { SentryConfig } from '@/components/notes/sentry-config';
 import { useAutofixSelection } from '@/store/autofix-selection-store';
 import { useNotes } from '@/store/notes-store';
 
@@ -154,6 +156,47 @@ function relativeTime(iso?: string | null): string {
   const months = Math.floor(days / 30);
   if (months < 12) return `${months}mo ago`;
   return `${Math.floor(months / 12)}y ago`;
+}
+
+/** One stack frame as plain text (for clipboard): `function (file:line)`, plus
+ * in-app source context with the errored line marked. */
+function frameToClipboardText(frame: StackFrame): string {
+  const loc = [frame.filename ?? frame.module, frame.lineno].filter(Boolean).join(':');
+  const head = `  ${frame.function || '<anonymous>'}${loc ? `  (${loc})` : ''}`;
+  if (frame.in_app && frame.context.length > 0) {
+    const ctx = frame.context
+      .map((c) => `    ${c.lineno === frame.lineno ? '>' : ' '} ${c.lineno} | ${c.code}`)
+      .join('\n');
+    return `${head}\n${ctx}`;
+  }
+  return head;
+}
+
+/** The full error as pasteable text: headline, exception, culprit, request, and
+ * the stack trace (nearest the crash first) with source context. `event` is null
+ * when its detail couldn't be fetched — then we fall back to the list fields. */
+function issueToClipboardText(issue: Issue, event: LatestEvent | null): string {
+  const headline = issue.title || issue.shortId || 'Issue';
+  const lines: string[] = [issue.level ? `[${issue.level.toUpperCase()}] ${headline}` : headline];
+
+  const exc = event
+    ? [event.exception_type, event.exception_value ?? event.message].filter(Boolean).join(': ')
+    : '';
+  if (exc && exc !== headline) lines.push(exc);
+  else if (!event && issue.metadataValue && issue.metadataValue !== issue.title)
+    lines.push(issue.metadataValue);
+
+  if (issue.culprit) lines.push(issue.culprit);
+  if (event?.request?.url)
+    lines.push(`Request: ${[event.request.method, event.request.url].filter(Boolean).join(' ')}`);
+
+  const frames = event?.frames ? [...event.frames].reverse() : [];
+  if (frames.length > 0)
+    lines.push('', 'Stack trace (nearest the crash first):', frames.map(frameToClipboardText).join('\n'));
+
+  const ref = [issue.shortId, issue.permalink].filter(Boolean).join('  ·  ');
+  if (ref) lines.push('', ref);
+  return lines.join('\n');
 }
 
 /**
@@ -578,12 +621,20 @@ function IssueCard({
 
 export default function SentryIssuesScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
-  const { getNote } = useNotes();
+  const { getNote, updateNote } = useNotes();
   const theme = useTheme();
   const insets = useSafeAreaInsets();
   const tabBarInset = useTabBarInset();
-  const { active: selectionActive, selectedIds, isSelected, toggle, clear, registerFixHandler } =
-    useAutofixSelection();
+  const {
+    active: selectionActive,
+    selectedIds,
+    isSelected,
+    toggle,
+    clear,
+    registerFixHandler,
+    registerIgnoreHandler,
+    registerCopyHandler,
+  } = useAutofixSelection();
 
   const note = getNote(id);
   // Memoize on the raw config so `target` keeps a stable identity across
@@ -631,8 +682,18 @@ export default function SentryIssuesScreen() {
   );
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- async load
     void load('initial');
   }, [load]);
+
+  // Write the picked org/project (+ optional repo) into the note's config. Once
+  // it lands, `target` resolves and the screen swaps from picker to issues list.
+  const handleConfigure = useCallback(
+    (config: SentryTarget) => {
+      updateNote(id, { pluginConfig: JSON.stringify(config) });
+    },
+    [id, updateNote],
+  );
 
   // Ship the selected issues to the autofix pipeline. Fired by the navbar's Fix
   // button via the shared selection store. Each issue is dispatched independently
@@ -644,7 +705,13 @@ export default function SentryIssuesScreen() {
         setFixStates((prev) => ({ ...prev, [issueId]: { phase: 'dispatching' } }));
         apiFetch<AutofixResponse>('/sentry/autofix', {
           method: 'POST',
-          body: { issue_id: issueId, org: target.org, project: target.project },
+          body: {
+            issue_id: issueId,
+            org: target.org,
+            project: target.project,
+            // Per-note repo when set; the backend falls back to its default.
+            ...(target.repo ? { repo: target.repo } : {}),
+          },
         })
           .then((res) => {
             attemptsRef.current[issueId] = 0;
@@ -669,12 +736,75 @@ export default function SentryIssuesScreen() {
     [target, clear],
   );
 
-  // Register the handler so the (screen-external) navbar Fix button can invoke it,
-  // and make sure selection doesn't linger once we leave the screen.
+  // Resolve the selected issues in Sentry (the navbar's "Ignore" action). Sentry
+  // drops resolved issues from the unresolved list, so remove them locally right
+  // away; on failure we put them back and surface the error banner.
+  const handleIgnore = useCallback(
+    (ids: string[]) => {
+      const idSet = new Set(ids);
+      const removed = issues.filter((i) => idSet.has(i.id));
+      setIssues((prev) => prev.filter((i) => !idSet.has(i.id)));
+      clear();
+      ids.forEach((issueId) => {
+        apiFetch(`/sentry/issues/${encodeURIComponent(issueId)}/resolve`, {
+          method: 'POST',
+        }).catch(() => {
+          // Restore the ones that failed to resolve, preserving list order.
+          const failed = removed.find((i) => i.id === issueId);
+          if (failed) {
+            setIssues((prev) => (prev.some((i) => i.id === issueId) ? prev : [failed, ...prev]));
+          }
+          setError('Could not resolve one or more issues in Sentry.');
+        });
+      });
+    },
+    [issues, clear],
+  );
+
+  // Copy the selected issues' full error text to the clipboard (the navbar's
+  // "Copy error message" action). Fetches each issue's latest event so the copy
+  // includes the exception + stack trace with source context — not just the
+  // headline, and regardless of which cards happen to be expanded.
+  const handleCopy = useCallback(
+    (ids: string[]) => {
+      const idSet = new Set(ids);
+      const selected = issues.filter((i) => idSet.has(i.id));
+      if (selected.length === 0) return;
+      clear();
+      void (async () => {
+        const blocks = await Promise.all(
+          selected.map(async (issue) => {
+            try {
+              const event = await apiFetch<LatestEvent>(
+                `/sentry/issues/${encodeURIComponent(issue.id)}/latest-event`,
+              );
+              return issueToClipboardText(issue, event);
+            } catch {
+              // Fall back to the list fields for any issue whose detail failed.
+              return issueToClipboardText(issue, null);
+            }
+          }),
+        );
+        await Clipboard.setStringAsync(blocks.join(`\n\n${'─'.repeat(48)}\n\n`));
+      })();
+    },
+    [issues, clear],
+  );
+
+  // Register the handlers so the (screen-external) navbar menu (Fix / Dismiss /
+  // Copy) can invoke them, and make sure selection doesn't linger once we leave.
   useEffect(() => {
     registerFixHandler(handleFix);
     return () => registerFixHandler(null);
   }, [registerFixHandler, handleFix]);
+  useEffect(() => {
+    registerIgnoreHandler(handleIgnore);
+    return () => registerIgnoreHandler(null);
+  }, [registerIgnoreHandler, handleIgnore]);
+  useEffect(() => {
+    registerCopyHandler(handleCopy);
+    return () => registerCopyHandler(null);
+  }, [registerCopyHandler, handleCopy]);
   useEffect(() => () => clear(), [clear]);
 
   // Poll the backend for each in-flight fix until a PR appears (or we give up).
@@ -691,7 +821,9 @@ export default function SentryIssuesScreen() {
           const timedOut = attempts >= 24; // ~2 min at 5s
           try {
             const status = await apiFetch<AutofixStatus>(
-              `/sentry/autofix/status?short_id=${encodeURIComponent(s.shortId!)}`,
+              `/sentry/autofix/status?short_id=${encodeURIComponent(s.shortId!)}${
+                target?.repo ? `&repo=${encodeURIComponent(target.repo)}` : ''
+              }`,
             );
             setFixStates((prev) =>
               prev[issueId]
@@ -711,7 +843,7 @@ export default function SentryIssuesScreen() {
       })();
     }, 5000);
     return () => clearTimeout(timer);
-  }, [fixStates]);
+  }, [fixStates, target?.repo]);
 
   const headerTop = insets.top + Spacing.four;
 
@@ -719,6 +851,13 @@ export default function SentryIssuesScreen() {
     <SwipeBackView>
       <ThemedView style={styles.container}>
         <Stack.Screen options={{ headerShown: false }} />
+        {!target ? (
+          <SentryConfig
+            paddingTop={headerTop}
+            paddingBottom={tabBarInset}
+            onSubmit={handleConfigure}
+          />
+        ) : (
         <FlatList
           data={issues}
           keyExtractor={(item) => item.id}
@@ -733,7 +872,7 @@ export default function SentryIssuesScreen() {
               <View style={styles.headerTitleRow}>
                 <Feather name="alert-triangle" size={22} color="#7553FF" />
                 <ThemedText type="subtitle" numberOfLines={1} style={styles.headerTitle}>
-                  {target?.project ?? 'Sentry'}
+                  {target?.projectName ?? target?.project ?? 'Sentry'}
                 </ThemedText>
               </View>
               {!!target?.org && (
@@ -774,6 +913,7 @@ export default function SentryIssuesScreen() {
             />
           )}
         />
+        )}
       </ThemedView>
     </SwipeBackView>
   );

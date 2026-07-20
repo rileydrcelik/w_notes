@@ -3,50 +3,68 @@ import { useRouter } from 'expo-router';
 import { Pressable, StyleSheet, View } from 'react-native';
 
 import { FavoriteStar } from '@/components/favorite-star';
-import { useItemOptions } from '@/components/item-options-modal';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
-import { Spacing } from '@/constants/theme';
+import { hexToRgba, Spacing } from '@/constants/theme';
 import type { Folder, Note } from '@/data/notes';
 import { sentryTarget } from '@/lib/sentry-note';
+import { githubTarget } from '@/lib/github-note';
+import { useTileHeight } from '@/lib/grid';
+import { projectConfig } from '@/lib/project';
 import { useContextMenu } from '@/hooks/use-context-menu';
 import { useDoubleTap } from '@/hooks/use-double-tap';
 import { useTheme } from '@/hooks/use-theme';
 import { htmlToPlainText } from '@/lib/html-text';
+import { useItemSelection } from '@/store/item-selection-store';
 import { useNotes } from '@/store/notes-store';
 
 const SENTRY_ACCENT = '#7553FF';
+const GITHUB_ACCENT = '#8250df';
+const PROJECT_ACCENT = '#16a394';
+/** Accent for a long-pressed/right-clicked (selected) card. */
+const SELECT_ACCENT = '#7a89b8';
 const PREVIEW_TEXT = { fontSize: 14, lineHeight: 20, fontWeight: '500' } as const;
 
 export function FolderCard({ folder }: { folder: Folder }) {
+  if (folder.kind === 'project') return <ProjectFolderCard folder={folder} />;
+  return <PlainFolderCard folder={folder} />;
+}
+
+function PlainFolderCard({ folder }: { folder: Folder }) {
   const router = useRouter();
   const { getNotesInFolder, toggleFolderFavorite } = useNotes();
-  const { openOptions } = useItemOptions();
+  const { active, isSelected, toggle } = useItemSelection();
   const theme = useTheme();
   const count = getNotesInFolder(folder.id).length;
+  const selected = isSelected('folder', folder.id);
 
-  // Tap opens the folder; double-tap favorites it.
-  const onPress = useDoubleTap(
+  // Tap opens the folder; double-tap favorites it. In selection mode a click
+  // instead toggles this card's selection.
+  const openOrFavorite = useDoubleTap(
     () => router.push({ pathname: '/folder/[id]', params: { id: folder.id } }),
     () => toggleFolderFavorite(folder.id),
   );
+  const onSelectToggle = () => toggle({ type: 'folder', id: folder.id });
 
-  // Right-click mirrors the mobile long-press (opens the options menu).
-  const contextMenuRef = useContextMenu(() => openOptions({ type: 'folder', id: folder.id }));
+  // Right-click mirrors the mobile long-press (toggles selection).
+  const contextMenuRef = useContextMenu(onSelectToggle);
+  const tileHeight = useTileHeight();
 
   return (
     <Pressable
       ref={contextMenuRef}
-      style={({ pressed }) => [styles.cardWrapper, pressed && styles.pressed]}
-      onPress={onPress}
-      onLongPress={() => openOptions({ type: 'folder', id: folder.id })}>
+      style={({ pressed }) => [styles.cardWrapper, { height: tileHeight }, pressed && styles.pressed]}
+      onPress={active ? onSelectToggle : openOrFavorite}
+      onLongPress={onSelectToggle}>
       <ThemedView style={styles.folder}>
         {/* Tab: flat top that slopes down to the body at 45° on the right. */}
         <View style={styles.folderTabRow}>
           <View style={[styles.folderTabFlat, { backgroundColor: theme.backgroundElement }]} />
           <View style={[styles.folderTabSlant, { borderBottomColor: theme.backgroundElement }]} />
         </View>
-        <ThemedView type="backgroundElement" style={styles.folderBody}>
+        <ThemedView
+          type="backgroundElement"
+          style={[styles.folderBody, selected && styles.selected]}>
           <ThemedView type="backgroundElement" style={styles.cardFooter}>
             <View style={styles.titleRow}>
               <ThemedText type="smallBold" numberOfLines={1} style={styles.titleText}>
@@ -64,23 +82,79 @@ export function FolderCard({ folder }: { folder: Folder }) {
   );
 }
 
+/** A task-manager project: a distinct card that opens the issue tracker. */
+function ProjectFolderCard({ folder }: { folder: Folder }) {
+  const router = useRouter();
+  const { toggleFolderFavorite } = useNotes();
+  const { active, isSelected, toggle } = useItemSelection();
+  const theme = useTheme();
+  const selected = isSelected('folder', folder.id);
+  const config = projectConfig(folder);
+
+  const openOrFavorite = useDoubleTap(
+    () => router.push({ pathname: '/project/[id]', params: { id: folder.id } }),
+    () => toggleFolderFavorite(folder.id),
+  );
+  const onSelectToggle = () => toggle({ type: 'folder', id: folder.id });
+  const contextMenuRef = useContextMenu(onSelectToggle);
+  const tileHeight = useTileHeight();
+
+  return (
+    <Pressable
+      ref={contextMenuRef}
+      style={({ pressed }) => [styles.cardWrapper, { height: tileHeight }, pressed && styles.pressed]}
+      onPress={active ? onSelectToggle : openOrFavorite}
+      onLongPress={onSelectToggle}>
+      <ThemedView style={styles.folder}>
+        {/* Same folder silhouette as a plain folder, marked as a task manager. */}
+        <View style={styles.folderTabRow}>
+          <View style={[styles.folderTabFlat, { backgroundColor: theme.backgroundElement }]} />
+          <View style={[styles.folderTabSlant, { borderBottomColor: theme.backgroundElement }]} />
+        </View>
+        <ThemedView type="backgroundElement" style={[styles.folderBody, selected && styles.selected]}>
+          <ThemedView type="backgroundElement" style={styles.cardFooter}>
+            <View style={styles.titleRow}>
+              <Feather name="columns" size={13} color={PROJECT_ACCENT} />
+              <ThemedText type="smallBold" numberOfLines={1} style={styles.titleText}>
+                {folder.name || 'Project'}
+              </ThemedText>
+              {folder.favorite && <FavoriteStar size={13} />}
+            </View>
+            <ThemedText type="small" themeColor="textSecondary" numberOfLines={1}>
+              Task manager{config?.repo ? ` · ${config.repo}` : ''}
+            </ThemedText>
+          </ThemedView>
+        </ThemedView>
+      </ThemedView>
+    </Pressable>
+  );
+}
+
 export function NoteCard({ note }: { note: Note }) {
+  // Plugin notes render as distinct cards that open live content instead of the
+  // text editor. Branch before any hooks so those cards keep their own hook order.
+  if (note.pluginType === 'sentry') return <SentryNoteCard note={note} />;
+  if (note.pluginType === 'github') return <GithubNoteCard note={note} />;
+  return <TextNoteCard note={note} />;
+}
+
+function TextNoteCard({ note }: { note: Note }) {
   const router = useRouter();
   const { toggleNoteFavorite } = useNotes();
-  const { openOptions } = useItemOptions();
+  const { active, isSelected, toggle } = useItemSelection();
+  const selected = isSelected('note', note.id);
 
-  // A Sentry plugin note renders as a distinct card that opens the live issues
-  // screen rather than the text editor.
-  if (note.pluginType === 'sentry') return <SentryNoteCard note={note} />;
-
-  // Tap opens the note; double-tap favorites it.
-  const onPress = useDoubleTap(
+  // Tap opens the note; double-tap favorites it. In selection mode a click
+  // instead toggles this card's selection.
+  const openOrFavorite = useDoubleTap(
     () => router.push({ pathname: '/note/[id]', params: { id: note.id } }),
     () => toggleNoteFavorite(note.id),
   );
+  const onSelectToggle = () => toggle({ type: 'note', id: note.id });
 
-  // Right-click mirrors the mobile long-press (opens the options menu).
-  const contextMenuRef = useContextMenu(() => openOptions({ type: 'note', id: note.id }));
+  // Right-click mirrors the mobile long-press (toggles selection).
+  const contextMenuRef = useContextMenu(onSelectToggle);
+  const tileHeight = useTileHeight();
 
   // No native rich-text renderer on web — flatten the HTML body to plain text
   // for the preview (same helper the copa list uses).
@@ -89,10 +163,10 @@ export function NoteCard({ note }: { note: Note }) {
   return (
     <Pressable
       ref={contextMenuRef}
-      style={({ pressed }) => [styles.cardWrapper, pressed && styles.pressed]}
-      onPress={onPress}
-      onLongPress={() => openOptions({ type: 'note', id: note.id })}>
-      <ThemedView type="backgroundElementAlt" style={styles.card}>
+      style={({ pressed }) => [styles.cardWrapper, { height: tileHeight }, pressed && styles.pressed]}
+      onPress={active ? onSelectToggle : openOrFavorite}
+      onLongPress={onSelectToggle}>
+      <ThemedView type="backgroundElementAlt" style={[styles.card, selected && styles.selected]}>
         <View style={styles.titleRow}>
           <ThemedText type="smallBold" numberOfLines={1} style={styles.titleText}>
             {note.title}
@@ -117,28 +191,31 @@ export function NoteCard({ note }: { note: Note }) {
 function SentryNoteCard({ note }: { note: Note }) {
   const router = useRouter();
   const { toggleNoteFavorite } = useNotes();
-  const { openOptions } = useItemOptions();
+  const { active, isSelected, toggle } = useItemSelection();
+  const selected = isSelected('note', note.id);
 
   const target = sentryTarget(note);
 
-  const onPress = useDoubleTap(
+  const openOrFavorite = useDoubleTap(
     () => router.push({ pathname: '/sentry/[id]', params: { id: note.id } }),
     () => toggleNoteFavorite(note.id),
   );
+  const onSelectToggle = () => toggle({ type: 'note', id: note.id });
 
-  const contextMenuRef = useContextMenu(() => openOptions({ type: 'note', id: note.id }));
+  const contextMenuRef = useContextMenu(onSelectToggle);
+  const tileHeight = useTileHeight();
 
   return (
     <Pressable
       ref={contextMenuRef}
-      style={({ pressed }) => [styles.cardWrapper, pressed && styles.pressed]}
-      onPress={onPress}
-      onLongPress={() => openOptions({ type: 'note', id: note.id })}>
-      <ThemedView type="backgroundElementAlt" style={styles.card}>
+      style={({ pressed }) => [styles.cardWrapper, { height: tileHeight }, pressed && styles.pressed]}
+      onPress={active ? onSelectToggle : openOrFavorite}
+      onLongPress={onSelectToggle}>
+      <ThemedView type="backgroundElementAlt" style={[styles.card, selected && styles.selected]}>
         <View style={styles.titleRow}>
           <Feather name="alert-triangle" size={15} color={SENTRY_ACCENT} />
           <ThemedText type="smallBold" numberOfLines={1} style={styles.titleText}>
-            {target?.project ?? 'Sentry'}
+            {target?.projectName ?? target?.project ?? 'Sentry'}
           </ThemedText>
           {note.favorite && <FavoriteStar size={13} />}
         </View>
@@ -150,23 +227,75 @@ function SentryNoteCard({ note }: { note: Note }) {
   );
 }
 
+/** A GitHub plugin note: a distinct card that opens the live issues screen. */
+function GithubNoteCard({ note }: { note: Note }) {
+  const router = useRouter();
+  const { toggleNoteFavorite } = useNotes();
+  const { active, isSelected, toggle } = useItemSelection();
+  const selected = isSelected('note', note.id);
+
+  const target = githubTarget(note);
+
+  const openOrFavorite = useDoubleTap(
+    () => router.push({ pathname: '/github/[id]', params: { id: note.id } }),
+    () => toggleNoteFavorite(note.id),
+  );
+  const onSelectToggle = () => toggle({ type: 'note', id: note.id });
+
+  const contextMenuRef = useContextMenu(onSelectToggle);
+  const tileHeight = useTileHeight();
+
+  return (
+    <Pressable
+      ref={contextMenuRef}
+      style={({ pressed }) => [styles.cardWrapper, { height: tileHeight }, pressed && styles.pressed]}
+      onPress={active ? onSelectToggle : openOrFavorite}
+      onLongPress={onSelectToggle}>
+      <ThemedView type="backgroundElementAlt" style={[styles.card, selected && styles.selected]}>
+        <View style={styles.titleRow}>
+          <Feather name="github" size={15} color={GITHUB_ACCENT} />
+          <ThemedText type="smallBold" numberOfLines={1} style={styles.titleText}>
+            {target?.repoName ?? target?.repo ?? 'GitHub'}
+          </ThemedText>
+          {note.favorite && <FavoriteStar size={13} />}
+        </View>
+        <ThemedText type="small" themeColor="textSecondary" numberOfLines={1}>
+          Issues{target?.repo ? ` · ${target.repo}` : ''}
+        </ThemedText>
+      </ThemedView>
+    </Pressable>
+  );
+}
+
 const styles = StyleSheet.create({
   cardWrapper: {
-    flex: 1,
+    // The surrounding View cell (in each grid screen) is the flex item that
+    // sets the column width; this card stretches to that width and takes its
+    // explicit per-tile height (applied inline). No `flex: 1` here — inside the
+    // height-less cell it would fight the explicit height and make row heights
+    // inconsistent. minWidth:0 lets a nowrap title ellipsize instead of pushing
+    // the card wider than its column on web.
+    minWidth: 0,
   },
   pressed: {
     opacity: 0.6,
   },
   card: {
     flex: 1,
-    minHeight: 200,
     borderRadius: Spacing.three,
     padding: Spacing.three,
     gap: Spacing.two,
+    // Transparent border reserved so the selected state doesn't shift layout.
+    borderWidth: 2,
+    borderColor: 'transparent',
+  },
+  // Highlight for a selected (long-pressed/right-clicked) card.
+  selected: {
+    borderColor: SELECT_ACCENT,
+    backgroundColor: hexToRgba(SELECT_ACCENT, 0.12),
   },
   folder: {
     flex: 1,
-    minHeight: 200,
     backgroundColor: 'transparent',
   },
   folderTabRow: {
@@ -194,6 +323,9 @@ const styles = StyleSheet.create({
     borderTopLeftRadius: 0,
     padding: Spacing.three,
     gap: Spacing.two,
+    // Transparent border reserved so the selected state doesn't shift layout.
+    borderWidth: 2,
+    borderColor: 'transparent',
   },
   cardFooter: {
     gap: Spacing.half,
@@ -206,5 +338,8 @@ const styles = StyleSheet.create({
   },
   titleText: {
     flexShrink: 1,
+    // Allow the nowrap title to ellipsize within the narrowed cell instead of
+    // forcing the card wider than its column (web min-content floor).
+    minWidth: 0,
   },
 });

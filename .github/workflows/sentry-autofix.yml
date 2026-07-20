@@ -42,9 +42,20 @@ jobs:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
           base_branch: main
-          # Give Claude the file/edit/shell tools it needs to fix code and run git.
+          # Cost tiering: default to Haiku 4.5 (cheapest — most Sentry bugs are
+          # trivial, and every fix is PR-reviewed so a weak attempt just gets
+          # rejected). The backend can override per-issue via
+          # client_payload.details.model ("Sonnet on demand" for hard fixes); that
+          # path deliberately keeps Claude Code's default (capable) effort, since it
+          # only runs when Haiku wasn't enough. --max-turns is the runaway guard — a
+          # stuck run otherwise burns money for no PR. (A hard $ cap via
+          # --max-budget-usd is a further option once verified against this action's
+          # bundled CLI version.)
+          # NB: do NOT add --effort — Haiku 4.5 rejects the effort parameter.
           claude_args: |
             --allowedTools Edit,Read,Write,Bash
+            --model ${{ github.event.client_payload.details.model || 'claude-haiku-4-5' }}
+            --max-turns 50
           prompt: |
             A production error was reported by Sentry. Fix its root cause in this repository.
 
@@ -56,9 +67,11 @@ jobs:
             ${{ github.event.client_payload.short_id }}. In the PR body, summarize the root cause
             and the fix, and link the Sentry issue: ${{ github.event.client_payload.permalink }}
 
-            Keep the change minimal and focused on this bug. If you cannot confidently identify a
-            fix from the context below, open the PR anyway with your analysis and a proposed
-            direction rather than guessing broadly.
+            The stack frames in the payload below point at the code involved — start there.
+            Make the smallest fix that addresses the root cause; keep it minimal. Don't explore
+            or change files beyond the implicated ones unless the fix genuinely requires it. If
+            you cannot confidently identify a fix from the context below, open the PR anyway with
+            your analysis and a proposed direction rather than guessing broadly.
 
             --- Sentry issue ---
             Issue: ${{ github.event.client_payload.short_id }} — ${{ github.event.client_payload.title }}

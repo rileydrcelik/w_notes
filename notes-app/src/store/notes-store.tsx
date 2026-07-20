@@ -13,6 +13,8 @@ import { Sentry } from '@/lib/sentry';
 import { db, type TrashEntry } from '@/lib/db';
 import { isDbLockedError } from '@/lib/web-db-lock';
 import { requestSync, subscribeSynced, syncNow } from '@/lib/sync/sync-engine';
+import type { SentryTarget } from '@/lib/sentry-note';
+import type { GithubTarget } from '@/lib/github-note';
 import type { Folder, Note } from '@/data/notes';
 
 const today = () => new Date().toISOString().slice(0, 10);
@@ -23,6 +25,18 @@ export type { TrashEntry };
 
 const rid = (prefix: string) =>
   `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+/**
+ * Applies `patch` to the item with `id` and moves it to the front of the list.
+ * Modifying an item bumps its `updated_at` in the database (which orders the
+ * lists newest-first), so the optimistic state mirrors that by floating the
+ * touched item to the top — no wait for the next reload to reorder.
+ */
+const touch = <T extends { id: string }>(list: T[], id: string, patch: NoInfer<Partial<T>>): T[] => {
+  const idx = list.findIndex((item) => item.id === id);
+  if (idx === -1) return list;
+  return [{ ...list[idx], ...patch }, ...list.slice(0, idx), ...list.slice(idx + 1)];
+};
 
 /**
  * Reports a failed background persist/sync without disturbing the optimistic UI.
@@ -59,15 +73,40 @@ type NotesContextValue = {
   /** Creates an empty note in the given folder (null = root) and returns its id. */
   createNote: (folderId: string | null) => string;
   /**
-   * Creates a Sentry plugin note bound to an org/project (null folder = root)
-   * and returns its id. It renders that project's live issues, not an editable
-   * body — only the marker + config sync.
+   * Creates a Sentry plugin note (null folder = root) and returns its id. It
+   * renders a project's live issues, not an editable body — only the marker +
+   * config sync. `config` is optional: an unconfigured note opens a project
+   * picker, which writes the config in place via `updateNote`.
    */
-  createSentryNote: (config: { org: string; project: string }, folderId: string | null) => string;
+  createSentryNote: (folderId: string | null, config?: SentryTarget) => string;
+  /**
+   * Creates a GitHub plugin note (null folder = root) and returns its id. It
+   * renders a repo's live issues, not an editable body — only the marker +
+   * config sync. `config` is optional: an unconfigured note opens a repo picker,
+   * which writes the config in place via `updateNote`.
+   */
+  createGithubNote: (folderId: string | null, config?: GithubTarget) => string;
+  /**
+   * Creates a task-manager "project" folder (null parent = root) and returns its
+   * id. Created unconfigured — the project screen shows a name/repo setup UI,
+   * which writes the folder's `config` in place via `updateFolder`.
+   */
+  createProject: (parentId: string | null) => string;
+  /**
+   * Creates an issue-type note (`pluginType='issuetype'`) inside a project folder
+   * and returns its id. `title` is the type name (Bug/Feature/…); `connected`
+   * flags whether its issues mirror GitHub; `order` sets its position.
+   */
+  createIssueTypeNote: (
+    folderId: string,
+    title: string,
+    connected: boolean,
+    order: number,
+  ) => string;
   /** Creates an unnamed folder inside the given parent (null = root); returns its id. */
   createFolder: (parentId: string | null) => string;
-  updateNote: (id: string, patch: Partial<Pick<Note, 'title' | 'body'>>) => void;
-  updateFolder: (id: string, patch: Partial<Pick<Folder, 'name'>>) => void;
+  updateNote: (id: string, patch: Partial<Pick<Note, 'title' | 'body' | 'pluginConfig'>>) => void;
+  updateFolder: (id: string, patch: Partial<Pick<Folder, 'name' | 'config'>>) => void;
   /** Moves a note into a folder, or to the home screen when folderId is null. */
   moveNote: (id: string, folderId: string | null) => void;
   /** Moves a note to the trash. */
@@ -145,9 +184,11 @@ export function NotesProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const createSentryNote = useCallback<NotesContextValue['createSentryNote']>(
-    (config, folderId) => {
+    (folderId, config) => {
       const id = rid('note');
-      const pluginConfig = JSON.stringify(config);
+      // Omit config for an unconfigured note — the screen shows a project picker
+      // and writes the config in place once the user chooses.
+      const pluginConfig = config ? JSON.stringify(config) : undefined;
       // The card/screen derive their label from pluginConfig, so title stays
       // empty — a Sentry note carries no user-authored content.
       const note: Note = {
@@ -166,6 +207,63 @@ export function NotesProvider({ children }: { children: ReactNode }) {
     [],
   );
 
+  const createGithubNote = useCallback<NotesContextValue['createGithubNote']>(
+    (folderId, config) => {
+      const id = rid('note');
+      // Omit config for an unconfigured note — the screen shows a repo picker and
+      // writes the config in place once the user chooses.
+      const pluginConfig = config ? JSON.stringify(config) : undefined;
+      // The card/screen derive their label from pluginConfig, so title stays
+      // empty — a GitHub note carries no user-authored content.
+      const note: Note = {
+        id,
+        title: '',
+        body: '',
+        folderId,
+        updatedAt: today(),
+        pluginType: 'github',
+        pluginConfig,
+      };
+      setNotes((prev) => [note, ...prev]);
+      persist(db.createNote({ id, folderId, pluginType: 'github', pluginConfig }));
+      return id;
+    },
+    [],
+  );
+
+  const createProject = useCallback<NotesContextValue['createProject']>((parentId) => {
+    const id = rid('folder');
+    // Created unconfigured (kind marks it a project, but no config yet); the
+    // project screen collects name + repo and writes `config` in place.
+    const folder: Folder = { id, name: '', parentId, kind: 'project' };
+    setFolders((prev) => [folder, ...prev]);
+    persist(db.createFolder({ id, parentId, kind: 'project' }));
+    return id;
+  }, []);
+
+  const createIssueTypeNote = useCallback<NotesContextValue['createIssueTypeNote']>(
+    (folderId, title, connected, order) => {
+      const id = rid('note');
+      const pluginConfig = JSON.stringify({ githubConnected: connected, order });
+      const note: Note = {
+        id,
+        title,
+        body: '',
+        folderId,
+        updatedAt: today(),
+        pluginType: 'issuetype',
+        pluginConfig,
+      };
+      setNotes((prev) => [note, ...prev]);
+      // Seed the title too (the type name) — createNote starts a note empty, so
+      // set it right after via updateNote so it persists + syncs.
+      persist(db.createNote({ id, folderId, pluginType: 'issuetype', pluginConfig }));
+      persist(db.updateNote(id, { title }));
+      return id;
+    },
+    [],
+  );
+
   const createFolder = useCallback<NotesContextValue['createFolder']>((parentId) => {
     const id = rid('folder');
     // Prepend so the new folder surfaces first in the hierarchy.
@@ -175,21 +273,17 @@ export function NotesProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const updateNote = useCallback<NotesContextValue['updateNote']>((id, patch) => {
-    setNotes((prev) =>
-      prev.map((note) => (note.id === id ? { ...note, ...patch, updatedAt: today() } : note)),
-    );
+    setNotes((prev) => touch(prev, id, { ...patch, updatedAt: today() }));
     persist(db.updateNote(id, patch));
   }, []);
 
   const updateFolder = useCallback<NotesContextValue['updateFolder']>((id, patch) => {
-    setFolders((prev) => prev.map((folder) => (folder.id === id ? { ...folder, ...patch } : folder)));
+    setFolders((prev) => touch(prev, id, patch));
     persist(db.updateFolder(id, patch));
   }, []);
 
   const moveNote = useCallback<NotesContextValue['moveNote']>((id, folderId) => {
-    setNotes((prev) =>
-      prev.map((note) => (note.id === id ? { ...note, folderId, updatedAt: today() } : note)),
-    );
+    setNotes((prev) => touch(prev, id, { folderId, updatedAt: today() }));
     persist(db.updateNote(id, { folderId }));
   }, []);
 
@@ -268,16 +362,14 @@ export function NotesProvider({ children }: { children: ReactNode }) {
   );
 
   const markNoteShared = useCallback<NotesContextValue['markNoteShared']>((id) => {
-    setNotes((prev) => prev.map((note) => (note.id === id ? { ...note, shared: true } : note)));
+    setNotes((prev) => touch(prev, id, { shared: true, updatedAt: today() }));
     persist(db.updateNote(id, { shared: true }));
   }, []);
 
   const toggleNoteFavorite = useCallback<NotesContextValue['toggleNoteFavorite']>(
     (id) => {
       const next = !notes.find((n) => n.id === id)?.favorite;
-      setNotes((prev) =>
-        prev.map((note) => (note.id === id ? { ...note, favorite: next } : note)),
-      );
+      setNotes((prev) => touch(prev, id, { favorite: next, updatedAt: today() }));
       persist(db.updateNote(id, { favorite: next }));
     },
     [notes],
@@ -286,9 +378,7 @@ export function NotesProvider({ children }: { children: ReactNode }) {
   const toggleFolderFavorite = useCallback<NotesContextValue['toggleFolderFavorite']>(
     (id) => {
       const next = !folders.find((f) => f.id === id)?.favorite;
-      setFolders((prev) =>
-        prev.map((folder) => (folder.id === id ? { ...folder, favorite: next } : folder)),
-      );
+      setFolders((prev) => touch(prev, id, { favorite: next }));
       persist(db.updateFolder(id, { favorite: next }));
     },
     [folders],
@@ -306,6 +396,9 @@ export function NotesProvider({ children }: { children: ReactNode }) {
       getSubfolders: (parentId) => folders.filter((folder) => folder.parentId === parentId),
       createNote,
       createSentryNote,
+      createGithubNote,
+      createProject,
+      createIssueTypeNote,
       createFolder,
       updateNote,
       updateFolder,
@@ -324,6 +417,9 @@ export function NotesProvider({ children }: { children: ReactNode }) {
       trash,
       createNote,
       createSentryNote,
+      createGithubNote,
+      createProject,
+      createIssueTypeNote,
       createFolder,
       updateNote,
       updateFolder,
