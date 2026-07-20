@@ -35,12 +35,13 @@ import {
 import { useScreenFadeStyle } from '@/hooks/use-screen-fade';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
 import { useTheme } from '@/hooks/use-theme';
+import { htmlToPlainText } from '@/lib/html-text';
 import { noFocusOutline } from '@/lib/web-style';
 import { useCopa } from '@/store/copa-store';
 
 export default function CopaBlockScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
-  const { getCopa, updateCopa } = useCopa();
+  const { getCopa, updateCopa, deleteCopa } = useCopa();
   const theme = useTheme();
   const tabBarInset = useTabBarInset();
   const insets = useSafeAreaInsets();
@@ -112,18 +113,27 @@ export default function CopaBlockScreen() {
     return () => clearTimeout(timer);
   }, [label, content, id, updateCopa]);
 
-  // Flush any pending edit when leaving the screen — but only if the user
-  // actually edited, so leaving a block that changed underneath us (remote)
-  // never clobbers that remote change with our stale local copy.
+  // On leaving the screen: auto-delete a block left completely empty (no title,
+  // no body text), otherwise flush any pending edit. File blocks carry a file by
+  // design, so they're never treated as empty. Flushing stays gated on
+  // `editedRef` so leaving a block that changed underneath us (remote) never
+  // clobbers that remote change with our stale local copy.
   useEffect(
     () => () => {
-      if (!editedRef.current) return;
       const { id: sid, label: sl, content: sc, stored } = snapshot.current;
-      if (stored && (stored.label !== sl || stored.content !== sc)) {
+      if (!stored) return;
+      const isEmpty =
+        !stored.fileUri && sl.trim().length === 0 && htmlToPlainText(sc).length === 0;
+      if (isEmpty) {
+        deleteCopa(sid);
+        return;
+      }
+      if (!editedRef.current) return;
+      if (stored.label !== sl || stored.content !== sc) {
         updateCopa(sid, { label: sl, content: sc });
       }
     },
-    [updateCopa],
+    [updateCopa, deleteCopa],
   );
 
   if (!item) {

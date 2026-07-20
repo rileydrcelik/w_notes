@@ -8,6 +8,7 @@ import {
   Pressable,
   ScrollView,
   StyleSheet,
+  TextInput,
   View,
   useColorScheme as useDeviceScheme,
 } from 'react-native';
@@ -20,6 +21,11 @@ import { Colors, hexToRgba, Spacing, type Palette } from '@/constants/theme';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
 import { useTheme } from '@/hooks/use-theme';
 import { useAuth } from '@/lib/auth/auth-context';
+import {
+  useCreateOptions,
+  type CreateCredentialKey,
+  type CreateToggleKey,
+} from '@/store/create-options-store';
 import { useEditorPrefs } from '@/store/editor-prefs-store';
 import { useThemePref, type ThemeKey } from '@/store/theme-store';
 
@@ -102,6 +108,10 @@ export default function SettingsScreen() {
                 );
               })}
             </View>
+
+            {/* Which plugin options appear in the navbar's create (+) menu, plus
+                (inert) credential fields stored on-device. */}
+            <CreateOptionsSection />
 
             {/* Web edits the body with a rich editor that accepts markdown-style
                 keystrokes; the hints button reminds you of them. It's web-only,
@@ -259,6 +269,126 @@ function EditorSection() {
   );
 }
 
+/**
+ * Toggles for which plugin options show in the navbar's create (+) menu — Sentry
+ * views, GitHub views, and task managers — each defaulting on. Enabling one
+ * reveals its (currently inert) credential fields: they persist on-device but
+ * aren't yet wired to auth, since the server holds the real tokens.
+ */
+function CreateOptionsSection() {
+  const theme = useTheme();
+  const opts = useCreateOptions();
+
+  const toggles: { key: CreateToggleKey; label: string; description: string }[] = [
+    { key: 'sentryEnabled', label: 'Sentry views', description: 'Show “New Sentry view” in the create menu' },
+    { key: 'githubEnabled', label: 'GitHub views', description: 'Show “New GitHub view” in the create menu' },
+    { key: 'taskManagerEnabled', label: 'Task managers', description: 'Show “New task manager” in the create menu' },
+  ];
+
+  return (
+    <>
+      <ThemedText type="small" themeColor="textSecondary" style={styles.sectionLabel}>
+        CREATE OPTIONS
+      </ThemedText>
+      <View style={styles.options}>
+        {toggles.map((t) => {
+          const on = opts[t.key];
+          return (
+            <View key={t.key} style={styles.optionGroup}>
+              <Pressable
+                onPress={() => opts.setEnabled(t.key, !on)}
+                accessibilityRole="switch"
+                accessibilityState={{ checked: on }}
+                accessibilityLabel={t.label}
+                style={({ pressed }) => [pressed && styles.pressed]}>
+                <ThemedView type="backgroundElement" style={styles.row}>
+                  <View style={styles.rowText}>
+                    <ThemedText style={styles.optionLabel}>{t.label}</ThemedText>
+                    <ThemedText type="small" themeColor="textSecondary">
+                      {t.description}
+                    </ThemedText>
+                  </View>
+                  <View
+                    style={[
+                      styles.check,
+                      on
+                        ? { backgroundColor: ACCENT, borderColor: ACCENT }
+                        : { borderColor: hexToRgba(theme.textSecondary, 0.4) },
+                    ]}>
+                    {on && <MaterialCommunityIcons name="check" size={18} color={theme.background} />}
+                  </View>
+                </ThemedView>
+              </Pressable>
+
+              {t.key === 'sentryEnabled' && on && (
+                <CredentialField
+                  label="Sentry API token"
+                  value={opts.sentryToken}
+                  credKey="sentryToken"
+                  placeholder="Stored on device — not yet used"
+                  secure
+                />
+              )}
+              {t.key === 'githubEnabled' && on && (
+                <>
+                  <CredentialField
+                    label="GitHub token"
+                    value={opts.githubToken}
+                    credKey="githubToken"
+                    placeholder="Stored on device — not yet used"
+                    secure
+                  />
+                  <CredentialField
+                    label="Default repo"
+                    value={opts.githubRepo}
+                    credKey="githubRepo"
+                    placeholder="owner/name"
+                  />
+                </>
+              )}
+            </View>
+          );
+        })}
+      </View>
+    </>
+  );
+}
+
+/** A labelled text field for a stored (inert) create-option credential. */
+function CredentialField({
+  label,
+  value,
+  credKey,
+  placeholder,
+  secure,
+}: {
+  label: string;
+  value: string;
+  credKey: CreateCredentialKey;
+  placeholder?: string;
+  secure?: boolean;
+}) {
+  const theme = useTheme();
+  const { setCredential } = useCreateOptions();
+  return (
+    <View style={styles.credField}>
+      <ThemedText type="small" themeColor="textSecondary" style={styles.credLabel}>
+        {label}
+      </ThemedText>
+      <TextInput
+        value={value}
+        onChangeText={(v) => setCredential(credKey, v)}
+        placeholder={placeholder}
+        placeholderTextColor={theme.textSecondary}
+        autoCapitalize="none"
+        autoCorrect={false}
+        secureTextEntry={secure}
+        style={[styles.credInput, { color: theme.text, borderColor: hexToRgba(theme.text, 0.12) }]}
+      />
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
   container: {
     flex: 1,
@@ -312,6 +442,23 @@ const styles = StyleSheet.create({
   },
   options: {
     gap: Spacing.two,
+  },
+  optionGroup: {
+    gap: Spacing.two,
+  },
+  credField: {
+    gap: Spacing.half,
+    marginLeft: Spacing.three,
+  },
+  credLabel: {
+    marginLeft: Spacing.one,
+  },
+  credInput: {
+    borderWidth: 1.5,
+    borderRadius: Spacing.three,
+    paddingHorizontal: Spacing.three,
+    paddingVertical: Spacing.two,
+    fontSize: 15,
   },
   row: {
     flexDirection: 'row',

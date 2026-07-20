@@ -12,6 +12,7 @@ import { useColorScheme as useDeviceColorScheme } from 'react-native';
 
 import { Colors, lerpPalette, type Palette } from '@/constants/theme';
 import { db } from '@/lib/db';
+import { subscribeSynced } from '@/lib/sync/sync-engine';
 
 /** What the user picked in Settings. 'system' follows the device. */
 export type ThemeKey = 'system' | 'dark' | 'solarized' | 'solarizedDark';
@@ -75,17 +76,27 @@ export function AppThemeProvider({ children }: { children: ReactNode }) {
   // Only user-initiated changes animate; hydration / device flips snap.
   const animateNext = useRef(false);
 
-  // Hydrate the saved choice once on mount; default stays 'system' if unset.
+  // Hydrate the saved choice from SQLite; default stays 'system' if unset. Runs
+  // on mount, and again on every data refresh — notably when a web tab takes the
+  // DB over from another tab (see reopenDbAndRefresh) and can finally read the
+  // setting that failed while it was a follower (which otherwise left the theme
+  // stuck on the default). Re-reads snap (no animation) and are a no-op when the
+  // value is unchanged, so this stays quiet during normal syncs.
   useEffect(() => {
     let cancelled = false;
-    db
-      .getSetting(THEME_KEY)
-      .then((saved) => {
-        if (!cancelled && saved && isThemeKey(saved)) setThemeKeyState(saved);
-      })
-      .catch((e) => console.warn('[theme] failed to load saved theme:', e));
+    const hydrate = () => {
+      db
+        .getSetting(THEME_KEY)
+        .then((saved) => {
+          if (!cancelled && saved && isThemeKey(saved)) setThemeKeyState(saved);
+        })
+        .catch((e) => console.warn('[theme] failed to load saved theme:', e));
+    };
+    hydrate();
+    const unsub = subscribeSynced(hydrate);
     return () => {
       cancelled = true;
+      unsub();
     };
   }, []);
 

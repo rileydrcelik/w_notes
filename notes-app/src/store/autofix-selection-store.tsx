@@ -16,12 +16,16 @@ type AutofixSelectionValue = {
   clear: () => void;
   /** The Sentry screen registers what "Fix" does; pass null on unmount. */
   registerFixHandler: (fn: SelectionHandler | null) => void;
-  /** The Sentry screen registers what "Ignore" does (resolve in Sentry); null on unmount. */
+  /** The Sentry screen registers what "Dismiss" does (resolve in Sentry); null on unmount. */
   registerIgnoreHandler: (fn: SelectionHandler | null) => void;
+  /** The Sentry screen registers what "Copy error message" does; null on unmount. */
+  registerCopyHandler: (fn: SelectionHandler | null) => void;
   /** Invoked by the navbar's Fix action — runs the registered fix handler on the selection. */
   requestFix: () => void;
-  /** Invoked by the navbar's Ignore action — resolves the selected issues in Sentry. */
+  /** Invoked by the navbar's Dismiss action — resolves the selected issues in Sentry. */
   requestIgnore: () => void;
+  /** Invoked by the navbar's Copy action — copies the selected issues' error text. */
+  requestCopy: () => void;
 };
 
 const AutofixSelectionContext = createContext<AutofixSelectionValue | null>(null);
@@ -46,6 +50,7 @@ export function AutofixSelectionProvider({ children }: { children: ReactNode }) 
   // `requestFix`/`requestIgnore` stay stable.
   const fixHandlerRef = useRef<SelectionHandler | null>(null);
   const ignoreHandlerRef = useRef<SelectionHandler | null>(null);
+  const copyHandlerRef = useRef<SelectionHandler | null>(null);
   // Mirror the selection into a ref so the request callbacks read the latest
   // without being recreated on every toggle.
   const selectedRef = useRef<string[]>(selectedIds);
@@ -67,6 +72,10 @@ export function AutofixSelectionProvider({ children }: { children: ReactNode }) 
     ignoreHandlerRef.current = fn;
   }, []);
 
+  const registerCopyHandler = useCallback((fn: SelectionHandler | null) => {
+    copyHandlerRef.current = fn;
+  }, []);
+
   const requestFix = useCallback(() => {
     const ids = selectedRef.current;
     if (ids.length > 0) fixHandlerRef.current?.(ids);
@@ -75,6 +84,11 @@ export function AutofixSelectionProvider({ children }: { children: ReactNode }) 
   const requestIgnore = useCallback(() => {
     const ids = selectedRef.current;
     if (ids.length > 0) ignoreHandlerRef.current?.(ids);
+  }, []);
+
+  const requestCopy = useCallback(() => {
+    const ids = selectedRef.current;
+    if (ids.length > 0) copyHandlerRef.current?.(ids);
   }, []);
 
   const isSelected = useCallback((id: string) => selectedIds.includes(id), [selectedIds]);
@@ -89,8 +103,10 @@ export function AutofixSelectionProvider({ children }: { children: ReactNode }) 
       clear,
       registerFixHandler,
       registerIgnoreHandler,
+      registerCopyHandler,
       requestFix,
       requestIgnore,
+      requestCopy,
     }),
     [
       active,
@@ -100,8 +116,10 @@ export function AutofixSelectionProvider({ children }: { children: ReactNode }) 
       clear,
       registerFixHandler,
       registerIgnoreHandler,
+      registerCopyHandler,
       requestFix,
       requestIgnore,
+      requestCopy,
     ],
   );
 

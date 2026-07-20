@@ -17,11 +17,13 @@ from __future__ import annotations
 
 import json
 import threading
+import uuid
 
 import firebase_admin
 from firebase_admin import auth as firebase_auth, credentials
 from fastapi import Depends, Header, HTTPException, status
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
@@ -75,26 +77,55 @@ def _bearer(authorization: str | None) -> str:
     return token
 
 
+async def _get_or_create_user(
+    session: AsyncSession, *, column, value: str, conflict_on: str, **extra
+) -> User:
+    """Resolve the user identified by ``column == value``, creating it on a miss.
+
+    A plain SELECT-then-INSERT races: two requests arriving together for an
+    identity the server has never seen both miss the SELECT, both INSERT, and the
+    second dies on the unique index. That's a 500 on a device's very first
+    contact — reachable from two browser tabs sharing a device key, and from any
+    concurrency the client grows later.
+
+    ``ON CONFLICT DO NOTHING`` makes the insert idempotent instead. When another
+    transaction is mid-insert, Postgres blocks until it commits and then skips
+    ours, so the re-SELECT below finds their row. Both requests end up on one
+    user, which is the point — a second user row would silently fork the
+    device's data.
+    """
+    found = (await session.execute(select(User).where(column == value))).scalar_one_or_none()
+    if found is not None:
+        return found
+
+    await session.execute(
+        pg_insert(User)
+        .values(id=str(uuid.uuid4()), **{column.key: value}, **extra)
+        .on_conflict_do_nothing(index_elements=[conflict_on])
+    )
+
+    found = (await session.execute(select(User).where(column == value))).scalar_one_or_none()
+    if found is None:
+        # The insert was skipped but the row still isn't there — the conflict was
+        # on some *other* unique column (e.g. an email already attached to a
+        # different uid), which is a real conflict rather than a race.
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Could not resolve account; conflicting identity",
+        )
+    return found
+
+
 async def _user_by_firebase(session: AsyncSession, uid: str, email: str | None) -> User:
-    user = (
-        await session.execute(select(User).where(User.firebase_uid == uid))
-    ).scalar_one_or_none()
-    if user is None:
-        user = User(firebase_uid=uid, email=email)
-        session.add(user)
-        await session.flush()
-    return user
+    return await _get_or_create_user(
+        session, column=User.firebase_uid, value=uid, conflict_on="firebase_uid", email=email
+    )
 
 
 async def _user_by_device_key(session: AsyncSession, device_key: str) -> User:
-    user = (
-        await session.execute(select(User).where(User.device_key == device_key))
-    ).scalar_one_or_none()
-    if user is None:
-        user = User(device_key=device_key)
-        session.add(user)
-        await session.flush()
-    return user
+    return await _get_or_create_user(
+        session, column=User.device_key, value=device_key, conflict_on="device_key"
+    )
 
 
 async def get_current_user(

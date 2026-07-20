@@ -17,6 +17,29 @@ dependencies = [
     "httpx>=0.27",
 ]
 
+[project.optional-dependencies]
+# Test-only tooling. `pip install -e ".[dev]"` to get it.
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+]
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["app*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# `auto` treats every `async def test_*` as an asyncio test, so no per-test
+# decorator is needed. Both loop scopes are session-wide so the one engine and
+# the migrated database are shared by every test instead of being torn down and
+# rebuilt around each function's private event loop.
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
+markers = [
+    "slow: stress/race tests — seconds not milliseconds, and probabilistic (a pass is evidence, not proof). Excluded by default; run with `pytest -m slow`.",
+]
+# Keep the default run fast and deterministic so it stays worth running on every
+# save. The slow marker is opt-in.
+addopts = "-m 'not slow'"

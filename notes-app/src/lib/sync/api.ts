@@ -7,7 +7,7 @@
  * error rather than hitting a bogus host.
  */
 import { Sentry } from '@/lib/sentry';
-import { getAuthToken } from '@/lib/auth/token';
+import { AuthUnavailableError, getAuthToken } from '@/lib/auth/token';
 
 const BASE_URL = process.env.EXPO_PUBLIC_API_URL?.replace(/\/$/, '') ?? '';
 
@@ -62,7 +62,10 @@ export async function apiFetch<T = unknown>(path: string, options: ApiOptions = 
     const text = await res.text();
     return (text ? JSON.parse(text) : undefined) as T;
   } catch (e) {
-    Sentry.captureException(e, { tags: { source: 'sync-api', path } });
+    // A deferred sync (session restoring / dropped) is expected, not an error.
+    if (!(e instanceof AuthUnavailableError)) {
+      Sentry.captureException(e, { tags: { source: 'sync-api', path } });
+    }
     throw e;
   }
 }
