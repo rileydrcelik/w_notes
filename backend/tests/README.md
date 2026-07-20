@@ -24,12 +24,22 @@ docker run -d --name wnotes-test-pg \
 
 ## Run
 
+With the venv activated (`.\.venv\Scripts\Activate.ps1`):
+
 ```sh
-./.venv/Scripts/python.exe -m pytest -q           # fast suite (default) — ~2.5s
-./.venv/Scripts/python.exe -m pytest -q -m slow   # stress/race tests — ~19s
-./.venv/Scripts/python.exe -m pytest -q -m ""     # everything
-./.venv/Scripts/python.exe -m pytest -k stale     # one test
+pytest -q                          # fast suite (default) — ~2.5s
+pytest -q -m slow                  # stress/race tests — ~19s
+pytest -q -m "slow or not slow"    # everything
+pytest -k stale                    # one test
 ```
+
+Without activating, name the interpreter directly — same result:
+`./.venv/Scripts/python.exe -m pytest -q`
+
+> Use `-m "slow or not slow"` for "everything", not `-m ""`. PowerShell 5.1
+> silently drops empty-string arguments to native executables, so pytest
+> receives a bare `-m` and errors with "expected one argument". The tautological
+> marker expression sidesteps the quoting entirely and works in every shell.
 
 Two tiers, because they earn different levels of trust:
 
