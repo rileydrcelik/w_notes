@@ -21,13 +21,13 @@ import uuid
 
 import firebase_admin
 from firebase_admin import auth as firebase_auth, credentials
-from fastapi import Depends, Header, HTTPException, status
+from fastapi import Header, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.db import get_session
+from app.db import SessionLocal
 from app.models import User
 
 # Lazily-initialized Firebase app (None when no credentials are configured).
@@ -130,10 +130,13 @@ async def _user_by_device_key(session: AsyncSession, device_key: str) -> User:
 
 async def get_current_user(
     authorization: str | None = Header(default=None),
-    session: AsyncSession = Depends(get_session),
 ) -> User:
     token = _bearer(authorization)
 
+    # Verify the token *before* touching the pool, so token verification (which
+    # can make its own network call) never holds a DB connection.
+    uid: str | None = None
+    email: str | None = None
     app = _firebase()
     if app is not None and _looks_like_jwt(token):
         try:
@@ -143,7 +146,20 @@ async def get_current_user(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid Firebase ID token",
             ) from exc
-        return await _user_by_firebase(session, decoded["uid"], decoded.get("email"))
+        uid, email = decoded["uid"], decoded.get("email")
 
-    # Anonymous pre-login identity.
-    return await _user_by_device_key(session, token)
+    # Resolve (and lazily create) the user in a short-lived session so the pooled
+    # connection is returned as soon as auth is done — NOT held for the whole
+    # request. Endpoints that then do slow upstream I/O (the /sentry proxy's httpx
+    # calls) would otherwise keep a connection checked out idle for the duration,
+    # exhausting the QueuePool under concurrent load and timing out every request
+    # — including /health. `expire_on_commit=False` keeps the returned User's
+    # already-loaded columns usable after the session closes.
+    async with SessionLocal() as session:
+        if uid is not None:
+            user = await _user_by_firebase(session, uid, email)
+        else:
+            # Anonymous pre-login identity.
+            user = await _user_by_device_key(session, token)
+        await session.commit()
+        return user
