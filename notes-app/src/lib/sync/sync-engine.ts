@@ -149,7 +149,14 @@ async function runSync(): Promise<SyncResult> {
     if (isDbLockedError(e)) {
       return { status: 'skipped', reason: 'database owned by another tab' };
     }
-    Sentry.captureException(e, { tags: { source: 'sync-engine' } });
+    // apiFetch already reports ApiError, so re-capturing it here would double up.
+    // Everything else reaching this point came from the *local* half of the sync
+    // cycle — SQLite, file I/O, the device key — and is reported nowhere else, so
+    // it must still be captured. (Dropping this entirely would silence exactly the
+    // kind of SQLite failure that once looked like "can't delete trash".)
+    if (!(e instanceof ApiError)) {
+      Sentry.captureException(e, { tags: { source: 'sync-engine' } });
+    }
     throw e;
   }
 }

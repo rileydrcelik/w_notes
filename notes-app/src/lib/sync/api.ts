@@ -33,7 +33,6 @@ export async function apiFetch<T = unknown>(path: string, options: ApiOptions = 
   }
 
   const url = `${BASE_URL}${path.startsWith('/') ? path : `/${path}`}`;
-  const token = await getAuthToken();
   const { body, headers, ...rest } = options;
 
   Sentry.addBreadcrumb({
@@ -43,6 +42,7 @@ export async function apiFetch<T = unknown>(path: string, options: ApiOptions = 
   });
 
   try {
+    const token = await getAuthToken();
     const res = await fetch(url, {
       ...rest,
       headers: {
@@ -62,9 +62,26 @@ export async function apiFetch<T = unknown>(path: string, options: ApiOptions = 
     const text = await res.text();
     return (text ? JSON.parse(text) : undefined) as T;
   } catch (e) {
-    // A deferred sync (session restoring / dropped) is expected, not an error.
-    if (!(e instanceof AuthUnavailableError)) {
+    // Three outcomes reach here, and only one is worth reporting.
+    if (e instanceof ApiError) {
+      // The backend answered with a non-2xx. That's a real failure on our side.
       Sentry.captureException(e, { tags: { source: 'sync-api', path } });
+    } else if (e instanceof AuthUnavailableError) {
+      // An account's Firebase session isn't available yet (restoring on launch,
+      // or dropped). Sync defers and retries; nothing is wrong.
+      Sentry.addBreadcrumb({
+        category: 'sync',
+        message: `sync deferred on ${path}: auth session unavailable`,
+        level: 'info',
+      });
+    } else {
+      // Network-level failures (offline, DNS, CORS) are transient and expected
+      // in normal use — keep them as context rather than reporting each one.
+      Sentry.addBreadcrumb({
+        category: 'sync',
+        message: `network error on ${path}: ${e instanceof Error ? e.message : String(e)}`,
+        level: 'warning',
+      });
     }
     throw e;
   }
