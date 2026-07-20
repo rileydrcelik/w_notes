@@ -50,11 +50,34 @@ const syncFailed = (e: unknown) => {
 };
 
 /**
+ * Local writes that haven't committed to SQLite yet, and a counter of how many
+ * have ever been started. `reload` uses both to avoid reading a snapshot that
+ * predates a write the UI has already applied optimistically — see its comment.
+ * Module-scoped alongside `persist`, which is the single choke point every
+ * mutation goes through.
+ */
+const pendingWrites = new Set<Promise<unknown>>();
+let writesStarted = 0;
+
+/** Resolves once no local write is in flight. */
+const writesSettled = async (): Promise<void> => {
+  // A write can begin while we're awaiting an earlier one, so loop rather than
+  // awaiting a single snapshot of the set.
+  while (pendingWrites.size > 0) {
+    await Promise.allSettled([...pendingWrites]);
+  }
+};
+
+/**
  * Persist a write optimistically: report failures to Sentry and schedule a
  * (debounced) sync so the change propagates to the backend. Module-scoped so it
  * isn't a hook dependency.
  */
 const persist = (write: Promise<unknown>) => {
+  writesStarted += 1;
+  pendingWrites.add(write);
+  const settle = () => pendingWrites.delete(write);
+  write.then(settle, settle);
   write.catch(syncFailed);
   requestSync();
 };
@@ -142,10 +165,29 @@ export function NotesProvider({ children }: { children: ReactNode }) {
   // after a sync pulls remote changes into the database.
   const reload = useCallback(async () => {
     try {
-      const data = await db.bootstrap();
-      setNotes(data.notes);
-      setFolders(data.folders);
-      setTrash(data.trash);
+      // `bootstrap()` reads a snapshot, and the setState calls below *replace*
+      // state rather than merging it. So a local write that starts while the read
+      // is in flight would be absent from the snapshot and then wiped from the
+      // UI — the note is safely in SQLite, but the screen reports "This note
+      // could not be found" until something reloads it. Most visible on a cold
+      // start, where creating a note in the first second or so raced the initial
+      // hydrate.
+      //
+      // So: let in-flight writes commit, read, and if any *new* write started
+      // during that pass, discard the now-stale snapshot and go again.
+      for (let attempt = 0; attempt < 5; attempt++) {
+        const startedBefore = writesStarted;
+        await writesSettled();
+        const data = await db.bootstrap();
+        if (writesStarted !== startedBefore) continue;
+        setNotes(data.notes);
+        setFolders(data.folders);
+        setTrash(data.trash);
+        return;
+      }
+      // Writes kept arriving faster than we could read (someone typing steadily,
+      // say). Leave the optimistic state alone: it's strictly newer than anything
+      // this read could apply, and the next sync schedules another reload.
     } catch (e) {
       // A follower browser tab can't open the OPFS database (another tab owns it);
       // the DbTabGuard handles that case, so don't report it as an error.

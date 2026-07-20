@@ -13,22 +13,16 @@ import { expect, test, type Page } from '@playwright/test';
  */
 
 /**
- * Wait until the store's initial hydrate has settled before interacting.
+ * Interact as soon as the create button exists — no settling delay.
  *
- * KNOWN BUG (see e2e/README.md): `notes-store`'s mount effect runs
- * `setNotes(data.notes)` when `db.bootstrap()` resolves — a replacement, not a
- * merge. A note created before that lands is written to SQLite but wiped from
- * React state, and the editor renders "This note could not be found". A person
- * rarely clicks that fast; Playwright always does.
- *
- * This is a fixed wait, which is normally a smell — it trades run time for
- * flakiness and hides a real defect. It's here because the app exposes no
- * readiness signal to wait on. **Delete it once the hydrate race is fixed**;
- * the tests should then pass without it.
+ * That immediacy is load-bearing. `notes-store` used to lose a note created
+ * before its initial hydrate resolved (the mount effect replaced state with a
+ * snapshot that predated the write), and clicking this fast is what exposed it.
+ * `reload` now re-reads when a write lands mid-flight, so these tests double as
+ * the regression guard: reintroduce that race and they fail.
  */
-async function waitForHydrate(page: Page): Promise<void> {
+async function ready(page: Page): Promise<void> {
   await page.getByLabel('Create').waitFor();
-  await page.waitForTimeout(2500);
 }
 
 test('the app boots without crashing', async ({ page }) => {
@@ -58,7 +52,7 @@ test('the app boots without crashing', async ({ page }) => {
  */
 test('a note survives a page reload', async ({ page }) => {
   await page.goto('/');
-  await waitForHydrate(page);
+  await ready(page);
 
   // Unique per run, so a stale OPFS database can't make this pass by accident.
   const title = `e2e note ${Date.now()}`;
@@ -80,7 +74,7 @@ test('a note survives a page reload', async ({ page }) => {
  */
 test('a note can be reopened from the home grid', async ({ page }) => {
   await page.goto('/');
-  await waitForHydrate(page);
+  await ready(page);
 
   const title = `e2e reopen ${Date.now()}`;
 
