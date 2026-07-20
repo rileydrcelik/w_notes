@@ -89,7 +89,6 @@ async def _upsert(session: AsyncSession, model, user_id: str, row: dict) -> None
         index_elements=["user_id", "id"],
         set_=update_cols,
         # Skip the write entirely when our stored copy is newer.
-        where=stmt.excluded.updated_at >= model.updated_at,
     )
     await session.execute(stmt)
 
