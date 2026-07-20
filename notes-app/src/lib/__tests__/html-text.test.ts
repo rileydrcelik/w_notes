@@ -50,21 +50,16 @@ describe('htmlToPlainText', () => {
     expect(htmlToPlainText('<p>a&nbsp;b</p>')).toBe('a b');
   });
 
-  // KNOWN BUG — `it.fails` asserts this currently *does* the wrong thing, so the
-  // suite stays green while the bug is open and turns red the moment it's fixed.
-  //
-  // `&amp;lt;` is the escaped form of the literal text "&lt;", so it should
-  // flatten to "&lt;". Instead it comes out as "<": htmlToPlainText decodes
-  // `&amp;` → `&` *before* `&lt;` → `<`, so the "&lt;" it just produced is
-  // re-scanned by the next replace and decoded a second time.
-  //
-  // Fix: move the `&amp;` replace to *last* in the chain, after the others.
-  // Then nothing it produces can be re-decoded. Delete `.fails` when fixed.
-  //
-  // Impact is cosmetic but real: a note discussing HTML entities renders wrong
-  // in previews, clipboard copies and .txt exports.
-  it.fails('decodes &amp; without double-decoding the result', () => {
+  it('decodes &amp; without double-decoding the result', () => {
+    // `&amp;lt;` is the escaped form of the literal text "&lt;", so it must
+    // flatten to "&lt;" and not be decoded a second time into "<". This is why
+    // the `&amp;` replace runs last in the chain — it once ran first, and the
+    // "&lt;" it produced was re-scanned by the rule below it.
     expect(htmlToPlainText('<p>&amp;lt;</p>')).toBe('&lt;');
+    expect(htmlToPlainText('<p>&amp;amp;</p>')).toBe('&amp;');
+    // The ordinary cases must keep working.
+    expect(htmlToPlainText('<p>a &amp; b</p>')).toBe('a & b');
+    expect(htmlToPlainText('<p>&lt;div&gt;</p>')).toBe('<div>');
   });
 
   it('collapses runs of whitespace and drops blank lines', () => {

@@ -1,20 +1,18 @@
-"""Resolving a brand-new identity under concurrency — a known open bug.
+"""Resolving a brand-new identity under concurrency.
 
-``deps._user_by_device_key`` (and ``_user_by_firebase`` alongside it) does a
-SELECT, and on a miss an INSERT, with nothing serializing the two. Two requests
-arriving together for a device key the server has never seen both miss the
-SELECT, both INSERT, and the second loses to the unique index on
-``users.device_key`` — a 500 rather than a shared user row.
+``deps._get_or_create_user`` used to SELECT and then INSERT on a miss, with
+nothing serializing the two. Requests arriving together for a device key the
+server had never seen all missed the SELECT, all INSERTed, and every one after
+the first died on the unique index — a 500 on a device's very first contact.
 
-Reachability is narrow but real. The client serializes its own sync cycle
-(``syncNow`` returns the in-flight promise), so one app instance won't trigger
-it. Two browser tabs share one device key with independent guards, and any future
-parallelism — splitting push/pull, concurrent file uploads — opens it wide.
+Reachability was narrow but real: the client serializes its own sync cycle
+(``syncNow`` returns the in-flight promise), so one app instance wouldn't trigger
+it, but two browser tabs share a device key with independent guards, and any
+future parallelism would open it wide.
 
-Marked ``xfail(strict=True)``: the suite stays green while the bug is open, and
-the moment someone fixes it this test fails as XPASS to say so. Fix it by making
-the insert idempotent (``ON CONFLICT (device_key) DO NOTHING`` then re-select)
-rather than by loosening this test.
+Fixed by making the insert idempotent (``ON CONFLICT DO NOTHING`` then
+re-select), so concurrent first contacts converge on one user row rather than
+racing to create several. This test holds that line.
 """
 
 from __future__ import annotations
@@ -31,11 +29,6 @@ pytestmark = pytest.mark.slow
 SIMULTANEOUS = 8
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="known bug: SELECT-then-INSERT in deps._user_by_device_key is not "
-    "atomic, so a first contact from several requests at once 500s",
-)
 async def test_first_contact_from_several_requests_at_once(client, device):
     """A device the server has never seen makes its first requests concurrently.
     Every one should succeed and they should all land on a single user."""

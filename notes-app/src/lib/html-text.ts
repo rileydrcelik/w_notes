@@ -20,11 +20,15 @@ export function htmlToPlainText(html: string): string {
     .replace(/<br\s*\/?>/gi, '\n')
     .replace(/<[^>]+>/g, '')
     .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
     .replace(/&quot;/g, '"')
     .replace(/&#39;/g, "'")
+    // `&amp;` goes last, always. Decoding it first would turn `&amp;lt;` — the
+    // escaped form of the literal text "&lt;" — into `&lt;`, which the rules
+    // above would then decode a second time into "<". Running it last means
+    // nothing it produces can be re-scanned.
+    .replace(/&amp;/g, '&')
     // Tidy up: collapse runs of spaces, drop blank lines, trim each line.
     .replace(/[ \t]+/g, ' ')
     .split('\n')
