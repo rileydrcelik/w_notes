@@ -24,6 +24,10 @@ class FolderIn(_Syncable):
     parent_id: str | None = None
     favorite: bool = False
     trashed_with_folder_id: str | None = None
+    # Folder "kind" marker + opaque JSON config (e.g. a task-manager project's
+    # repo + attribute schema). None for ordinary folders.
+    kind: str | None = None
+    config: str | None = None
 
 
 class NoteIn(_Syncable):
@@ -51,12 +55,27 @@ class CopaItemIn(_Syncable):
     remote_key: str | None = None
 
 
+class IssueIn(_Syncable):
+    note_id: str = ""
+    # JSON array of issue-type note ids (multi-type). None from clients that
+    # predate it; the upsert preserves the stored value on NULL.
+    type_ids: str | None = None
+    title: str = ""
+    description: str = ""
+    done: bool = False
+    # Opaque attribute-values JSON the client owns ({attrId: value}).
+    attrs: str = "{}"
+    gh_number: int | None = None
+    position: int = 0
+
+
 class PushRequest(BaseModel):
     """A batch of local changes the client wants the server to absorb."""
 
     folders: list[FolderIn] = []
     notes: list[NoteIn] = []
     copa_items: list[CopaItemIn] = []
+    issues: list[IssueIn] = []
 
 
 class PushResponse(BaseModel):
@@ -70,4 +89,5 @@ class PullResponse(BaseModel):
     folders: list[FolderIn] = []
     notes: list[NoteIn] = []
     copa_items: list[CopaItemIn] = []
+    issues: list[IssueIn] = []
     server_seq: int

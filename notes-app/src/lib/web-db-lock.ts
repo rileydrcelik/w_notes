@@ -36,6 +36,32 @@ let role: DbTabRole = 'leader';
 let channel: BroadcastChannel | null = null;
 const subscribers = new Set<(role: DbTabRole) => void>();
 
+// True once this tab actually holds the DB lock (never just by default). The DB
+// layer waits on this before opening: a follower must NOT open the OPFS file,
+// because a failed open corrupts wa-sqlite's VFS for the whole page ("Invalid
+// VFS state"), so the later open after promotion can't recover without a reload.
+// Gating the open means the file is only ever touched once we own it.
+let owns = false;
+const ownerWaiters: Array<() => void> = [];
+
+function grantOwnership(): void {
+  owns = true;
+  setRole('leader');
+  for (const w of ownerWaiters.splice(0)) w();
+}
+
+/**
+ * Resolves when this tab may open the database — immediately on native and on
+ * browsers without the Web Locks API, otherwise once this tab owns the lock
+ * (elected leader now, or promoted from follower). A follower's promise stays
+ * pending until it takes over, which is exactly what keeps it off the DB file.
+ */
+export function whenDbOwner(): Promise<void> {
+  if (typeof navigator === 'undefined' || !navigator.locks) return Promise.resolve();
+  if (owns) return Promise.resolve();
+  return new Promise<void>((resolve) => ownerWaiters.push(resolve));
+}
+
 function setRole(next: DbTabRole): void {
   if (role === next) return;
   role = next;
@@ -51,7 +77,7 @@ function start(): void {
   // and let the DB layer surface any real conflict. (All OPFS-capable browsers
   // that run this app also ship navigator.locks, so this is a rare fallback.)
   if (typeof navigator === 'undefined' || !navigator.locks) {
-    setRole('leader');
+    grantOwnership();
     return;
   }
 
@@ -66,17 +92,24 @@ function start(): void {
   // the lock for the tab's whole lifetime (the callback promise never resolves).
   void navigator.locks.request(LOCK_NAME, { mode: 'exclusive', ifAvailable: true }, async (lock) => {
     if (lock) {
-      setRole('leader');
+      grantOwnership();
       await new Promise<void>(() => {});
       return;
     }
 
     // Someone else owns the DB — we're a follower. Queue for the lock so that the
-    // moment the leader releases it (close or takeover) we're promoted. The DB
-    // couldn't open while we waited, so reload for a clean connection.
+    // moment the leader releases it (close or takeover) we're promoted.
     setRole('follower');
     await navigator.locks.request(LOCK_NAME, { mode: 'exclusive' }, async () => {
-      window.location.reload();
+      // Promoted: hold the lock for this tab's lifetime and become the leader in
+      // place. We must NOT reload here — reloading would release the lock we just
+      // won and let the former leader re-grab it in a race, so the takeover would
+      // appear to do nothing (the classic "press Use here, it reloads but nothing
+      // changes"). Because we gated the DB open on ownership (whenDbOwner), the
+      // OPFS file was never touched while we were a follower, so this first open
+      // starts from a clean VFS and succeeds in place — a role subscriber then
+      // refreshes the stores (see subscribeDbRole).
+      grantOwnership();
       await new Promise<void>(() => {});
     });
   });
@@ -85,6 +118,21 @@ function start(): void {
 /** Ask the current owner tab to hand the database over to this one. */
 export function requestDbTakeover(): void {
   channel?.postMessage(TAKEOVER);
+}
+
+/**
+ * Subscribe to this tab's ownership-role changes; returns an unsubscribe fn.
+ * Callers use it to re-hydrate the data stores when a follower is promoted to
+ * leader and can finally open the database (the promotion happens in place, with
+ * no page reload). Idempotently starts election so it works regardless of mount
+ * order. No-op churn on native, where the role is always `leader`.
+ */
+export function subscribeDbRole(listener: (role: DbTabRole) => void): () => void {
+  start();
+  subscribers.add(listener);
+  return () => {
+    subscribers.delete(listener);
+  };
 }
 
 /**

@@ -7,7 +7,7 @@
  * error rather than hitting a bogus host.
  */
 import { Sentry } from '@/lib/sentry';
-import { getAuthToken } from '@/lib/auth/token';
+import { AuthUnavailableError, getAuthToken } from '@/lib/auth/token';
 
 const BASE_URL = process.env.EXPO_PUBLIC_API_URL?.replace(/\/$/, '') ?? '';
 
@@ -62,11 +62,21 @@ export async function apiFetch<T = unknown>(path: string, options: ApiOptions = 
     const text = await res.text();
     return (text ? JSON.parse(text) : undefined) as T;
   } catch (e) {
-    // Network-level errors (offline, CORS blocked, etc) are transient and expected.
-    // Log as breadcrumb but don't report as exceptions; only capture ApiError.
+    // Three outcomes reach here, and only one is worth reporting.
     if (e instanceof ApiError) {
+      // The backend answered with a non-2xx. That's a real failure on our side.
       Sentry.captureException(e, { tags: { source: 'sync-api', path } });
+    } else if (e instanceof AuthUnavailableError) {
+      // An account's Firebase session isn't available yet (restoring on launch,
+      // or dropped). Sync defers and retries; nothing is wrong.
+      Sentry.addBreadcrumb({
+        category: 'sync',
+        message: `sync deferred on ${path}: auth session unavailable`,
+        level: 'info',
+      });
     } else {
+      // Network-level failures (offline, DNS, CORS) are transient and expected
+      // in normal use — keep them as context rather than reporting each one.
       Sentry.addBreadcrumb({
         category: 'sync',
         message: `network error on ${path}: ${e instanceof Error ? e.message : String(e)}`,

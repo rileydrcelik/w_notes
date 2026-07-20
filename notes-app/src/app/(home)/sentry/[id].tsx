@@ -22,7 +22,8 @@ import { useContextMenu } from '@/hooks/use-context-menu';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
 import { useTheme } from '@/hooks/use-theme';
 import { apiFetch } from '@/lib/sync/api';
-import { sentryTarget } from '@/lib/sentry-note';
+import { sentryTarget, type SentryTarget } from '@/lib/sentry-note';
+import { SentryConfig } from '@/components/notes/sentry-config';
 import { useAutofixSelection } from '@/store/autofix-selection-store';
 import { useNotes } from '@/store/notes-store';
 
@@ -620,7 +621,7 @@ function IssueCard({
 
 export default function SentryIssuesScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
-  const { getNote } = useNotes();
+  const { getNote, updateNote } = useNotes();
   const theme = useTheme();
   const insets = useSafeAreaInsets();
   const tabBarInset = useTabBarInset();
@@ -681,8 +682,18 @@ export default function SentryIssuesScreen() {
   );
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- async load
     void load('initial');
   }, [load]);
+
+  // Write the picked org/project (+ optional repo) into the note's config. Once
+  // it lands, `target` resolves and the screen swaps from picker to issues list.
+  const handleConfigure = useCallback(
+    (config: SentryTarget) => {
+      updateNote(id, { pluginConfig: JSON.stringify(config) });
+    },
+    [id, updateNote],
+  );
 
   // Ship the selected issues to the autofix pipeline. Fired by the navbar's Fix
   // button via the shared selection store. Each issue is dispatched independently
@@ -694,7 +705,13 @@ export default function SentryIssuesScreen() {
         setFixStates((prev) => ({ ...prev, [issueId]: { phase: 'dispatching' } }));
         apiFetch<AutofixResponse>('/sentry/autofix', {
           method: 'POST',
-          body: { issue_id: issueId, org: target.org, project: target.project },
+          body: {
+            issue_id: issueId,
+            org: target.org,
+            project: target.project,
+            // Per-note repo when set; the backend falls back to its default.
+            ...(target.repo ? { repo: target.repo } : {}),
+          },
         })
           .then((res) => {
             attemptsRef.current[issueId] = 0;
@@ -804,7 +821,9 @@ export default function SentryIssuesScreen() {
           const timedOut = attempts >= 24; // ~2 min at 5s
           try {
             const status = await apiFetch<AutofixStatus>(
-              `/sentry/autofix/status?short_id=${encodeURIComponent(s.shortId!)}`,
+              `/sentry/autofix/status?short_id=${encodeURIComponent(s.shortId!)}${
+                target?.repo ? `&repo=${encodeURIComponent(target.repo)}` : ''
+              }`,
             );
             setFixStates((prev) =>
               prev[issueId]
@@ -824,7 +843,7 @@ export default function SentryIssuesScreen() {
       })();
     }, 5000);
     return () => clearTimeout(timer);
-  }, [fixStates]);
+  }, [fixStates, target?.repo]);
 
   const headerTop = insets.top + Spacing.four;
 
@@ -832,6 +851,13 @@ export default function SentryIssuesScreen() {
     <SwipeBackView>
       <ThemedView style={styles.container}>
         <Stack.Screen options={{ headerShown: false }} />
+        {!target ? (
+          <SentryConfig
+            paddingTop={headerTop}
+            paddingBottom={tabBarInset}
+            onSubmit={handleConfigure}
+          />
+        ) : (
         <FlatList
           data={issues}
           keyExtractor={(item) => item.id}
@@ -846,7 +872,7 @@ export default function SentryIssuesScreen() {
               <View style={styles.headerTitleRow}>
                 <Feather name="alert-triangle" size={22} color="#7553FF" />
                 <ThemedText type="subtitle" numberOfLines={1} style={styles.headerTitle}>
-                  {target?.project ?? 'Sentry'}
+                  {target?.projectName ?? target?.project ?? 'Sentry'}
                 </ThemedText>
               </View>
               {!!target?.org && (
@@ -887,6 +913,7 @@ export default function SentryIssuesScreen() {
             />
           )}
         />
+        )}
       </ThemedView>
     </SwipeBackView>
   );

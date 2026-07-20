@@ -9,6 +9,7 @@ import {
 } from 'react';
 
 import { db } from '@/lib/db';
+import { subscribeSynced } from '@/lib/sync/sync-engine';
 
 /**
  * Settings key the web formatting-hints toggle is persisted under in SQLite.
@@ -35,17 +36,25 @@ const EditorPrefsContext = createContext<EditorPrefs | null>(null);
 export function EditorPrefsProvider({ children }: { children: ReactNode }) {
   const [formattingHints, setFormattingHintsState] = useState(true);
 
-  // Hydrate the saved choice once on mount; default stays on if unset.
+  // Hydrate the saved choice from SQLite; default stays on if unset. Runs on
+  // mount and on every data refresh, so a web tab that just took the DB over from
+  // another tab (see reopenDbAndRefresh) picks up the setting it couldn't read
+  // while it was a follower.
   useEffect(() => {
     let cancelled = false;
-    db
-      .getSetting(HINTS_KEY)
-      .then((saved) => {
-        if (!cancelled && saved != null) setFormattingHintsState(saved === 'true');
-      })
-      .catch((e) => console.warn('[editor-prefs] failed to load formatting hints:', e));
+    const hydrate = () => {
+      db
+        .getSetting(HINTS_KEY)
+        .then((saved) => {
+          if (!cancelled && saved != null) setFormattingHintsState(saved === 'true');
+        })
+        .catch((e) => console.warn('[editor-prefs] failed to load formatting hints:', e));
+    };
+    hydrate();
+    const unsub = subscribeSynced(hydrate);
     return () => {
       cancelled = true;
+      unsub();
     };
   }, []);
 

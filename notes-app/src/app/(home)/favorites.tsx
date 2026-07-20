@@ -7,7 +7,7 @@ import { SwipeBackView } from '@/components/swipe-back-view';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Spacing } from '@/constants/theme';
-import { GRID_COLUMNS, gridEdgePadding, trailingSpacers } from '@/lib/grid';
+import { GRID_COLUMNS, gridEdgePadding, trailingSpacers, useGridColumnWidth } from '@/lib/grid';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
 import { useNotes } from '@/store/notes-store';
 
@@ -17,6 +17,7 @@ export default function FavoritesScreen() {
   const { folders, notes } = useNotes();
   const tabBarInset = useTabBarInset();
   const insets = useSafeAreaInsets();
+  const columnWidth = useGridColumnWidth();
 
   const favoriteFolders = folders.filter((folder) => folder.favorite);
   const favoriteNotes = notes.filter((note) => note.favorite);
@@ -50,11 +51,21 @@ export default function FavoritesScreen() {
             </ThemedText>
           }
           renderItem={({ item }) => {
-            if (item.type === 'spacer') return <View style={styles.spacer} />;
+            // Wrap every cell in a View so the row distributes evenly on web
+            // (a Pressable flex child sizes differently from a View one).
+            if (item.type === 'spacer') return <View style={[styles.cardCell, { width: columnWidth }]} />;
             if (item.type === 'folder') {
-              return <FolderCard folder={favoriteFolders.find((f) => f.id === item.id)!} />;
+              return (
+                <View style={[styles.cardCell, { width: columnWidth }]}>
+                  <FolderCard folder={favoriteFolders.find((f) => f.id === item.id)!} />
+                </View>
+              );
             }
-            return <NoteCard note={favoriteNotes.find((n) => n.id === item.id)!} />;
+            return (
+              <View style={[styles.cardCell, { width: columnWidth }]}>
+                <NoteCard note={favoriteNotes.find((n) => n.id === item.id)!} />
+              </View>
+            );
           }}
         />
       </ThemedView>
@@ -72,9 +83,15 @@ const styles = StyleSheet.create({
   },
   row: {
     gap: Spacing.three,
+    alignItems: 'flex-start',
   },
-  spacer: {
-    flex: 1,
+  cardCell: {
+    // Fixed one-column width (inline) + flexGrow:0 so a card can't stretch past
+    // its column into a partial row's empty space (what made them too wide).
+    flexGrow: 0,
+    flexShrink: 1,
+    minWidth: 0,
+    overflow: 'hidden',
   },
   title: {
     paddingBottom: Spacing.three,

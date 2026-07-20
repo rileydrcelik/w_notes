@@ -22,11 +22,17 @@ import { CopaProvider } from '@/store/copa-store';
 import { NotesProvider } from '@/store/notes-store';
 import { SidebarProvider, useSidebar } from '@/store/sidebar-store';
 import { AutofixSelectionProvider } from '@/store/autofix-selection-store';
+import { GithubSelectionProvider } from '@/store/github-selection-store';
+import { IssuesProvider } from '@/store/issues-store';
+import { TaskSelectionProvider } from '@/store/task-selection-store';
 import { ItemSelectionProvider } from '@/store/item-selection-store';
 import { EditorPrefsProvider, useEditorPrefs } from '@/store/editor-prefs-store';
+import { CreateOptionsProvider } from '@/store/create-options-store';
 import { AppThemeProvider, useThemePref } from '@/store/theme-store';
 import { installSyncFlush } from '@/lib/sync/flush-on-hide';
 import { installSyncPoll } from '@/lib/sync/poll';
+import { reopenDbAndRefresh } from '@/lib/sync/sync-engine';
+import { subscribeDbRole } from '@/lib/web-db-lock';
 
 // Top-level routes that the pager slides between. Everything else (a folder or
 // note) lives inside the home group's stack, which keeps its own back-swipe.
@@ -38,7 +44,9 @@ function RootLayout() {
     <GestureHandlerRootView style={styles.root}>
       <AppThemeProvider>
         <EditorPrefsProvider>
-          <AppShell />
+          <CreateOptionsProvider>
+            <AppShell />
+          </CreateOptionsProvider>
         </EditorPrefsProvider>
       </AppThemeProvider>
     </GestureHandlerRootView>
@@ -92,6 +100,15 @@ function AppShell() {
   // app-foreground transition. Pauses when backgrounded/hidden.
   useEffect(() => installSyncPoll(), []);
 
+  // Web: when this tab is promoted from follower to leader (the user pressed
+  // "Use here", or the owning tab closed), it can finally open the DB. Open it
+  // (retrying past the previous owner's file-handle release) and re-hydrate the
+  // stores + theme in place — the promotion no longer reloads the page.
+  useEffect(
+    () => subscribeDbRole((role) => role === 'leader' && void reopenDbAndRefresh()),
+    [],
+  );
+
   // Android backdrop blur is capture-based: the navbar's BlurView blurs the
   // content of a BlurTargetView, which must wrap the screens but NOT the navbar
   // (a BlurView inside its own target recurses and crashes the renderer). So we
@@ -108,9 +125,12 @@ function AppShell() {
       <StatusBar style={scheme === 'dark' ? 'light' : 'dark'} />
       <AuthProvider>
       <NotesProvider>
+        <IssuesProvider>
         <CopaProvider>
         <SidebarProvider>
         <AutofixSelectionProvider>
+        <GithubSelectionProvider>
+        <TaskSelectionProvider>
         <ItemSelectionProvider>
         <ItemOptionsProvider>
         <CopaOptionsProvider>
@@ -142,9 +162,12 @@ function AppShell() {
         </CopaOptionsProvider>
         </ItemOptionsProvider>
         </ItemSelectionProvider>
+        </TaskSelectionProvider>
+        </GithubSelectionProvider>
         </AutofixSelectionProvider>
         </SidebarProvider>
         </CopaProvider>
+        </IssuesProvider>
       </NotesProvider>
       </AuthProvider>
     </ThemeProvider>

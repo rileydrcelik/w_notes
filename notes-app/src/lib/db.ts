@@ -2,7 +2,8 @@ import * as SQLite from 'expo-sqlite';
 
 import { Sentry } from '@/lib/sentry';
 import { removeCopaFiles } from '@/lib/copa-files';
-import type { Folder, Note } from '@/data/notes';
+import { whenDbOwner } from '@/lib/web-db-lock';
+import type { Folder, Issue, Note } from '@/data/notes';
 import type { CopaItem } from '@/data/copa';
 
 /**
@@ -56,6 +57,27 @@ type FolderRow = {
   updated_at: number;
   deleted_at: number | null;
   trashed_with_folder_id: string | null;
+  // Folder "kind" marker (e.g. 'project') + opaque JSON config; null for
+  // ordinary folders.
+  kind: string | null;
+  config: string | null;
+};
+
+type IssueRow = {
+  id: string;
+  note_id: string;
+  // JSON array of issue-type note ids; parsed into `typeIds` by `toIssue`.
+  type_ids: string;
+  title: string;
+  description: string;
+  done: number;
+  // Attribute values as a JSON string; parsed into an object by `toIssue`.
+  attrs: string;
+  gh_number: number | null;
+  position: number;
+  created_at: number;
+  updated_at: number;
+  deleted_at: number | null;
 };
 
 type CopaRow = {
@@ -110,6 +132,25 @@ export type FolderSync = {
   updated_at: number;
   deleted_at: number | null;
   trashed_with_folder_id: string | null;
+  kind: string | null;
+  config: string | null;
+};
+
+export type IssueSync = {
+  id: string;
+  note_id: string;
+  // NOT NULL locally ('[]' default); may be null when pulled from a backend that
+  // predates multi-type — the upsert coalesces it to keep the stored value.
+  type_ids: string | null;
+  title: string;
+  description: string;
+  done: number | boolean;
+  attrs: string;
+  gh_number: number | null;
+  position: number;
+  created_at: number;
+  updated_at: number;
+  deleted_at: number | null;
 };
 
 export type NoteSync = {
@@ -146,6 +187,7 @@ export type SyncPayload = {
   folders: FolderSync[];
   notes: NoteSync[];
   copa_items: CopaSync[];
+  issues: IssueSync[];
 };
 
 // ---- Connection (opened + migrated once, lazily) ----
@@ -167,6 +209,11 @@ function getDb(): Promise<SQLite.SQLiteDatabase> {
 }
 
 async function open(): Promise<SQLite.SQLiteDatabase> {
+  // On web, wait until this tab owns the DB before touching the OPFS file. A
+  // follower that opened it would fail (another tab holds the exclusive handle)
+  // and, worse, leave wa-sqlite's VFS wedged for the whole page — so the open
+  // after promotion couldn't recover. Native / no-Web-Locks resolves instantly.
+  await whenDbOwner();
   const database = await SQLite.openDatabaseAsync(DB_NAME);
   await database.execAsync(`
     PRAGMA journal_mode = WAL;
@@ -180,6 +227,8 @@ async function open(): Promise<SQLite.SQLiteDatabase> {
       updated_at             INTEGER NOT NULL DEFAULT 0,
       deleted_at             INTEGER,
       trashed_with_folder_id TEXT,
+      kind                   TEXT,
+      config                 TEXT,
       dirty                  INTEGER NOT NULL DEFAULT 1
     );
 
@@ -216,6 +265,22 @@ async function open(): Promise<SQLite.SQLiteDatabase> {
       remote_key  TEXT
     );
 
+    CREATE TABLE IF NOT EXISTS issues (
+      id           TEXT PRIMARY KEY NOT NULL,
+      note_id      TEXT NOT NULL DEFAULT '',
+      type_ids     TEXT NOT NULL DEFAULT '[]',
+      title        TEXT NOT NULL DEFAULT '',
+      description  TEXT NOT NULL DEFAULT '',
+      done         INTEGER NOT NULL DEFAULT 0,
+      attrs        TEXT NOT NULL DEFAULT '{}',
+      gh_number    INTEGER,
+      position     INTEGER NOT NULL DEFAULT 0,
+      created_at   INTEGER NOT NULL,
+      updated_at   INTEGER NOT NULL DEFAULT 0,
+      deleted_at   INTEGER,
+      dirty        INTEGER NOT NULL DEFAULT 1
+    );
+
     CREATE TABLE IF NOT EXISTS settings (
       key    TEXT PRIMARY KEY NOT NULL,
       value  TEXT NOT NULL
@@ -235,6 +300,8 @@ async function open(): Promise<SQLite.SQLiteDatabase> {
     CREATE INDEX IF NOT EXISTS idx_notes_dirty ON notes (dirty);
     CREATE INDEX IF NOT EXISTS idx_folders_dirty ON folders (dirty);
     CREATE INDEX IF NOT EXISTS idx_copa_dirty ON copa_items (dirty);
+    CREATE INDEX IF NOT EXISTS idx_issues_note_id ON issues (note_id);
+    CREATE INDEX IF NOT EXISTS idx_issues_dirty ON issues (dirty);
   `);
   return database;
 }
@@ -248,6 +315,12 @@ async function ensureFolderColumns(database: SQLite.SQLiteDatabase): Promise<voi
   }
   if (!has('trashed_with_folder_id')) {
     await database.execAsync('ALTER TABLE folders ADD COLUMN trashed_with_folder_id TEXT');
+  }
+  // The task-manager subsystem added a folder "kind" marker + opaque config
+  // (mirroring notes' plugin columns); backfill on tables created before it.
+  if (!has('kind')) {
+    await database.execAsync('ALTER TABLE folders ADD COLUMN kind TEXT');
+    await database.execAsync('ALTER TABLE folders ADD COLUMN config TEXT');
   }
 }
 
@@ -309,6 +382,14 @@ async function ensureSyncColumns(database: SQLite.SQLiteDatabase): Promise<void>
   if (!copaCols.includes('remote_key')) {
     await database.execAsync('ALTER TABLE copa_items ADD COLUMN remote_key TEXT');
   }
+
+  // Multi-type issues were added later: an issue can be filed under several
+  // issue-type notes. `type_ids` is a JSON array of note ids; an empty array
+  // reads as `[note_id]` (see effectiveTypeIds), so old rows need no backfill.
+  const issueCols = await colsOf('issues');
+  if (!issueCols.includes('type_ids')) {
+    await database.execAsync("ALTER TABLE issues ADD COLUMN type_ids TEXT NOT NULL DEFAULT '[]'");
+  }
 }
 
 // ---- Row -> app-shape converters ----
@@ -330,7 +411,44 @@ function toNote(r: NoteRow): Note {
 }
 
 function toFolder(r: FolderRow): Folder {
-  return { id: r.id, name: r.name, parentId: r.parent_id, favorite: !!r.favorite };
+  return {
+    id: r.id,
+    name: r.name,
+    parentId: r.parent_id,
+    favorite: !!r.favorite,
+    kind: (r.kind ?? undefined) as Folder['kind'],
+    config: r.config ?? undefined,
+  };
+}
+
+function toIssue(r: IssueRow): Issue {
+  let attrs: Issue['attrs'] = {};
+  try {
+    const parsed = JSON.parse(r.attrs) as unknown;
+    if (parsed && typeof parsed === 'object') attrs = parsed as Issue['attrs'];
+  } catch {
+    // Corrupt/missing JSON → empty attributes rather than a crash.
+  }
+  let typeIds: string[] = [];
+  try {
+    const parsed = JSON.parse(r.type_ids) as unknown;
+    if (Array.isArray(parsed)) typeIds = parsed.filter((v): v is string => typeof v === 'string');
+  } catch {
+    // Corrupt/missing JSON → empty (reads as [note_id] via effectiveTypeIds).
+  }
+  return {
+    id: r.id,
+    noteId: r.note_id,
+    typeIds,
+    title: r.title,
+    description: r.description,
+    done: !!r.done,
+    attrs,
+    ghNumber: r.gh_number ?? undefined,
+    position: r.position,
+    createdAt: r.created_at,
+    updatedAt: ymd(r.updated_at),
+  };
 }
 
 function toCopa(r: CopaRow): CopaItem {
@@ -378,15 +496,26 @@ async function buildTrash(database: SQLite.SQLiteDatabase): Promise<TrashEntry[]
 // ---- Public API (mirrors the data the stores need) ----
 
 export const db = {
+  /**
+   * Open (and migrate) the database if it isn't already, resolving once it's
+   * ready. Throws the "another tab owns the OPFS lock" error on web when this
+   * tab can't take the connection — callers that just took DB ownership use it
+   * to wait out the previous owner releasing the file (see reopenDbAndRefresh).
+   */
+  async ensureOpen(): Promise<void> {
+    await getDb();
+  },
+
   /** Load everything for the notes/folders/trash store in one shot. */
   async bootstrap(): Promise<BootstrapData> {
     const database = await getDb();
     const [noteRows, folderRows, trash] = await Promise.all([
       database.getAllAsync<NoteRow>(
-        'SELECT * FROM notes WHERE deleted_at IS NULL ORDER BY created_at DESC',
+        // Most-recently-modified first; created_at breaks ties deterministically.
+        'SELECT * FROM notes WHERE deleted_at IS NULL ORDER BY updated_at DESC, created_at DESC',
       ),
       database.getAllAsync<FolderRow>(
-        'SELECT * FROM folders WHERE deleted_at IS NULL ORDER BY created_at DESC',
+        'SELECT * FROM folders WHERE deleted_at IS NULL ORDER BY updated_at DESC, created_at DESC',
       ),
       buildTrash(database),
     ]);
@@ -417,7 +546,7 @@ export const db = {
 
   async updateNote(
     id: string,
-    patch: Partial<Pick<Note, 'title' | 'body' | 'folderId' | 'favorite' | 'shared'>>,
+    patch: Partial<Pick<Note, 'title' | 'body' | 'folderId' | 'favorite' | 'shared' | 'pluginConfig'>>,
   ): Promise<void> {
     dbCrumb('updateNote', { id, fields: Object.keys(patch) });
     const database = await getDb();
@@ -428,6 +557,10 @@ export const db = {
     if (patch.folderId !== undefined) (sets.push('folder_id = ?'), args.push(patch.folderId));
     if (patch.favorite !== undefined) (sets.push('favorite = ?'), args.push(patch.favorite ? 1 : 0));
     if (patch.shared !== undefined) (sets.push('shared = ?'), args.push(patch.shared ? 1 : 0));
+    // A plugin note's config (e.g. Sentry org/project) can be set after creation
+    // when the user configures the note; it syncs like any other column.
+    if (patch.pluginConfig !== undefined)
+      (sets.push('plugin_config = ?'), args.push(patch.pluginConfig));
     sets.push('updated_at = ?', 'dirty = 1');
     args.push(Date.now());
     args.push(id);
@@ -447,22 +580,28 @@ export const db = {
   async createFolder({
     id,
     parentId,
+    kind,
+    config,
   }: {
     id: string;
     parentId: string | null;
+    /** Folder kind marker (e.g. 'project') that renders a special view. */
+    kind?: string;
+    /** Opaque per-kind JSON config (e.g. a project's repo + attribute schema). */
+    config?: string;
   }): Promise<void> {
-    dbCrumb('createFolder', { id, parentId });
+    dbCrumb('createFolder', { id, parentId, kind });
     const database = await getDb();
     const now = Date.now();
     await database.runAsync(
-      'INSERT INTO folders (id, name, parent_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
-      [id, '', parentId, now, now],
+      'INSERT INTO folders (id, name, parent_id, created_at, updated_at, kind, config) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      [id, '', parentId, now, now, kind ?? null, config ?? null],
     );
   },
 
   async updateFolder(
     id: string,
-    patch: Partial<Pick<Folder, 'name' | 'favorite'>>,
+    patch: Partial<Pick<Folder, 'name' | 'favorite' | 'config'>>,
   ): Promise<void> {
     dbCrumb('updateFolder', { id, fields: Object.keys(patch) });
     const database = await getDb();
@@ -471,6 +610,9 @@ export const db = {
     if (patch.name !== undefined) (sets.push('name = ?'), args.push(patch.name));
     if (patch.favorite !== undefined)
       (sets.push('favorite = ?'), args.push(patch.favorite ? 1 : 0));
+    // A project's config (repo + attribute schema) is set after creation when the
+    // user configures it; it syncs like any other column.
+    if (patch.config !== undefined) (sets.push('config = ?'), args.push(patch.config));
     if (sets.length === 0) return;
     sets.push('updated_at = ?', 'dirty = 1');
     args.push(Date.now());
@@ -736,15 +878,110 @@ export const db = {
     );
   },
 
+  // ---- Issues (task-manager project rows) ----
+
+  /** Every live issue across all projects, ordered for stable rendering. */
+  async getIssues(): Promise<Issue[]> {
+    const database = await getDb();
+    const rows = await database.getAllAsync<IssueRow>(
+      'SELECT * FROM issues WHERE deleted_at IS NULL ORDER BY position ASC, created_at ASC',
+    );
+    return rows.map(toIssue);
+  },
+
+  async createIssue({
+    id,
+    noteId,
+    typeIds,
+    title,
+    description,
+    attrs,
+    ghNumber,
+    position,
+  }: {
+    id: string;
+    noteId: string;
+    typeIds?: string[];
+    title?: string;
+    description?: string;
+    attrs?: Issue['attrs'];
+    ghNumber?: number;
+    position?: number;
+  }): Promise<void> {
+    dbCrumb('createIssue', { id, noteId });
+    const database = await getDb();
+    const now = Date.now();
+    await database.runAsync(
+      `INSERT INTO issues
+         (id, note_id, type_ids, title, description, done, attrs, gh_number, position, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)`,
+      [
+        id,
+        noteId,
+        JSON.stringify(typeIds ?? (noteId ? [noteId] : [])),
+        title ?? '',
+        description ?? '',
+        JSON.stringify(attrs ?? {}),
+        ghNumber ?? null,
+        position ?? 0,
+        now,
+        now,
+      ],
+    );
+  },
+
+  async updateIssue(
+    id: string,
+    patch: {
+      title?: string;
+      description?: string;
+      noteId?: string;
+      typeIds?: string[];
+      done?: boolean;
+      attrs?: Issue['attrs'];
+      ghNumber?: number | null;
+      position?: number;
+    },
+  ): Promise<void> {
+    dbCrumb('updateIssue', { id, fields: Object.keys(patch) });
+    const database = await getDb();
+    const sets: string[] = [];
+    const args: SQLite.SQLiteBindValue[] = [];
+    if (patch.title !== undefined) (sets.push('title = ?'), args.push(patch.title));
+    if (patch.description !== undefined) (sets.push('description = ?'), args.push(patch.description));
+    if (patch.noteId !== undefined) (sets.push('note_id = ?'), args.push(patch.noteId));
+    if (patch.typeIds !== undefined)
+      (sets.push('type_ids = ?'), args.push(JSON.stringify(patch.typeIds)));
+    if (patch.done !== undefined) (sets.push('done = ?'), args.push(patch.done ? 1 : 0));
+    if (patch.attrs !== undefined) (sets.push('attrs = ?'), args.push(JSON.stringify(patch.attrs)));
+    if (patch.ghNumber !== undefined) (sets.push('gh_number = ?'), args.push(patch.ghNumber));
+    if (patch.position !== undefined) (sets.push('position = ?'), args.push(patch.position));
+    if (sets.length === 0) return;
+    sets.push('updated_at = ?', 'dirty = 1');
+    args.push(Date.now());
+    args.push(id);
+    await database.runAsync(`UPDATE issues SET ${sets.join(', ')} WHERE id = ?`, args);
+  },
+
+  async deleteIssue(id: string): Promise<void> {
+    dbCrumb('deleteIssue', { id });
+    const database = await getDb();
+    const now = Date.now();
+    await database.runAsync(
+      'UPDATE issues SET deleted_at = ?, updated_at = ?, dirty = 1 WHERE id = ?',
+      [now, now, id],
+    );
+  },
+
   // ---- Sync support ----
 
   /** All rows with un-pushed local changes, in the backend's wire shape. */
   async getDirty(): Promise<SyncPayload> {
     const database = await getDb();
-    const [folders, notes, copa_items] = await Promise.all([
+    const [folders, notes, copa_items, issues] = await Promise.all([
       database.getAllAsync<FolderSync>(
         `SELECT id, name, parent_id, favorite, created_at, updated_at, deleted_at,
-                trashed_with_folder_id
+                trashed_with_folder_id, kind, config
          FROM folders WHERE dirty = 1`,
       ),
       database.getAllAsync<NoteSync>(
@@ -757,8 +994,13 @@ export const db = {
                 file_name, mime_type, file_size, remote_key
          FROM copa_items WHERE dirty = 1`,
       ),
+      database.getAllAsync<IssueSync>(
+        `SELECT id, note_id, type_ids, title, description, done, attrs, gh_number, position,
+                created_at, updated_at, deleted_at
+         FROM issues WHERE dirty = 1`,
+      ),
     ]);
-    return { folders, notes, copa_items };
+    return { folders, notes, copa_items, issues };
   },
 
   /**
@@ -787,6 +1029,12 @@ export const db = {
           c.updated_at,
         ]);
       }
+      for (const i of payload.issues) {
+        await database.runAsync('UPDATE issues SET dirty = 0 WHERE id = ? AND updated_at = ?', [
+          i.id,
+          i.updated_at,
+        ]);
+      }
     });
   },
 
@@ -806,13 +1054,14 @@ export const db = {
         const r = await database.runAsync(
           `INSERT INTO folders
              (id, name, parent_id, favorite, created_at, updated_at, deleted_at,
-              trashed_with_folder_id, dirty)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)
+              trashed_with_folder_id, kind, config, dirty)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
            ON CONFLICT(id) DO UPDATE SET
              name = excluded.name, parent_id = excluded.parent_id,
              favorite = excluded.favorite, created_at = excluded.created_at,
              updated_at = excluded.updated_at, deleted_at = excluded.deleted_at,
-             trashed_with_folder_id = excluded.trashed_with_folder_id, dirty = 0
+             trashed_with_folder_id = excluded.trashed_with_folder_id,
+             kind = excluded.kind, config = excluded.config, dirty = 0
            WHERE excluded.updated_at >= folders.updated_at`,
           [
             f.id,
@@ -823,6 +1072,8 @@ export const db = {
             f.updated_at,
             f.deleted_at,
             f.trashed_with_folder_id,
+            f.kind ?? null,
+            f.config ?? null,
           ],
         );
         changed += r.changes;
@@ -888,6 +1139,40 @@ export const db = {
         );
         changed += r.changes;
       }
+      for (const i of payload.issues) {
+        const r = await database.runAsync(
+          `INSERT INTO issues
+             (id, note_id, type_ids, title, description, done, attrs, gh_number, position,
+              created_at, updated_at, deleted_at, dirty)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+           ON CONFLICT(id) DO UPDATE SET
+             note_id = excluded.note_id,
+             -- An older client that predates multi-type can't send type_ids
+             -- (arrives NULL); keep the stored value rather than wiping it.
+             type_ids = COALESCE(excluded.type_ids, issues.type_ids),
+             title = excluded.title,
+             description = excluded.description, done = excluded.done,
+             attrs = excluded.attrs, gh_number = excluded.gh_number,
+             position = excluded.position, created_at = excluded.created_at,
+             updated_at = excluded.updated_at, deleted_at = excluded.deleted_at, dirty = 0
+           WHERE excluded.updated_at >= issues.updated_at`,
+          [
+            i.id,
+            i.note_id,
+            i.type_ids ?? '[]',
+            i.title,
+            i.description,
+            bit(i.done),
+            i.attrs,
+            i.gh_number,
+            i.position,
+            i.created_at,
+            i.updated_at,
+            i.deleted_at,
+          ],
+        );
+        changed += r.changes;
+      }
     });
     return changed;
   },
@@ -899,7 +1184,7 @@ export const db = {
   async markAllDirty(): Promise<void> {
     const database = await getDb();
     await database.execAsync(
-      'UPDATE folders SET dirty = 1; UPDATE notes SET dirty = 1; UPDATE copa_items SET dirty = 1;',
+      'UPDATE folders SET dirty = 1; UPDATE notes SET dirty = 1; UPDATE copa_items SET dirty = 1; UPDATE issues SET dirty = 1;',
     );
   },
 
@@ -910,7 +1195,9 @@ export const db = {
    */
   async clearAllData(): Promise<void> {
     const database = await getDb();
-    await database.execAsync('DELETE FROM folders; DELETE FROM notes; DELETE FROM copa_items;');
+    await database.execAsync(
+      'DELETE FROM folders; DELETE FROM notes; DELETE FROM copa_items; DELETE FROM issues;',
+    );
   },
 
   /** The last server_seq this device has pulled (0 if it has never synced). */
@@ -951,3 +1238,70 @@ export const db = {
     );
   },
 };
+
+// ---- Write serialization ----
+//
+// expo-sqlite's `withTransactionAsync` is NOT exclusive: the v56 docs state it
+// "is not exclusive and can be interrupted by other async queries." We hold one
+// shared connection, so when two mutations overlap — e.g. a background sync's
+// `applyServerRows` transaction running while the user's `deleteFolder`
+// transaction is mid-flight — their BEGIN/COMMIT/ROLLBACK statements interleave.
+// The classic symptom is `cannot rollback - no transaction is active`, and the
+// losing transaction is silently abandoned (the delete that "won't stick").
+//
+// Fix: funnel every mutating method through a single promise chain so at most
+// one write (transactional or single-statement) is ever in flight. Reads are
+// left untouched — WAL allows readers alongside the one writer, so query
+// concurrency and startup latency are unaffected.
+let writeTail: Promise<unknown> = Promise.resolve();
+
+function serializeWrite<A extends unknown[], R>(
+  fn: (...args: A) => Promise<R>,
+): (...args: A) => Promise<R> {
+  return (...args: A): Promise<R> => {
+    // Chain onto the tail regardless of whether the previous write resolved or
+    // rejected, so one failed write can't wedge the whole queue.
+    const run = writeTail.then(
+      () => fn(...args),
+      () => fn(...args),
+    );
+    writeTail = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  };
+}
+
+// Every method that mutates the database. Reads (bootstrap, list*, get*) are
+// deliberately excluded so they keep running concurrently. None of these call
+// another db method internally, so wrapping them can't self-deadlock the chain.
+const WRITE_METHODS = [
+  'createNote',
+  'updateNote',
+  'deleteNote',
+  'createFolder',
+  'updateFolder',
+  'deleteFolder',
+  'restoreFromTrash',
+  'createCopa',
+  'updateCopa',
+  'deleteCopa',
+  'setCopaRemoteKey',
+  'setCopaLocalFile',
+  'resetEphemeralFiles',
+  'createIssue',
+  'updateIssue',
+  'deleteIssue',
+  'markSynced',
+  'applyServerRows',
+  'markAllDirty',
+  'clearAllData',
+  'setCursor',
+  'setSetting',
+] as const;
+
+for (const name of WRITE_METHODS) {
+  const methods = db as Record<string, (...args: unknown[]) => Promise<unknown>>;
+  methods[name] = serializeWrite(methods[name].bind(db));
+}
