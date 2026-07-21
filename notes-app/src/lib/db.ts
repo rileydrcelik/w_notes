@@ -38,6 +38,7 @@ type NoteRow = {
   folder_id: string | null;
   favorite: number;
   shared: number;
+  published: number;
   created_at: number;
   updated_at: number;
   deleted_at: number | null;
@@ -160,6 +161,9 @@ export type NoteSync = {
   folder_id: string | null;
   favorite: number | boolean;
   shared: number | boolean;
+  // Nullable on the wire: the backend COALESCE-preserves this column, so a row
+  // that has never been published comes back as null rather than false.
+  published: number | boolean | null;
   created_at: number;
   updated_at: number;
   deleted_at: number | null;
@@ -239,6 +243,7 @@ async function open(): Promise<SQLite.SQLiteDatabase> {
       folder_id              TEXT,
       favorite               INTEGER NOT NULL DEFAULT 0,
       shared                 INTEGER NOT NULL DEFAULT 0,
+      published              INTEGER NOT NULL DEFAULT 0,
       created_at             INTEGER NOT NULL,
       updated_at             INTEGER NOT NULL,
       deleted_at             INTEGER,
@@ -357,6 +362,11 @@ async function ensureSyncColumns(database: SQLite.SQLiteDatabase): Promise<void>
     await database.execAsync('ALTER TABLE notes ADD COLUMN plugin_type TEXT');
     await database.execAsync('ALTER TABLE notes ADD COLUMN plugin_config TEXT');
   }
+  // Publish-to-website came later. Defaults to 0 so no existing note is
+  // retroactively pushed to the public site by the upgrade itself.
+  if (!noteCols.includes('published')) {
+    await database.execAsync('ALTER TABLE notes ADD COLUMN published INTEGER NOT NULL DEFAULT 0');
+  }
 
   const copaCols = await colsOf('copa_items');
   if (!copaCols.includes('updated_at')) {
@@ -405,6 +415,7 @@ function toNote(r: NoteRow): Note {
     updatedAt: ymd(r.updated_at),
     favorite: !!r.favorite,
     shared: !!r.shared,
+    published: !!r.published,
     pluginType: (r.plugin_type ?? undefined) as Note['pluginType'],
     pluginConfig: r.plugin_config ?? undefined,
   };
@@ -546,7 +557,7 @@ export const db = {
 
   async updateNote(
     id: string,
-    patch: Partial<Pick<Note, 'title' | 'body' | 'folderId' | 'favorite' | 'shared' | 'pluginConfig'>>,
+    patch: Partial<Pick<Note, 'title' | 'body' | 'folderId' | 'favorite' | 'shared' | 'published' | 'pluginConfig'>>,
   ): Promise<void> {
     dbCrumb('updateNote', { id, fields: Object.keys(patch) });
     const database = await getDb();
@@ -557,6 +568,8 @@ export const db = {
     if (patch.folderId !== undefined) (sets.push('folder_id = ?'), args.push(patch.folderId));
     if (patch.favorite !== undefined) (sets.push('favorite = ?'), args.push(patch.favorite ? 1 : 0));
     if (patch.shared !== undefined) (sets.push('shared = ?'), args.push(patch.shared ? 1 : 0));
+    if (patch.published !== undefined)
+      (sets.push('published = ?'), args.push(patch.published ? 1 : 0));
     // A plugin note's config (e.g. Sentry org/project) can be set after creation
     // when the user configures the note; it syncs like any other column.
     if (patch.pluginConfig !== undefined)
@@ -985,7 +998,7 @@ export const db = {
          FROM folders WHERE dirty = 1`,
       ),
       database.getAllAsync<NoteSync>(
-        `SELECT id, title, body, folder_id, favorite, shared, created_at, updated_at,
+        `SELECT id, title, body, folder_id, favorite, shared, published, created_at, updated_at,
                 deleted_at, trashed_with_folder_id, plugin_type, plugin_config
          FROM notes WHERE dirty = 1`,
       ),
@@ -1081,12 +1094,13 @@ export const db = {
       for (const n of payload.notes) {
         const r = await database.runAsync(
           `INSERT INTO notes
-             (id, title, body, folder_id, favorite, shared, created_at, updated_at,
+             (id, title, body, folder_id, favorite, shared, published, created_at, updated_at,
               deleted_at, trashed_with_folder_id, plugin_type, plugin_config, dirty)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
            ON CONFLICT(id) DO UPDATE SET
              title = excluded.title, body = excluded.body, folder_id = excluded.folder_id,
              favorite = excluded.favorite, shared = excluded.shared,
+             published = excluded.published,
              created_at = excluded.created_at, updated_at = excluded.updated_at,
              deleted_at = excluded.deleted_at,
              trashed_with_folder_id = excluded.trashed_with_folder_id,
@@ -1100,6 +1114,11 @@ export const db = {
             n.folder_id,
             bit(n.favorite),
             bit(n.shared),
+            // A backend row that never carried the flag arrives as null, which
+            // means exactly "not published" — the local column is NOT NULL, so
+            // it lands as 0. (Preserving an unknown value matters on *push*,
+            // where the server COALESCEs; on pull the server is authoritative.)
+            bit(n.published ?? 0),
             n.created_at,
             n.updated_at,
             n.deleted_at,

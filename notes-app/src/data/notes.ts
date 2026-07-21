@@ -15,6 +15,14 @@ export type Note = {
   favorite?: boolean;
   shared?: boolean;
   /**
+   * Mirrors the note onto the public portfolio website as a post in its "notes"
+   * feed; clearing it takes the post down again. Distinct from `shared`, which
+   * governs in-app sharing — a note can be shared with someone without being
+   * world-readable. Every edit to a published note republishes it, which also
+   * floats it back to the top of the site's feed.
+   */
+  published?: boolean;
+  /**
    * Plugin-note marker. When set, the note renders live plugin content (e.g. a
    * Sentry project's issues, or a GitHub repo's issues) instead of an editable
    * body. Ordinary notes leave it undefined.
