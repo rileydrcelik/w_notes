@@ -12,19 +12,14 @@
 name: Mobile E2E
 
 on:
-  # Nightly backstop at 05:00 UTC — an hour after nothing else is running. Catches
-  # native regressions that arrive by routes the path filter below doesn't see
-  # (a dependency bump, an Expo SDK change, a shared module going wrong).
-  #
-  # Note: GitHub disables scheduled workflows after 60 days without repo activity.
-  # If this stops firing, that's why — re-enable it in the Actions tab.
-  schedule:
-    - cron: '0 5 * * *'
-
   workflow_dispatch:
 
-  # Immediate feedback on the changes most likely to break native, without
-  # waiting for the nightly.
+  # Only pushes that touch native-relevant code. Everything else is covered on
+  # every push by tests.yml in ~1m20s, including the `.web`/`.native` export
+  # parity check — the cheap guard for the bug class that motivated this.
+  #
+  # No nightly: a run costs tens of minutes and would re-verify code that mostly
+  # hasn't changed natively, producing a result nobody reads unless it's red.
   push:
     paths:
       - 'notes-app/src/lib/db.ts'
@@ -43,7 +38,13 @@ jobs:
   android:
     name: Android (maestro)
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # A cold native build on a 2-core runner took >44 min and hit a 45-min
+    # timeout before the emulator even started. `setup-gradle` caches the build,
+    # but the cache only exists once a run completes — so this generous ceiling
+    # is there to let the *first* run through and populate it. If cached runs
+    # don't come in comfortably under ~20 min, this workflow isn't worth keeping;
+    # `npm run test:mobile` covers the same flows locally in about a minute.
+    timeout-minutes: 90
     defaults:
       run:
         working-directory: notes-app
