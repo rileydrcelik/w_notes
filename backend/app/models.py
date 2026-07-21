@@ -20,6 +20,7 @@ from sqlalchemy import (
     Index,
     String,
     Text,
+    false,
     func,
     text,
 )
@@ -111,6 +112,13 @@ class Note(Base):
     folder_id: Mapped[str | None] = mapped_column(String)
     favorite: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     shared: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+    # Opt-in flag mirroring the note onto the public portfolio site as a post in
+    # the "notes" category. Distinct from ``shared`` (in-app sharing) — a note can
+    # be shared with a collaborator without being world-readable, and vice versa.
+    # Nullable (NULL reads as false) so it can sit in the sync layer's
+    # ``_PRESERVE_IF_NULL`` set; see the 0007 migration for why that matters.
+    published: Mapped[bool | None] = mapped_column(Boolean, server_default=false())
 
     created_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
     updated_at: Mapped[int] = mapped_column(BigInteger, nullable=False)

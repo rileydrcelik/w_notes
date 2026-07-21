@@ -36,6 +36,10 @@ class NoteIn(_Syncable):
     folder_id: str | None = None
     favorite: bool = False
     shared: bool = False
+    # Publish-to-website flag. ``None`` (not merely absent) from clients that
+    # predate it; the upsert COALESCE-preserves the stored value rather than
+    # letting a default silently unpublish. NULL reads as false.
+    published: bool | None = None
     trashed_with_folder_id: str | None = None
     # Plugin-note marker + opaque per-plugin config (e.g. Sentry org/project).
     # None for ordinary notes; the live plugin data is fetched separately, not

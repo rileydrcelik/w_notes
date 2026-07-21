@@ -23,10 +23,11 @@ import sentry_sdk
 from sqlalchemy import func, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, Query
 
 from app.db import get_session
 from app.deps import get_current_user
+from app.publisher import collect_publish_actions, deliver
 from app.models import CopaItem, Folder, Issue, Note, User
 from app.schemas import (
     CopaItemIn,
@@ -56,7 +57,10 @@ _IMMUTABLE = {"user_id", "id", "created_at", "server_seq"}
 # a genuine user action (move to home, restore, untrack) and must propagate.
 _PRESERVE_IF_NULL = {
     Folder: ("kind", "config"),
-    Note: ("plugin_type", "plugin_config"),
+    # published: a client that predates the publish-to-website feature sends
+    # NULL; without preservation a single sync from such a device would
+    # unpublish every note on the public site.
+    Note: ("plugin_type", "plugin_config", "published"),
     CopaItem: ("file_name", "mime_type", "file_size", "remote_key"),
     # type_ids: an older client can't send it (multi-type came later); a NULL
     # push must not wipe the stored set. An issue always keeps ≥1 type, so it's
@@ -116,6 +120,7 @@ async def _upsert_batch(session: AsyncSession, model, user_id: str, rows) -> Non
 @router.post("/push", response_model=PushResponse)
 async def push(
     payload: PushRequest,
+    background: BackgroundTasks,
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> PushResponse:
@@ -136,6 +141,18 @@ async def push(
     await _upsert_batch(session, Issue, user.id, payload.issues)
 
     await session.flush()
+
+    # Mirror any published notes onto the public site. Resolved here — inside the
+    # transaction, after the flush — so it reads the rows the upsert actually
+    # stored rather than the incoming payload, which LWW may have rejected as
+    # stale. The HTTP delivery itself is deferred to a background task: the
+    # website is a side effect of syncing and must never be able to fail it.
+    actions = await collect_publish_actions(
+        session, user.id, [n.id for n in payload.notes]
+    )
+    if actions:
+        background.add_task(deliver, actions)
+
     return PushResponse(server_seq=await _high_water(session, user.id))
 
 

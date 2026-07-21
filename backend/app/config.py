@@ -58,6 +58,39 @@ class Settings(BaseSettings):
     # presigned PUT can't hard-enforce this, so the client checks size too.
     max_upload_bytes: int = 2 * 1024 * 1024 * 1024
 
+    # --- Publish-to-portfolio -------------------------------------------------
+    # Base URL of the portfolio API that hosts the public "notes" feed (e.g.
+    # "https://api.rileydrcelik.com"). Empty => publishing is disabled entirely
+    # and note sync behaves exactly as it did before the feature existed.
+    portfolio_api_base: str = ""
+
+    # Shared secret presented to the portfolio's /api/notes/ingest endpoint. The
+    # portfolio's own write routes are gated on Firebase user tokens, which a
+    # backend can't mint, so machine-to-machine ingest gets its own credential.
+    # Empty => publishing is disabled (same as an empty base URL).
+    portfolio_ingest_secret: str = ""
+
+    # Comma-separated w_notes user ids allowed to publish. This is a
+    # multi-tenant API: without an allowlist, *any* account could push posts
+    # onto the site owner's portfolio just by flipping a note's `published`
+    # flag. Empty => nobody can publish (fail closed).
+    publisher_user_ids: str = ""
+
+    @property
+    def publisher_user_id_set(self) -> set[str]:
+        """`publisher_user_ids` parsed into the set the sync hook checks."""
+        return {u.strip() for u in self.publisher_user_ids.split(",") if u.strip()}
+
+    @property
+    def publishing_enabled(self) -> bool:
+        """Publishing needs a destination, a credential, and at least one
+        authorized publisher. Missing any of the three disables it silently."""
+        return bool(
+            self.portfolio_api_base
+            and self.portfolio_ingest_secret
+            and self.publisher_user_id_set
+        )
+
     # Browser origins allowed to call the API (CORS). Native apps don't enforce
     # CORS so this only matters for the web client. Comma-separated list, or "*"
     # to allow any origin — safe here because auth is a bearer token, not a
