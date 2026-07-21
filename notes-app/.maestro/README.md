@@ -1,0 +1,98 @@
+# Mobile end-to-end tests (Maestro)
+
+The native counterpart to `e2e/` (Playwright, web). Same job — catch wiring
+breakage a browser-less test can't see — but on a real Android runtime, where
+the app talks to `expo-sqlite`'s native module rather than wa-sqlite/OPFS.
+
+That difference is the point. The web tests exercise one SQLite implementation
+and these exercise the other, and the two have failed differently before.
+
+## Prerequisites
+
+Mobile E2E is much heavier than web E2E, which is why it stays local-only for
+now. Every run needs:
+
+1. **Maestro** — a JVM CLI. `~/.maestro-cli/maestro/bin/maestro.bat` on Windows
+   (the release zip ships a `.bat`; the documented `curl | bash` installer is
+   Unix-only). Needs Java on PATH.
+2. **A running emulator or device**
+   ```sh
+   $ANDROID_HOME/emulator/emulator -avd Medium_Phone_API_35
+   adb devices     # confirm it appears
+   ```
+3. **A release build installed** — a real build, because `expo-sqlite` is a
+   native module; there is no "just point at a dev server" here.
+   ```sh
+   cd notes-app
+   SENTRY_DISABLE_AUTO_UPLOAD=true EXPO_PUBLIC_API_URL= EXPO_PUBLIC_SENTRY_DSN= \
+     npx expo run:android --variant release
+   ```
+
+   `SENTRY_DISABLE_AUTO_UPLOAD=true` is required: the Sentry Gradle plugin
+   uploads source maps on *release* builds only, and without an auth token it
+   fails the build outright (`Auth token is required for this request`). A local
+   test build has no reason to publish source maps.
+
+   **Release, not debug — this matters.** A debug build is an expo-dev-client
+   that loads its JS from Metro and remembers the server URL in app storage.
+   `clearState` wipes that, so the next launch lands on the dev-client's
+   "Development Servers" picker instead of the app, and every flow fails on the
+   first assertion. Learned the hard way; the failure screenshot is the launcher.
+
+   A release build embeds the JS bundle, so it launches straight into the app
+   with no Metro running and no launcher in the way. It's also the artifact
+   users actually get, which makes it the right thing to test — same reasoning
+   as verifying the web export rather than the dev server.
+
+   Release signs with the debug keystore (see `android/app/build.gradle`), so no
+   signing setup is needed for local runs.
+
+   Because the bundle is embedded, `EXPO_PUBLIC_*` values are **baked in at build
+   time** — changing them means rebuilding.
+
+Sync is switched off via the empty `EXPO_PUBLIC_API_URL`, matching the web
+tests: no backend, no Firebase, no sign-in, and no chance of a test run creating
+junk users in the production database.
+
+## Run
+
+```sh
+~/.maestro-cli/maestro/bin/maestro.bat test .maestro/
+~/.maestro-cli/maestro/bin/maestro.bat test .maestro/smoke.yaml    # one flow
+~/.maestro-cli/maestro/bin/maestro.bat studio                      # interactive
+```
+
+`studio` is worth using when writing a flow — it shows the live view hierarchy
+and which selectors match.
+
+## Selectors
+
+Maestro matches on accessibility text, so the app's `accessibilityLabel` props
+work here exactly as they do for Playwright's `getByLabel` on web. One set of
+labels serves both platforms, which is why no `testID` props were needed.
+
+## What these found on their first run
+
+The app **would not launch on device at all**. `whenDbOwner` and
+`subscribeDbRole` had been added to `web-db-lock.ts` (43d961c) along with callers
+that run on every platform, but the `.native.ts` counterpart never got them — so
+`db.ts`'s `await whenDbOwner()` threw, SQLite never opened, and AppShell crashed
+before rendering. Broken for three days.
+
+Nothing else could have caught it: the unit tests don't import those modules, the
+backend tests are server-side, and Playwright drives the **web** build, which has
+the functions. A platform-split module where one side is missing an export is
+invisible until something runs the other side.
+
+That's the argument for keeping these, despite the cost below.
+
+## Why this isn't in CI
+
+Each run needs an emulator plus a full native build — minutes, not seconds,
+versus ~30s for the whole web E2E job. Wiring that into GitHub Actions is
+possible (there are emulator actions) but it's a large, slow, historically flaky
+addition, and it would gate every push on infrastructure far heavier than
+anything else in the pipeline.
+
+Run these by hand before a mobile release, or after touching the native DB
+layer. If mobile-specific regressions start slipping through, revisit.

@@ -1,0 +1,31 @@
+# Does a note survive the app being killed and relaunched?
+#
+# The native counterpart of the web suite's reload test, and the reason mobile
+# E2E earns its keep at all: this path runs `expo-sqlite`'s **native** module,
+# a completely different implementation from the wa-sqlite/OPFS build the web
+# tests cover. Same app code, same schema, different storage engine underneath —
+# and the two have failed differently before (overlapping transactions aborting
+# each other was native-only).
+#
+# `stopApp` kills the process outright rather than backgrounding it, so nothing
+# in memory can carry the note across. Passing means the row genuinely reached
+# the on-device database and was read back on a cold start.
+appId: com.rileydrcelik.wnotes.dev
+---
+- clearState
+- launchApp
+
+- tapOn: 'Create'
+# Tap the title field before typing. `inputText` goes to whatever holds focus,
+# and the editor opens with nothing focused — without this the text is typed
+# into the void and the flow fails at the assertion with no obvious cause.
+- tapOn: 'Title'
+- inputText: 'maestro note'
+- tapOn: 'Go back'
+
+- assertVisible: 'maestro note'
+
+- stopApp
+- launchApp
+
+- assertVisible: 'maestro note'

@@ -1,0 +1,27 @@
+# Does the app launch and reach a usable home screen?
+#
+# The mobile equivalent of the web "app boots" test, and the same reasoning: a
+# launch crash — a missing native module, a failed migration, a JS bundle that
+# won't parse — passes every unit and integration test in the repo, because none
+# of them start an app. This is the first check with any chance of seeing it.
+#
+# `clearState` makes each run start from a fresh install: no notes, no device
+# key, no SQLite file. That's what makes the first-launch path (schema creation
+# and migrations on an empty database) actually get exercised, rather than
+# quietly skipped because the tables already existed.
+appId: com.rileydrcelik.wnotes.dev
+---
+- clearState
+- launchApp
+
+# The create button lives in the tab bar, which only mounts once the app has
+# booted, the router has resolved a route, and the database is open. Waiting for
+# it means more than "some pixels rendered".
+#
+# Matched by accessibility text, not `id:`. On Android RN maps `accessibilityLabel`
+# to content-description while `id:` matches resource-id, which comes from
+# `testID` — and this app has no testIDs. The same labels that back Playwright's
+# getByLabel on web work here.
+- assertVisible: 'Create'
+
+- assertVisible: 'Search notes and folders'
