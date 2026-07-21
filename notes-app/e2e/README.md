@@ -13,7 +13,26 @@ npx playwright show-trace test-results/.../trace.zip
 
 Playwright starts Metro itself (`webServer` in `playwright.config.ts`), so no
 server needs to be running first. A cold Metro start is ~30s; the tests
-themselves take 3–5s each.
+themselves take 2–3s each.
+
+## In CI
+
+They run on every push and PR as a separate job from the fast suites (~1m35s,
+against ~1m for the backend and ~30s for the client). Keeping them apart means
+E2E can't slow the quick feedback, and a red X says which kind of failure it was.
+
+The config sets one retry under CI, so a test has to fail twice to fail the
+build. On failure the HTML report — traces and screenshots per failed test — is
+uploaded as an artifact; download it from the run page rather than trying to
+reproduce locally. `npx playwright show-trace <file>` opens a trace.
+
+**Flakiness:** 5 CI runs against known-good code, 0 spurious failures — the
+check before letting these gate pushes, since a check that cries wolf poisons
+the whole suite. Five runs is thin evidence (it only bounds the true rate to
+somewhere under ~45%), so treat it as "no evidence of flakiness" rather than
+proof of none. If a red build ever looks spurious, don't re-run and move on —
+re-run to confirm, then either fix the race or move these out of the gating
+path. Re-running red builds as a habit is how a suite stops meaning anything.
 
 ## Scope
 
@@ -40,24 +59,22 @@ Native's `accessibilityLabel` becomes `aria-label` on web, so these selectors
 test what a screen reader sees — they can't silently drift from real
 accessibility the way a `data-testid` can. No `testID` props were needed.
 
-## Known bug: the hydrate race
+## Why they click immediately
 
-`waitForHydrate()` in `smoke.spec.ts` is a fixed 2.5s wait, which is normally a
-smell. It compensates for a real defect:
+`ready()` waits only for the create button to exist — no settling delay. That
+immediacy is load-bearing, and it's why these tests earned their place.
 
-`notes-store`'s mount effect calls `setNotes(data.notes)` when `db.bootstrap()`
-resolves — a **replacement**, not a merge. `createNote` inserts optimistically
-with `setNotes(prev => [note, ...prev])`. Create a note before the hydrate lands
-and the optimistic entry is wiped from React state, and the editor renders
-"This note could not be found".
-
-Measured: clicking immediately fails; clicking after ~2s succeeds. The row **does
-reach SQLite** — reloading the page shows the note. So nothing is lost, but the
-user sees an error and would reasonably assume otherwise.
+They originally carried a 2.5s wait, because clicking sooner failed. The cause
+was a real defect: `notes-store`'s `reload()` replaced state with a SQLite
+snapshot, so a note created while that read was in flight was written to the
+database but wiped from React state, and the editor rendered "This note could
+not be found". Nothing was lost — reloading showed the note — but it read as
+data loss.
 
 A person rarely clicks within the first second of a cold load. Playwright always
-does, which is how this surfaced.
+does, which is the only reason it surfaced.
 
-**Delete `waitForHydrate` once that's fixed** — the tests should pass without it,
-and the wait existing is what stops these tests from catching a regression in
-that path.
+Fixed in `notes-store` (`persist` tracks in-flight writes; `reload` re-reads if
+one lands mid-flight), and the wait is gone. Removing a race means these tests
+now *guard* it: reintroduce the bug and they fail. Don't reintroduce a settle
+delay to make a flaky test pass — that's the shape of a real bug.
