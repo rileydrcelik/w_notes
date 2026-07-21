@@ -82,7 +82,8 @@
     "test:e2e:ui": "playwright test --ui",
     "build:web": "expo export -p web --clear && node scripts/fix-web-export.mjs && node scripts/verify-web-export.mjs",
     "verify:web": "node scripts/verify-web-export.mjs",
-    "test:mobile": "node scripts/test-mobile.mjs"
+    "test:mobile": "node scripts/test-mobile.mjs",
+    "emulator:clean": "node scripts/clean-emulator.mjs"
   },
   "private": true
 }
