@@ -1,0 +1,71 @@
+#!/bin/sh
+#
+# Runs the mobile E2E flows before a push that touches native-relevant code.
+#
+# Mobile is the one suite CI can't carry: a native build on a GitHub runner took
+# over 45 minutes, against ~1 minute locally against a warm emulator. So the
+# trigger lives here instead — and only for the changes where native risk is
+# real. Every other push is untouched and still gets the full CI pipeline in
+# ~1m20s, including the `.web`/`.native` export-parity check.
+#
+# Install (once per clone — hooks aren't versioned by git itself):
+#
+#     git config core.hooksPath .githooks
+#
+# Bypass for a single push, when you know it's unrelated:
+#
+#     git push --no-verify
+#
+# If you find yourself reaching for --no-verify routinely, the filter below is
+# too broad — narrow it rather than living with a hook you always skip.
+
+set -e
+
+# Paths where a change can plausibly break the native app but not the web build.
+NATIVE_PATHS='notes-app/src/lib/db\.ts|notes-app/src/.*\.native\.tsx?$|notes-app/android/|notes-app/package\.json|notes-app/\.maestro/'
+
+changed=''
+
+# git feeds pre-push one line per ref: <local ref> <local sha> <remote ref> <remote sha>
+while read -r _local_ref local_sha _remote_ref remote_sha; do
+  # Deleting a branch — nothing to test.
+  case "$local_sha" in
+    0000000*) continue ;;
+  esac
+
+  # An all-zero remote sha means the branch is new upstream, so there's no
+  # previous state to diff against; fall back to origin/main.
+  case "$remote_sha" in
+    0000000*) base=$(git merge-base origin/main "$local_sha" 2>/dev/null || echo '') ;;
+    *) base="$remote_sha" ;;
+  esac
+
+  if [ -n "$base" ]; then
+    changed="$changed$(git diff --name-only "$base" "$local_sha" 2>/dev/null || true)
+"
+  fi
+done
+
+if ! printf '%s' "$changed" | grep -qE "$NATIVE_PATHS"; then
+  exit 0
+fi
+
+echo ""
+echo "→ native-relevant changes detected; running mobile E2E before push"
+printf '%s' "$changed" | grep -E "$NATIVE_PATHS" | sed 's/^/    /' | sort -u
+echo ""
+
+# --build is not optional here: the very files that triggered this are the ones
+# baked into the release APK, so the installed build is stale by definition.
+if ! npm --prefix notes-app run test:mobile -- --build; then
+  echo ""
+  echo "✗ mobile E2E failed — push aborted."
+  echo "  Artifacts (screenshots, view hierarchies): ~/.maestro/tests/"
+  echo "  To push anyway: git push --no-verify"
+  echo ""
+  exit 1
+fi
+
+echo ""
+echo "✓ mobile E2E passed"
+echo ""
