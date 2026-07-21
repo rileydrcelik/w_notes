@@ -68,6 +68,13 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # `android/` is gitignored — Expo generates it. A local checkout has one
+      # because `expo run:android` prebuilds implicitly; CI has to ask.
+      # APP_VARIANT is unset, so app.config.js yields the development variant and
+      # the package id matches the flows' `com.rileydrcelik.wnotes.dev`.
+      - name: Generate the native project
+        run: npx expo prebuild --platform android --no-install
+
       # Built before the emulator starts: assembling the APK needs no device, and
       # keeping it out of the emulator step means the emulator is only alive for
       # the part that actually needs it.
