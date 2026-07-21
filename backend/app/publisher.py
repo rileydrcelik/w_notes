@@ -16,8 +16,9 @@ Shape of the integration:
   never fail a user's sync — the notes app is the product, the website is a
   side effect. Failures are logged and reported to Sentry, not retried; the
   next edit to the note republishes it.
-- **Authorization.** Only user ids in ``publisher_user_ids`` may publish. This
-  API is multi-tenant and the portfolio is one specific person's website.
+- **Authorization.** Only accounts whose email is in ``publisher_emails`` may
+  publish. This API is multi-tenant and the portfolio is one specific person's
+  website. Anonymous device-key accounts have no email and so never qualify.
 
 Body handling: note bodies are the app's canonical rich-text HTML, wrapped in
 ``<html>…</html>``. We strip that wrapper and send the inner fragment. The
@@ -37,7 +38,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.models import Folder, Note
+from app.models import Folder, Note, User
 
 log = logging.getLogger(__name__)
 
@@ -82,23 +83,27 @@ def _title_for(note: Note) -> str:
 
 async def collect_publish_actions(
     session: AsyncSession,
-    user_id: str,
+    user: User,
     note_ids: list[str],
 ) -> list[PublishAction]:
     """Resolve what the portfolio should hold for the notes just pushed.
 
     Reads the *stored* rows (post-flush) rather than trusting the incoming
     payload, so a push that last-writer-wins rejected as stale publishes
-    nothing. Returns an empty list when publishing is disabled or the user
+    nothing. Returns an empty list when publishing is disabled or the caller
     isn't an authorized publisher — the caller then skips delivery entirely.
     """
     settings = get_settings()
     if not settings.publishing_enabled:
         return []
-    if user_id not in settings.publisher_user_id_set:
+    # An anonymous device-key account has no email and therefore no way to match
+    # the allowlist — publishing requires a signed-in, named account.
+    if not user.email or user.email.lower() not in settings.publisher_email_set:
         return []
     if not note_ids:
         return []
+
+    user_id = user.id
 
     rows = (
         await session.execute(

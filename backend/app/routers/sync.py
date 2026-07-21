@@ -148,7 +148,7 @@ async def push(
     # stale. The HTTP delivery itself is deferred to a background task: the
     # website is a side effect of syncing and must never be able to fail it.
     actions = await collect_publish_actions(
-        session, user.id, [n.id for n in payload.notes]
+        session, user, [n.id for n in payload.notes]
     )
     if actions:
         background.add_task(deliver, actions)

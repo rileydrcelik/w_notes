@@ -70,16 +70,30 @@ class Settings(BaseSettings):
     # Empty => publishing is disabled (same as an empty base URL).
     portfolio_ingest_secret: str = ""
 
-    # Comma-separated w_notes user ids allowed to publish. This is a
-    # multi-tenant API: without an allowlist, *any* account could push posts
-    # onto the site owner's portfolio just by flipping a note's `published`
-    # flag. Empty => nobody can publish (fail closed).
-    publisher_user_ids: str = ""
+    # Comma-separated account emails allowed to publish. This is a multi-tenant
+    # API: without an allowlist, *any* account could push posts onto the site
+    # owner's portfolio just by flipping a note's `published` flag. Empty =>
+    # nobody can publish (fail closed).
+    #
+    # Matched against `users.email`, which Firebase populates on sign-in, rather
+    # than against `users.id`. The id is the more stable key, but it is a
+    # server-minted UUID with no way to look it up: production RDS is not
+    # publicly accessible, ECS Exec is not enabled, and there is no /me
+    # endpoint. An allowlist nobody can populate is an allowlist that never gets
+    # used correctly. An anonymous device-key account has no email and so can
+    # never publish, which is the desired default.
+    publisher_emails: str = ""
 
     @property
-    def publisher_user_id_set(self) -> set[str]:
-        """`publisher_user_ids` parsed into the set the sync hook checks."""
-        return {u.strip() for u in self.publisher_user_ids.split(",") if u.strip()}
+    def publisher_email_set(self) -> set[str]:
+        """`publisher_emails` parsed into the set the sync hook checks.
+
+        Lower-cased on both sides of the comparison: the local part of an
+        address is technically case-sensitive, but no real provider treats it
+        that way, and a capitalised letter in an env var silently disabling
+        publishing would be a miserable thing to debug.
+        """
+        return {e.strip().lower() for e in self.publisher_emails.split(",") if e.strip()}
 
     @property
     def publishing_enabled(self) -> bool:
@@ -88,7 +102,7 @@ class Settings(BaseSettings):
         return bool(
             self.portfolio_api_base
             and self.portfolio_ingest_secret
-            and self.publisher_user_id_set
+            and self.publisher_email_set
         )
 
     # Browser origins allowed to call the API (CORS). Native apps don't enforce

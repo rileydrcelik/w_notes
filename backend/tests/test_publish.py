@@ -9,8 +9,6 @@ else's website.
 
 from __future__ import annotations
 
-import uuid
-
 import pytest
 
 from app.config import get_settings
@@ -24,31 +22,44 @@ from tests.test_sync import note, push
 PUSH = "/sync/push"
 
 
+PUBLISHER = "owner@example.com"
+
+
 @pytest.fixture
 def publishing(monkeypatch):
-    """Enable publishing for whichever user id the test passes to `authorize`."""
-    def authorize(user_id: str) -> None:
+    """Enable publishing for whichever email the test passes to `authorize`."""
+    def authorize(email: str) -> None:
         settings = get_settings()
         monkeypatch.setattr(settings, "portfolio_api_base", "https://portfolio.test", raising=False)
         monkeypatch.setattr(settings, "portfolio_ingest_secret", "s3cret", raising=False)
-        monkeypatch.setattr(settings, "publisher_user_ids", user_id, raising=False)
+        monkeypatch.setattr(settings, "publisher_emails", email, raising=False)
     yield authorize
     get_settings.cache_clear()
 
 
-async def _user_id(device: dict[str, str]) -> str:
-    """The user id minted for a device key by its first authenticated request."""
+async def _user(device: dict[str, str], email: str | None = PUBLISHER) -> User:
+    """The user minted for a device key by its first authenticated request.
+
+    The suite authenticates with anonymous device keys, which carry no email —
+    that is what a pre-sign-in account looks like. Tests that expect to publish
+    set one explicitly, standing in for Firebase having populated it on sign-in.
+    """
     token = device["Authorization"].removeprefix("Bearer ")
     async with SessionLocal() as session:
         user = (
             await session.execute(select(User).where(User.device_key == token))
         ).scalar_one()
-        return user.id
+        if email is not None:
+            user.email = email
+            await session.commit()
+        await session.refresh(user)
+        session.expunge(user)
+        return user
 
 
-async def _actions(user_id: str, note_ids: list[str]):
+async def _actions(user: User, note_ids: list[str]):
     async with SessionLocal() as session:
-        return await collect_publish_actions(session, user_id, note_ids)
+        return await collect_publish_actions(session, user, note_ids)
 
 
 # ---- body shaping -----------------------------------------------------------
@@ -70,9 +81,9 @@ def test_strip_html_wrapper_passes_through_fragments():
 async def test_published_note_produces_a_publish_action(client, device, publishing):
     row = note(title="Hello", body="<html><p>world</p></html>", published=True)
     await push(client, device, notes=[row])
-    publishing(await _user_id(device))
+    publishing(PUBLISHER)
 
-    actions = await _actions(await _user_id(device), [row["id"]])
+    actions = await _actions(await _user(device), [row["id"]])
 
     assert len(actions) == 1
     assert actions[0].present is True
@@ -84,9 +95,9 @@ async def test_published_note_produces_a_publish_action(client, device, publishi
 async def test_unpublished_note_produces_a_removal(client, device, publishing):
     row = note(published=False)
     await push(client, device, notes=[row])
-    publishing(await _user_id(device))
+    publishing(PUBLISHER)
 
-    actions = await _actions(await _user_id(device), [row["id"]])
+    actions = await _actions(await _user(device), [row["id"]])
 
     assert [a.present for a in actions] == [False]
 
@@ -101,9 +112,9 @@ async def test_trashed_note_comes_off_the_site_even_while_flagged(
     await push(
         client, device, notes=[note(id=row["id"], published=True, updated_at=2_000, deleted_at=2_000)]
     )
-    publishing(await _user_id(device))
+    publishing(PUBLISHER)
 
-    actions = await _actions(await _user_id(device), [row["id"]])
+    actions = await _actions(await _user(device), [row["id"]])
 
     assert [a.present for a in actions] == [False]
 
@@ -120,9 +131,9 @@ async def test_stale_push_does_not_publish_its_body(client, device, publishing):
         device,
         notes=[note(id=row["id"], published=True, body="<html><p>stale</p></html>", updated_at=1_000)],
     )
-    publishing(await _user_id(device))
+    publishing(PUBLISHER)
 
-    actions = await _actions(await _user_id(device), [row["id"]])
+    actions = await _actions(await _user(device), [row["id"]])
 
     assert actions[0].payload["body_html"] == "<p>current</p>"
 
@@ -132,9 +143,9 @@ async def test_edit_carries_the_notes_own_clock(client, device, publishing):
     note back to the top."""
     row = note(published=True, updated_at=9_999)
     await push(client, device, notes=[row])
-    publishing(await _user_id(device))
+    publishing(PUBLISHER)
 
-    actions = await _actions(await _user_id(device), [row["id"]])
+    actions = await _actions(await _user(device), [row["id"]])
 
     assert actions[0].payload["updated_at_ms"] == 9_999
 
@@ -147,9 +158,32 @@ async def test_unauthorized_user_publishes_nothing(client, device, publishing):
     account outside the allowlist must not be able to put anything on it."""
     row = note(published=True)
     await push(client, device, notes=[row])
-    publishing(str(uuid.uuid4()))  # somebody else entirely
+    publishing("someone.else@example.com")
 
-    assert await _actions(await _user_id(device), [row["id"]]) == []
+    assert await _actions(await _user(device), [row["id"]]) == []
+
+
+async def test_anonymous_account_cannot_publish(client, device, publishing):
+    """A device-key account that has never signed in has no email, so it can
+    never match the allowlist. Publishing requires a named account."""
+    row = note(published=True)
+    await push(client, device, notes=[row])
+    publishing(PUBLISHER)
+
+    # email=None: the pre-sign-in state, before Firebase populates it.
+    assert await _actions(await _user(device, email=None), [row["id"]]) == []
+
+
+async def test_allowlist_match_is_case_insensitive(client, device, publishing):
+    """A capitalised letter in the env var silently disabling publishing would
+    be a miserable thing to debug, and no real provider treats the local part
+    as case-sensitive."""
+    row = note(published=True)
+    await push(client, device, notes=[row])
+    publishing("Owner@Example.COM")
+
+    actions = await _actions(await _user(device, email=PUBLISHER), [row["id"]])
+    assert [a.present for a in actions] == [True]
 
 
 async def test_publishing_is_off_until_configured(client, device):
@@ -158,4 +192,4 @@ async def test_publishing_is_off_until_configured(client, device):
     row = note(published=True)
     await push(client, device, notes=[row])
 
-    assert await _actions(await _user_id(device), [row["id"]]) == []
+    assert await _actions(await _user(device), [row["id"]]) == []
