@@ -195,7 +195,6 @@ function OptionsSheet({
     toggleNoteFavorite,
     toggleFolderFavorite,
     markNoteShared,
-    toggleNotePublished,
   } = useNotes();
   const { getIssuesForNote, updateIssue } = useIssues();
 
@@ -210,13 +209,6 @@ function OptionsSheet({
   const isFavorited = (t: OptionsTarget) =>
     (t.type === 'folder' ? getFolder(t.id)?.favorite : getNote(t.id)?.favorite) ?? false;
   const allFavorited = count > 0 && targets.every(isFavorited);
-  // Publishing mirrors a note's body onto the public website, so it is offered
-  // only for plain notes: a plugin note (Sentry/GitHub) renders live data and
-  // has no body to publish, and issue types belong to a project.
-  const isPublishable = (t: OptionsTarget) =>
-    t.type === 'note' && !getNote(t.id)?.pluginType;
-  const canPublish = count > 0 && targets.every(isPublishable);
-  const allPublished = canPublish && targets.every((t) => getNote(t.id)?.published);
 
   // A single selected issue type: derive its project's repo + attributes and its
   // current GitHub-tracking state so we can offer (and apply) the toggle.
@@ -260,13 +252,6 @@ function OptionsSheet({
       : []),
     ...(allNotes ? [{ key: 'move', label: `Move${suffix} to folder`, icon: 'move' as FeatherName }] : []),
     ...(!anyIssueType ? [{ key: 'share', label: `Share${suffix}`, icon: 'share' as FeatherName }] : []),
-    ...(canPublish
-      ? [{
-          key: 'publish',
-          label: `${allPublished ? 'Unpublish from' : 'Publish to'} website${suffix}`,
-          icon: 'globe' as FeatherName,
-        }]
-      : []),
     { key: 'delete', label: `Delete${suffix}`, icon: 'trash-2', destructive: true },
   ];
 
@@ -295,17 +280,6 @@ function OptionsSheet({
           if (isFavorited(t) === next) return;
           if (t.type === 'note') toggleNoteFavorite(t.id);
           else toggleFolderFavorite(t.id);
-        });
-        onClose();
-        break;
-      }
-      case 'publish': {
-        // Drive the whole selection to one state, matching how 'favorite'
-        // resolves a mixed selection.
-        const next = !allPublished;
-        targets.forEach((t) => {
-          if (Boolean(getNote(t.id)?.published) === next) return;
-          toggleNotePublished(t.id);
         });
         onClose();
         break;
@@ -374,9 +348,7 @@ function OptionsSheet({
                   : option.key === 'github'
                     ? GITHUB_ACCENT
                     : colors.text;
-                const filled =
-                  (option.key === 'favorite' && allFavorited) ||
-                  (option.key === 'publish' && allPublished);
+                const filled = option.key === 'favorite' && allFavorited;
                 return (
                   <Pressable
                     key={option.key}

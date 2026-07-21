@@ -9,7 +9,7 @@ from sentry_sdk.integrations.fastapi import FastApiIntegration
 from sentry_sdk.integrations.sqlalchemy import SqlalchemyIntegration
 
 from app.config import get_settings
-from app.routers import files, github_issues, health, sentry, sync
+from app.routers import embed, files, github_issues, health, sentry, sync
 
 settings = get_settings()
 
@@ -44,3 +44,4 @@ app.include_router(sync.router)
 app.include_router(files.router)
 app.include_router(sentry.router)
 app.include_router(github_issues.router)
+app.include_router(embed.router)

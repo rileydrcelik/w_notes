@@ -142,12 +142,6 @@ type NotesContextValue = {
   toggleFolderFavorite: (id: string) => void;
   /** Marks a note as shared so it appears on the Shared screen. */
   markNoteShared: (id: string) => void;
-  /**
-   * Flips whether the note is mirrored onto the public portfolio website. The
-   * change reaches the site on the next sync — publishing is driven by the
-   * backend's push handler, not by the client calling the website directly.
-   */
-  toggleNotePublished: (id: string) => void;
   /** The trashed notes/folders, newest first. */
   trash: TrashEntry[];
   /** Restores a trashed entry back into the live notes/folders. */
@@ -414,15 +408,6 @@ export function NotesProvider({ children }: { children: ReactNode }) {
     persist(db.updateNote(id, { shared: true }));
   }, []);
 
-  const toggleNotePublished = useCallback<NotesContextValue['toggleNotePublished']>(
-    (id) => {
-      const next = !notes.find((n) => n.id === id)?.published;
-      setNotes((prev) => touch(prev, id, { published: next, updatedAt: today() }));
-      persist(db.updateNote(id, { published: next }));
-    },
-    [notes],
-  );
-
   const toggleNoteFavorite = useCallback<NotesContextValue['toggleNoteFavorite']>(
     (id) => {
       const next = !notes.find((n) => n.id === id)?.favorite;
@@ -465,7 +450,6 @@ export function NotesProvider({ children }: { children: ReactNode }) {
       toggleNoteFavorite,
       toggleFolderFavorite,
       markNoteShared,
-      toggleNotePublished,
       trash,
       restoreFromTrash,
     }),
@@ -487,7 +471,6 @@ export function NotesProvider({ children }: { children: ReactNode }) {
       toggleNoteFavorite,
       toggleFolderFavorite,
       markNoteShared,
-      toggleNotePublished,
       restoreFromTrash,
     ],
   );
