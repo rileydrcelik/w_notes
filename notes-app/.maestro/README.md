@@ -56,6 +56,21 @@ junk users in the production database.
 
 ## Run
 
+One command, unattended — starts a headless emulator if one isn't already up,
+runs the flows, and shuts down whatever it started:
+
+```sh
+npm run test:mobile             # flows only (assumes the installed build is current)
+npm run test:mobile -- --build  # rebuild + install first — required after any code change
+npm run test:mobile -- --keep   # leave the emulator running afterwards
+```
+
+Exits non-zero if a flow fails, so it can gate a release script. Roughly a
+minute from cold (emulator boot dominates), or ~30s against a warm emulator.
+An emulator you already had running is reused and left alone.
+
+Or drive Maestro directly:
+
 ```sh
 ~/.maestro-cli/maestro/bin/maestro.bat test .maestro/
 ~/.maestro-cli/maestro/bin/maestro.bat test .maestro/smoke.yaml    # one flow
