@@ -105,3 +105,45 @@ jobs:
 
       - name: Run tests
         run: npm test
+
+  e2e:
+    name: Web E2E (playwright)
+    runs-on: ubuntu-latest
+    # A separate job so it can't slow the fast suites down. Those report in well
+    # under a minute; this one has to boot Metro and a browser, so it lands
+    # later — and the two failures mean very different things.
+    defaults:
+      run:
+        working-directory: notes-app
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: notes-app/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      # `--with-deps` pulls the system libraries headless Chromium needs on a
+      # bare runner; without them the browser fails to launch at all.
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      # Playwright starts Metro itself (webServer in playwright.config.ts), and
+      # reuseExistingServer is off under CI so it always gets a clean one.
+      - name: Run E2E tests
+        run: npm run test:e2e
+
+      # The report carries traces and screenshots for whatever failed — the
+      # difference between debugging a CI failure and trying to reproduce it.
+      - name: Upload report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: notes-app/playwright-report/
+          retention-days: 7
