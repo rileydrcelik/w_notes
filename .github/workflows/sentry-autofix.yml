@@ -38,11 +38,26 @@ jobs:
         with:
           fetch-depth: 0
 
+      # AUTOFIX_PAT, not GITHUB_TOKEN. A PR opened by github-actions[bot] is
+      # treated as coming from a first-time contributor, so its `pull_request`
+      # workflows sit unrun awaiting maintainer approval — and approving one does
+      # NOT emit a second `workflow_run: completed` event, so autofix-ship never
+      # sees it. The fix has to be upstream of the gate: authoring as a real
+      # contributor means Tests just runs.
+      #
+      # Loosening the repo's approval setting would also work, but this repo is
+      # public: that would auto-run workflows for every stranger's PR, and a
+      # poisoned Actions cache from one of them would later be restored by a
+      # main-branch run that does hold secrets and does deploy. A PAT unblocks
+      # only our own automation.
+      #
+      # Falls back to GITHUB_TOKEN when the secret is absent, so a fork of this
+      # repo still gets a working (if gated) autofix rather than a broken one.
       - name: Claude autofix
         uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+          github_token: ${{ secrets.AUTOFIX_PAT || secrets.GITHUB_TOKEN }}
           base_branch: main
           # Cost tiering: default to Haiku 4.5 (cheapest — most Sentry bugs are
           # trivial, and every fix is PR-reviewed so a weak attempt just gets
@@ -93,7 +108,7 @@ jobs:
       - name: Ensure pull request
         if: always()
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.AUTOFIX_PAT || secrets.GITHUB_TOKEN }}
           BRANCH: ${{ github.event.client_payload.branch }}
           SHORT_ID: ${{ github.event.client_payload.short_id }}
           PERMALINK: ${{ github.event.client_payload.permalink }}
@@ -116,6 +131,27 @@ jobs:
             --title "Autofix: $SHORT_ID" \
             --body "Automated fix for Sentry issue $SHORT_ID. See $PERMALINK"
 
+      # The `autofix` label is what marks a PR as machine-authored and therefore
+      # eligible for automatic merge. It matters more now that the PAT makes
+      # these PRs look like the repo owner's own: without an explicit marker,
+      # autofix-ship could not tell an agent's PR from a hand-written one that
+      # happened to sit on an `autofixes/*` branch. Applied to whichever PR
+      # exists, since the action sometimes opens it and sometimes this job does.
+      - name: Label the pull request
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.AUTOFIX_PAT || secrets.GITHUB_TOKEN }}
+          BRANCH: ${{ github.event.client_payload.branch }}
+        run: |
+          set -euo pipefail
+          number=$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number // empty')
+          if [ -z "$number" ]; then
+            echo "No open PR for $BRANCH to label."
+            exit 0
+          fi
+          gh pr edit "$number" --add-label autofix
+          echo "Labelled PR #$number as autofix."
+
       # Once a PR exists for the fix, mark the Sentry issue resolved so it drops
       # out of the unresolved list. If the error recurs, Sentry auto-reopens it on
       # regression. Needs a SENTRY_API_TOKEN repo secret (event:write scope);
@@ -124,7 +160,7 @@ jobs:
       - name: Resolve Sentry issue
         if: always()
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.AUTOFIX_PAT || secrets.GITHUB_TOKEN }}
           SENTRY_API_TOKEN: ${{ secrets.SENTRY_API_TOKEN }}
           BRANCH: ${{ github.event.client_payload.branch }}
           ISSUE_ID: ${{ github.event.client_payload.issue_id }}

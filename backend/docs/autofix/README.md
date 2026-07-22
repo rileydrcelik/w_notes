@@ -39,10 +39,34 @@ workflows take it from PR to production with no human in the loop:
 ```
 
 `autofix-ship.yml` merges only when every one of these holds: the Tests run
-concluded `success`, the branch is `autofixes/*`, the PR was authored by the
-bot, it targets `main`, it's `MERGEABLE`, and its head SHA is exactly the commit
-CI tested. Anything else is left for a human, with a comment on the PR saying
-why. It deploys only if the fix touched `backend/**`.
+concluded `success`, the PR carries the **`autofix` label**, the branch is
+`autofixes/*`, it targets `main`, it is not a draft, the author is the repo
+owner or the bot, it's `MERGEABLE`, and its head SHA is exactly the commit CI
+tested. Anything else is left for a human, with a comment on the PR saying why.
+It deploys only if the fix touched `backend/**`.
+
+### Why a PAT and a label
+
+PRs are authored with **`AUTOFIX_PAT`**, not `GITHUB_TOKEN`. A PR opened by
+`github-actions[bot]` counts as coming from a first-time contributor, so its
+`pull_request` workflows sit unrun awaiting approval — and approving one does
+*not* emit a second `workflow_run: completed` event, so `autofix-ship` never
+sees it. The PR ends up green, unmerged, and invisible: a silent stall.
+
+Loosening the repo's approval setting fixes that too, but this repo is public,
+so it would auto-run workflows for every stranger's PR. A poisoned Actions cache
+from one of those is later restored by a main-branch run that *does* hold
+secrets and *does* deploy. The PAT unblocks only our own automation.
+
+The cost is that autofix PRs now look like the owner's own, so authorship can no
+longer identify them. The **`autofix` label** carries that weight instead —
+applied by the workflow, required by the ship gate. A draft PR is skipped, which
+gives an agent a way to submit a low-confidence attempt for human eyes.
+
+**Escape hatch:** `autofix-ship` also accepts `workflow_dispatch` with a PR
+number, for a PR stranded by the gate. It re-vets from scratch and requires
+every check on the current head to be green, since there's no triggering run to
+compare against.
 
 What this does **not** protect against: a fix that passes CI and starts cleanly
 but is wrong. The tests are the only reviewer. If a fix reaches production and
