@@ -92,14 +92,25 @@ async def test_published_note_produces_a_publish_action(client, device, publishi
     assert actions[0].payload["body_html"] == "<p>world</p>"
 
 
-async def test_unpublished_note_produces_a_removal(client, device, publishing):
-    row = note(published=False)
+async def test_editing_a_note_updates_it_rather_than_removing_it(client, device, publishing):
+    """A regression guard, and the bug it guards against was live.
+
+    Presence used to also require the `published` flag. Once the website took
+    over placement that flag became vestigial and always false, so every edit
+    resolved to "should not be present" and deleted the embedded post — editing
+    a note silently removed it from the site.
+
+    Whether a note is embedded is the portfolio's business; this side always
+    sends the update and lets it match nothing.
+    """
+    row = note(title="still here", published=False)
     await push(client, device, notes=[row])
     publishing(PUBLISHER)
 
     actions = await _actions(await _user(device), [row["id"]])
 
-    assert [a.present for a in actions] == [False]
+    assert [a.present for a in actions] == [True]
+    assert actions[0].payload["title"] == "still here"
 
 
 async def test_trashed_note_comes_off_the_site_even_while_flagged(

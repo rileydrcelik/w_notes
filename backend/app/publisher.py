@@ -1,9 +1,15 @@
-"""Mirror published notes onto the public portfolio site.
+"""Keep embedded notes fresh on the portfolio site.
 
-A note with ``published=true`` becomes a post in the portfolio's ``notes``
-category; clearing the flag (or trashing the note) removes it again. The
-portfolio owns its own database, so this is a one-way replication over HTTP —
-w_notes is the source of truth and the portfolio holds a derived copy.
+Placement belongs to the website: a note is embedded into a subject from the
+portfolio admin. This side only keeps what was placed up to date — an edit
+refreshes the embedded post and floats it to the top of the feed, and trashing
+a note removes it wherever it was placed. The portfolio owns its own database,
+so this is a one-way replication over HTTP; w_notes is the source of truth.
+
+Crucially it never *creates* a post: this pushes every edit without knowing
+which notes are embedded, so creating here would put unplaced notes on the site
+unbidden. The portfolio's update endpoint matches on the note id and does
+nothing when a note was never embedded.
 
 Shape of the integration:
 
@@ -128,9 +134,18 @@ async def collect_publish_actions(
 
     actions: list[PublishAction] = []
     for note in rows:
-        # A trashed or soft-deleted note comes off the site regardless of flag.
+        # Presence is decided by whether the note still exists, and nothing else.
+        #
+        # It used to also require `published`, from when the app chose what to
+        # publish. The website owns placement now, that flag is vestigial and
+        # always false, and leaving it in this condition meant *every* edit
+        # resolved to "should not be present" and deleted the embedded post.
+        # Whether a note is embedded is the portfolio's business: the update is
+        # update-only there and a note nobody embedded simply has nothing to
+        # match.
         live = note.deleted_at is None and note.trashed_with_folder_id is None
-        if not (note.published and live):
+        if not live:
+            # Trashed or deleted: take it off the site wherever it was placed.
             actions.append(PublishAction(note_id=note.id, present=False))
             continue
 
@@ -181,9 +196,10 @@ async def deliver(actions: list[PublishAction]) -> None:
                     response = await client.delete(
                         f"{base}/api/notes/ingest/{action.note_id}"
                     )
-                # A delete of a note that was never published is the normal case
-                # for every edit to an unpublished note — not worth reporting.
-                if response.status_code == 404 and not action.present:
+                # 404 is the ordinary outcome, not a failure: it means the note
+                # is not embedded anywhere. That is true of most notes on most
+                # edits, so reporting it would bury real errors in noise.
+                if response.status_code == 404:
                     continue
                 response.raise_for_status()
             except Exception as exc:  # noqa: BLE001 — background task, isolate
