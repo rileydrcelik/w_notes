@@ -156,6 +156,15 @@ jobs:
           disable-animations: true
           working-directory: notes-app
           script: |
+            # Under CI load the Pixel Launcher regularly ANRs shortly after
+            # boot, and the resulting "isn't responding" dialog sits on top of
+            # the app and owns the view hierarchy. Maestro then reports the app
+            # element as missing when the app is in fact running fine — which
+            # is exactly how this first failed, with a screenshot showing the
+            # app rendering correctly behind the dialog. Suppressing system
+            # error dialogs is the standard fix; it only hides the dialog, an
+            # actual app crash still fails the flow on the assertion.
+            adb shell settings put global hide_error_dialogs 1 || true
             adb install -r android/app/build/outputs/apk/release/app-release.apk
             # A notification shade left open covers the app and reads as a
             # baffling "element not visible" failure. Best-effort.
