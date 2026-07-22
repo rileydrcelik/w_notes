@@ -17,14 +17,40 @@ Sentry note (app) ──Fix──▶ POST /sentry/autofix (w_notes backend)
         .github/workflows/sentry-autofix.yml in the TARGET repo
                                 │  Claude Code Action fixes on autofixes/issue-*
                                 ▼
-                     Pull request → main  (never auto-merged)
+                     Pull request → main
                                 │  then marks the Sentry issue resolved
                                 ▼
 ```
 
-Nothing is merged automatically. Every fix lands as a PR for human review; once
-the PR is open the workflow resolves the Sentry issue (Sentry auto-reopens it if
-the error regresses).
+The workflow in this file opens a PR and stops there — that's the portable
+setup, and what a new target repo gets.
+
+**In `rileydrcelik/w_notes` the chain continues automatically.** Two further
+workflows take it from PR to production with no human in the loop:
+
+```
+        Pull request → main
+                │
+                ▼
+    Tests (backend pytest + vitest + playwright)
+                │  all green
+                ▼
+    autofix-ship.yml ──▶ squash merge ──▶ deploy-backend.yml ──▶ ECS
+```
+
+`autofix-ship.yml` merges only when every one of these holds: the Tests run
+concluded `success`, the branch is `autofixes/*`, the PR was authored by the
+bot, it targets `main`, it's `MERGEABLE`, and its head SHA is exactly the commit
+CI tested. Anything else is left for a human, with a comment on the PR saying
+why. It deploys only if the fix touched `backend/**`.
+
+What this does **not** protect against: a fix that passes CI and starts cleanly
+but is wrong. The tests are the only reviewer. If a fix reaches production and
+misbehaves, the Sentry issue reopens on regression — that's the backstop, and
+it's a detection mechanism, not a prevention one.
+
+To go back to review-before-merge, delete `autofix-ship.yml`; nothing else
+depends on it.
 
 > **Current target: this repo (`rileydrcelik/w_notes`).** `AUTOFIX_REPO` points at
 > w_notes and the live workflow already lives at

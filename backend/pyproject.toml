@@ -30,6 +30,11 @@ include = ["app*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Puts `backend/` on sys.path so `tests.*` is importable — test_publish.py reuses
+# the `note` and `push` helpers from test_sync. Without this, `python -m pytest`
+# works (the `-m` form adds the CWD itself) while a bare `pytest` fails to
+# collect. That divergence is what kept CI red while the suite passed locally.
+pythonpath = ["."]
 # `auto` treats every `async def test_*` as an asyncio test, so no per-test
 # decorator is needed. Both loop scopes are session-wide so the one engine and
 # the migrated database are shared by every test instead of being torn down and

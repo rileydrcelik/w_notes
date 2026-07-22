@@ -1,0 +1,159 @@
+# Builds the backend image and rolls the ECS service onto it.
+#
+# Three ways in:
+#   push to main (backend/** changed) — a human merge ships itself
+#   workflow_call                     — the autofix pipeline chains into it
+#   workflow_dispatch                 — redeploy by hand, e.g. after `terraform apply`
+#
+# Replaces the manual recipe in terraform/README.md ("Redeploying later"). The
+# meaningful difference from that recipe: the image is tagged with the commit
+# SHA and gets its own task definition revision, so ECS has a real previous
+# revision to fall back to when the circuit breaker trips.
+name: Deploy backend
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'backend/**'
+      - '.github/workflows/deploy-backend.yml'
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  # Required for the OIDC token AWS trades for temporary credentials.
+  id-token: write
+  contents: read
+
+# One deploy at a time, and never cancel one in flight: a half-rolled ECS
+# service is worse than a queued deploy. New runs wait their turn instead.
+concurrency:
+  group: deploy-backend
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+  ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY || 'wnotes-api' }}
+  ECS_CLUSTER: ${{ vars.ECS_CLUSTER || 'wnotes-cluster' }}
+  ECS_SERVICE: ${{ vars.ECS_SERVICE || 'wnotes-api' }}
+  TASK_FAMILY: ${{ vars.TASK_FAMILY || 'wnotes-api' }}
+  CONTAINER_NAME: api
+  HEALTH_URL: ${{ vars.API_HEALTH_URL || 'https://api.w-notes.app/health' }}
+
+jobs:
+  deploy:
+    name: Build + deploy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Log in to ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # Two tags for one image. The SHA tag is the useful one — immutable, and
+      # what the task definition points at. `latest` is kept current only so a
+      # Terraform-created revision (which defaults to `:latest`) isn't stale.
+      - name: Build and push image
+        id: build
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+        run: |
+          set -euo pipefail
+          IMAGE="$REGISTRY/$ECR_REPOSITORY:${GITHUB_SHA}"
+          docker build -t "$IMAGE" -t "$REGISTRY/$ECR_REPOSITORY:latest" ./backend
+          docker push "$IMAGE"
+          docker push "$REGISTRY/$ECR_REPOSITORY:latest"
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+
+      # Built from the family's *latest* revision, not from what the service is
+      # currently running. That's what lets a `terraform apply` (new env vars,
+      # new secrets, different cpu/memory) reach production on the next deploy —
+      # the service's own revision would be missing those changes.
+      - name: Register task definition revision
+        id: taskdef
+        env:
+          IMAGE: ${{ steps.build.outputs.image }}
+        run: |
+          set -euo pipefail
+          aws ecs describe-task-definition \
+            --task-definition "$TASK_FAMILY" \
+            --query taskDefinition > current.json
+
+          # Strip the server-populated fields; register-task-definition rejects
+          # them on the way back in.
+          jq --arg IMAGE "$IMAGE" --arg NAME "$CONTAINER_NAME" '
+            .containerDefinitions |= map(if .name == $NAME then .image = $IMAGE else . end)
+            | del(
+                .taskDefinitionArn, .revision, .status, .requiresAttributes,
+                .compatibilities, .registeredAt, .registeredBy, .deregisteredAt
+              )
+          ' current.json > new.json
+
+          # Fail loudly if the container name never matched — otherwise this
+          # would deploy the previous image and report success.
+          if ! jq -e --arg IMAGE "$IMAGE" \
+              'any(.containerDefinitions[]; .image == $IMAGE)' new.json > /dev/null; then
+            echo "::error::No container named '$CONTAINER_NAME' in family '$TASK_FAMILY'."
+            exit 1
+          fi
+
+          ARN=$(aws ecs register-task-definition \
+            --cli-input-json file://new.json \
+            --query taskDefinition.taskDefinitionArn --output text)
+          echo "Registered $ARN"
+          echo "arn=$ARN" >> "$GITHUB_OUTPUT"
+
+      - name: Roll the service
+        env:
+          TASKDEF_ARN: ${{ steps.taskdef.outputs.arn }}
+        run: |
+          set -euo pipefail
+          aws ecs update-service \
+            --cluster "$ECS_CLUSTER" \
+            --service "$ECS_SERVICE" \
+            --task-definition "$TASKDEF_ARN" > /dev/null
+          echo "Waiting for the service to stabilise (up to ~10 min)..."
+          aws ecs wait services-stable \
+            --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE"
+
+      # `wait services-stable` succeeds once the service settles — including
+      # when the circuit breaker settled it by rolling BACK. Without this check
+      # a rolled-back deploy would report green.
+      - name: Confirm the new revision is live
+        env:
+          TASKDEF_ARN: ${{ steps.taskdef.outputs.arn }}
+        run: |
+          set -euo pipefail
+          RUNNING=$(aws ecs describe-services \
+            --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE" \
+            --query 'services[0].taskDefinition' --output text)
+          if [ "$RUNNING" != "$TASKDEF_ARN" ]; then
+            echo "::error::Deploy did not stick. Expected $TASKDEF_ARN, service is running $RUNNING."
+            echo "The circuit breaker most likely rolled back — check the ECS service events."
+            exit 1
+          fi
+          echo "Live on $RUNNING"
+
+      # The tunnel sits between ECS and the public URL, so a healthy task isn't
+      # proof the API is actually reachable. This checks the thing users hit.
+      - name: Verify public health endpoint
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3 4 5 6; do
+            code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 "$HEALTH_URL" || echo 000)
+            if [ "$code" = "200" ]; then
+              echo "$HEALTH_URL -> 200"
+              exit 0
+            fi
+            echo "attempt $attempt: $HEALTH_URL -> $code"
+            sleep 10
+          done
+          echo "::error::$HEALTH_URL never returned 200 after the deploy."
+          exit 1

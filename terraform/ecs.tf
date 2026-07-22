@@ -143,5 +143,36 @@ resource "aws_ecs_service" "api" {
     assign_public_ip = true
   }
 
+  # Deploys are automatic (see .github/workflows/deploy-backend.yml), so nobody
+  # is watching when one goes bad. The circuit breaker watches instead: if the
+  # new tasks never reach a steady state — image won't start, `alembic upgrade
+  # head` fails on boot, /health never answers — ECS gives up and rolls back to
+  # the previous task definition revision on its own.
+  #
+  # This only catches a deploy that fails *loudly*. A fix that starts cleanly
+  # and behaves wrongly looks like a success from here.
+  deployment_circuit_breaker {
+    enable   = true
+    rollback = true
+  }
+
+  lifecycle {
+    # CI registers a new task definition revision per commit (image pinned to
+    # the commit SHA) and points the service at it. Without this, the next
+    # `terraform apply` would drag the service back to whichever revision
+    # Terraform last created, undoing every deploy since.
+    #
+    # The trade: Terraform still owns the revision's *contents* — cpu, memory,
+    # env, secrets, the container definitions above — but changing them here no
+    # longer reaches the running service by itself. `apply` writes a new latest
+    # revision; the next deploy is what puts it in front of traffic, because the
+    # workflow builds from the family's latest revision rather than from
+    # whatever the service happens to be running. So an infra-only change needs
+    # a deploy (or a manual `update-service`) to land. That's the documented
+    # "needs terraform apply + backend redeploy" dance, now enforced rather than
+    # remembered.
+    ignore_changes = [task_definition]
+  }
+
   depends_on = [aws_ecs_cluster_capacity_providers.main]
 }
