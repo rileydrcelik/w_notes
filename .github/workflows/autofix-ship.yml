@@ -1,0 +1,174 @@
+# Ships a Sentry autofix with no human in the loop: green CI -> merge -> deploy.
+#
+# Chain: sentry-autofix.yml opens the PR -> Tests runs on it -> this workflow
+# fires when Tests finishes and, if everything below holds, squash-merges and
+# calls deploy-backend.yml.
+#
+# Why deploy is a *job here* rather than deploy-backend.yml's own push trigger:
+# a merge performed with GITHUB_TOKEN produces a push that GitHub deliberately
+# does not let trigger further workflows (the recursion guard). Chaining via
+# workflow_call keeps it in this run, where that rule doesn't apply.
+#
+# Scope: only ever touches branches matching `autofixes/*` authored by the
+# autofix bot. Any other green PR is left alone.
+name: Autofix ship
+
+on:
+  workflow_run:
+    workflows: ["Tests"]
+    types: [completed]
+
+permissions:
+  contents: write       # merge the PR
+  pull-requests: write  # read, merge, comment
+  actions: read
+  id-token: write       # passed through to the deploy job's OIDC
+
+concurrency:
+  group: autofix-ship-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: false
+
+jobs:
+  merge:
+    name: Merge if green
+    runs-on: ubuntu-latest
+    # Cheap exits first: only successful Tests runs on an autofix branch.
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      startsWith(github.event.workflow_run.head_branch, 'autofixes/')
+    outputs:
+      merged: ${{ steps.merge.outputs.merged }}
+      backend_changed: ${{ steps.inspect.outputs.backend_changed }}
+    steps:
+      - name: Find and vet the pull request
+        id: inspect
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          BRANCH: ${{ github.event.workflow_run.head_branch }}
+          TESTED_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+
+          PR=$(gh pr list --repo "$REPO" --head "$BRANCH" --state open \
+                 --json number,author,baseRefName,headRefOid,mergeable \
+                 --jq '.[0] // empty')
+          if [ -z "$PR" ]; then
+            echo "No open PR for $BRANCH — nothing to merge."
+            echo "eligible=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          NUMBER=$(jq -r '.number'      <<<"$PR")
+          AUTHOR=$(jq -r '.author.login'<<<"$PR")
+          BASE=$(jq   -r '.baseRefName' <<<"$PR")
+          HEAD=$(jq   -r '.headRefOid'  <<<"$PR")
+          MERGEABLE=$(jq -r '.mergeable'<<<"$PR")
+
+          # The PR must be the bot's. A branch named autofixes/* is not by
+          # itself evidence of anything — anyone can push one.
+          if [ "$AUTHOR" != "github-actions" ] && [ "$AUTHOR" != "app/github-actions" ]; then
+            echo "::notice::PR #$NUMBER is authored by $AUTHOR, not the autofix bot. Leaving it."
+            echo "eligible=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "$BASE" != "main" ]; then
+            echo "::notice::PR #$NUMBER targets $BASE, not main. Leaving it."
+            echo "eligible=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Guards against merging code CI never saw: if a commit landed on the
+          # branch after this Tests run started, the green tick is stale.
+          if [ "$HEAD" != "$TESTED_SHA" ]; then
+            echo "::notice::PR #$NUMBER moved on ($HEAD) since Tests ran ($TESTED_SHA). Waiting for the newer run."
+            echo "eligible=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # GitHub computes mergeability asynchronously, so the first read is
+          # very often UNKNOWN rather than an answer. Treating that as "not
+          # mergeable" would make this pipeline refuse to merge most of the
+          # time, for no stated reason. Poll until it resolves.
+          for attempt in 1 2 3 4 5 6; do
+            [ "$MERGEABLE" != "UNKNOWN" ] && break
+            echo "mergeability not computed yet (attempt $attempt)..."
+            sleep 5
+            MERGEABLE=$(gh pr view "$NUMBER" --repo "$REPO" --json mergeable --jq '.mergeable')
+          done
+
+          if [ "$MERGEABLE" != "MERGEABLE" ]; then
+            gh pr comment "$NUMBER" --repo "$REPO" \
+              --body "Autofix ship: CI is green but this PR is \`$MERGEABLE\` against main, so it wasn't merged automatically. Needs a human."
+            echo "::notice::PR #$NUMBER is $MERGEABLE. Left for a human."
+            echo "eligible=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Does this fix touch anything the backend deploy would ship? A
+          # front-end-only autofix still merges, but rolling ECS for it would be
+          # a pointless production restart.
+          if gh pr view "$NUMBER" --repo "$REPO" --json files \
+               --jq '.files[].path' | grep -q '^backend/'; then
+            echo "backend_changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "backend_changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          echo "eligible=true" >> "$GITHUB_OUTPUT"
+          echo "number=$NUMBER" >> "$GITHUB_OUTPUT"
+
+      # Set the repo variable AUTOFIX_SHIP_DRY_RUN to "true" (Settings →
+      # Secrets and variables → Actions → Variables) and this workflow runs its
+      # full decision path on real PRs but stops here. Use it to watch the
+      # pipeline judge a few genuine autofixes before letting it act.
+      - name: Squash merge
+        id: merge
+        if: steps.inspect.outputs.eligible == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          NUMBER: ${{ steps.inspect.outputs.number }}
+          DRY_RUN: ${{ vars.AUTOFIX_SHIP_DRY_RUN }}
+          BACKEND_CHANGED: ${{ steps.inspect.outputs.backend_changed }}
+        run: |
+          set -euo pipefail
+          if [ "${DRY_RUN:-false}" = "true" ]; then
+            echo "::notice::DRY RUN — would squash-merge PR #$NUMBER (backend_changed=$BACKEND_CHANGED)."
+            echo "merged=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          gh pr merge "$NUMBER" --repo "$REPO" --squash --delete-branch
+          echo "Merged #$NUMBER"
+          echo "merged=true" >> "$GITHUB_OUTPUT"
+
+  # Same run, so the GITHUB_TOKEN push-trigger restriction never applies.
+  deploy:
+    name: Deploy
+    needs: merge
+    if: needs.merge.outputs.merged == 'true' && needs.merge.outputs.backend_changed == 'true'
+    uses: ./.github/workflows/deploy-backend.yml
+    secrets: inherit
+
+  # A merged fix that never reached production is the failure worth shouting
+  # about — it looks shipped from the PR list but isn't live.
+  report:
+    name: Report
+    needs: [merge, deploy]
+    if: always() && needs.merge.outputs.merged == 'true' && needs.deploy.result == 'failure'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Flag the failed deploy
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          BRANCH: ${{ github.event.workflow_run.head_branch }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          gh issue create --repo "$REPO" \
+            --title "Autofix deploy failed for $BRANCH" \
+            --body "The autofix on \`$BRANCH\` passed CI and was merged to main, but the backend deploy failed: $RUN_URL
+
+          Production is still running the previous revision (the ECS circuit breaker rolls back a deploy that never stabilises), so main is now ahead of what's live."

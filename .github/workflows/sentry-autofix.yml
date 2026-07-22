@@ -1,7 +1,9 @@
 # Sentry autofix — runs the Claude Code Action when the w_notes backend fires a
 # `repository_dispatch` (event_type: sentry-autofix). Claude reads the Sentry
 # error context from client_payload, applies a minimal fix, commits to a fixed
-# `autofixes/issue-*` branch, and opens a PR to main. It never merges.
+# `autofixes/issue-*` branch, and opens a PR to main. This workflow never merges
+# — but in this repo `autofix-ship.yml` picks the PR up once Tests goes green and
+# merges + deploys it automatically. Delete that file to return to review-first.
 #
 # This repo (rileydrcelik/w_notes) is the autofix target, so the workflow lives
 # here. Requires an ANTHROPIC_API_KEY repo secret and, in Settings → Actions →
