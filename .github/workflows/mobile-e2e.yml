@@ -41,12 +41,16 @@ jobs:
 
     env:
       API_LEVEL: '34'
-      # ATD ("automated test device") images are stripped of the apps and
-      # services a human would need, and boot substantially faster. The
-      # google_apis variant keeps Play Services, which matters because
-      # @react-native-google-signin/google-signin is a native module — the flows
-      # never sign in, but the module still initialises at launch.
-      EMULATOR_TARGET: google_apis_atd
+      # Was google_apis_atd, on the theory that ATD ("automated test device")
+      # images boot faster. sdkmanager couldn't find that image for android-34
+      # x86_64 — the coordinates were assumed rather than checked, and the
+      # combination doesn't exist. google_apis is the configuration in
+      # android-emulator-runner's own docs and the most exercised one in CI.
+      # It keeps Play Services, which matters because google-signin is a native
+      # module that initialises at launch even though the flows never sign in.
+      # Slower to boot than ATD would have been, which the snapshot cache is
+      # there to absorb.
+      EMULATOR_TARGET: google_apis
       EMULATOR_ARCH: x86_64
 
     steps:
