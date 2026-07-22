@@ -158,12 +158,25 @@ async def get_note(
     if note is None:
         raise HTTPException(status_code=404, detail="Note not found")
 
+    # The folder name becomes the post's album on the website, so it has to come
+    # back with the note — embedding asks for nothing but which note it is.
+    folder = None
+    if note.folder_id:
+        row = (
+            await session.execute(
+                select(Folder).where(
+                    Folder.user_id == note.user_id, Folder.id == note.folder_id
+                )
+            )
+        ).scalar_one_or_none()
+        folder = (row.name or "").strip() or None if row else None
+
     body = strip_html_wrapper(note.body or "")
     return NoteDetail(
         id=note.id,
         title=note.title.strip() or "Untitled note",
         excerpt=_excerpt(body),
-        folder=None,
+        folder=folder,
         updated_at=note.updated_at,
         body_html=body,
     )
