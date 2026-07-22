@@ -604,13 +604,23 @@ def _branch_for(short_id: str) -> str:
 
 def _raise_for_github(resp: httpx.Response) -> None:
     """Like ``_raise_for_upstream`` but for GitHub. A 401/403 means our server
-    token is bad/under-scoped — a server misconfig, surfaced as 502."""
+    token is bad/under-scoped — a server misconfig, surfaced as 502.
+
+    When the token is merely under-scoped, GitHub says exactly which permission
+    was wanted in ``x-accepted-github-permissions``. Passing that through turns
+    "GitHub rejected the server token" — which reads like the token is invalid,
+    and sends you checking the token itself — into a message naming the missing
+    grant. Diagnosing this the hard way costs an hour; the header was there the
+    whole time.
+    """
     if resp.is_success:
         return
     if resp.status_code in (401, 403):
-        raise HTTPException(
-            status.HTTP_502_BAD_GATEWAY, "GitHub rejected the server token"
-        )
+        needed = resp.headers.get("x-accepted-github-permissions")
+        detail = "GitHub rejected the server token"
+        if needed:
+            detail = f"{detail} (needs: {needed})"
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, detail)
     code = resp.status_code if resp.status_code < 500 else status.HTTP_502_BAD_GATEWAY
     raise HTTPException(code, f"GitHub API error ({resp.status_code})")
 
