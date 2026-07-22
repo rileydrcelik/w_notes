@@ -41,16 +41,19 @@ jobs:
 
     env:
       API_LEVEL: '34'
-      # Was google_apis_atd, on the theory that ATD ("automated test device")
-      # images boot faster. sdkmanager couldn't find that image for android-34
-      # x86_64 — the coordinates were assumed rather than checked, and the
-      # combination doesn't exist. google_apis is the configuration in
-      # android-emulator-runner's own docs and the most exercised one in CI.
-      # It keeps Play Services, which matters because google-signin is a native
-      # module that initialises at launch even though the flows never sign in.
-      # Slower to boot than ATD would have been, which the snapshot cache is
-      # there to absorb.
-      EMULATOR_TARGET: google_apis
+      # AOSP, deliberately. The google_apis image ships GBoard, which on this
+      # emulator loops trying to show itself (and reach the network for
+      # spell-check) and starves Maestro's inputText — note-persistence hung on
+      # a single field for nearly three minutes. The default image uses the
+      # plain AOSP keyboard, which doesn't fight the driver.
+      #
+      # google_apis was originally chosen for Play Services, on the assumption
+      # google-signin needs it at launch. It doesn't: providers.ts only calls
+      # configure()/hasPlayServices() inside signInWithGoogle(), which the flows
+      # never reach (sync is off, nobody signs in). The smoke flow passing on
+      # google_apis already proved launch doesn't depend on it. Dropping Play
+      # Services also boots faster.
+      EMULATOR_TARGET: default
       EMULATOR_ARCH: x86_64
 
     steps:
