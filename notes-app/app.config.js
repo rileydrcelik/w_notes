@@ -52,5 +52,12 @@ export default ({ config }) => {
       ...config.android,
       package: variant.package,
     },
+    web: {
+      ...config.web,
+      // The website is a single product — it doesn't carry the variant suffix
+      // the app builds use. `web.name` drives the exported <title>.
+      name: 'w-notes',
+      shortName: 'w-notes',
+    },
   };
 };
