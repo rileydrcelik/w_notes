@@ -1,41 +1,53 @@
 # Ships a Sentry autofix with no human in the loop: green CI -> merge -> deploy.
 #
-# Chain: sentry-autofix.yml opens the PR -> Tests runs on it -> this workflow
-# fires when Tests finishes and, if everything below holds, squash-merges and
-# calls deploy-backend.yml.
+# Chain: sentry-autofix.yml opens the PR and labels it `autofix` -> Tests runs
+# on it -> this workflow fires when Tests finishes and, if everything below
+# holds, squash-merges and calls deploy-backend.yml.
 #
 # Why deploy is a *job here* rather than deploy-backend.yml's own push trigger:
 # a merge performed with GITHUB_TOKEN produces a push that GitHub deliberately
 # does not let trigger further workflows (the recursion guard). Chaining via
 # workflow_call keeps it in this run, where that rule doesn't apply.
 #
-# Scope: only ever touches branches matching `autofixes/*` authored by the
-# autofix bot. Any other green PR is left alone.
+# Scope: only ever touches PRs carrying the `autofix` label on an `autofixes/*`
+# branch. Any other green PR is left alone.
 name: Autofix ship
 
 on:
   workflow_run:
     workflows: ["Tests"]
     types: [completed]
+  # Escape hatch. A PR that was gated awaiting approval has already spent its
+  # `workflow_run: completed` event on the gated (action_required) finish —
+  # approving it does NOT emit a second one, so nothing ever picks it up again.
+  # Authoring PRs with a PAT avoids the gate, but this stays as the manual way
+  # to push a stranded PR through without hand-merging it.
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: "PR number to evaluate and merge"
+        required: true
 
 permissions:
   contents: write       # merge the PR
-  pull-requests: write  # read, merge, comment
+  pull-requests: write  # read, merge, comment, label
   actions: read
   id-token: write       # passed through to the deploy job's OIDC
 
 concurrency:
-  group: autofix-ship-${{ github.event.workflow_run.head_branch }}
+  group: autofix-ship-${{ github.event.workflow_run.head_branch || inputs.pr }}
   cancel-in-progress: false
 
 jobs:
   merge:
     name: Merge if green
     runs-on: ubuntu-latest
-    # Cheap exits first: only successful Tests runs on an autofix branch.
+    # Cheap exits first: a manual dispatch, or a successful Tests run on an
+    # autofix branch. Everything else never starts a runner.
     if: >-
-      github.event.workflow_run.conclusion == 'success' &&
-      startsWith(github.event.workflow_run.head_branch, 'autofixes/')
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       startsWith(github.event.workflow_run.head_branch, 'autofixes/'))
     outputs:
       merged: ${{ steps.merge.outputs.merged }}
       backend_changed: ${{ steps.inspect.outputs.backend_changed }}
@@ -45,46 +57,67 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
+          OWNER: ${{ github.repository_owner }}
+          EVENT: ${{ github.event_name }}
           BRANCH: ${{ github.event.workflow_run.head_branch }}
           TESTED_SHA: ${{ github.event.workflow_run.head_sha }}
+          INPUT_PR: ${{ inputs.pr }}
         run: |
           set -euo pipefail
+          skip() { echo "::notice::$1"; echo "eligible=false" >> "$GITHUB_OUTPUT"; exit 0; }
 
-          PR=$(gh pr list --repo "$REPO" --head "$BRANCH" --state open \
-                 --json number,author,baseRefName,headRefOid,mergeable \
-                 --jq '.[0] // empty')
-          if [ -z "$PR" ]; then
-            echo "No open PR for $BRANCH — nothing to merge."
-            echo "eligible=false" >> "$GITHUB_OUTPUT"
-            exit 0
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            NUMBER="$INPUT_PR"
+          else
+            NUMBER=$(gh pr list --repo "$REPO" --head "$BRANCH" --state open \
+                       --json number --jq '.[0].number // empty')
+            [ -n "$NUMBER" ] || skip "No open PR for $BRANCH — nothing to merge."
           fi
 
-          NUMBER=$(jq -r '.number'      <<<"$PR")
-          AUTHOR=$(jq -r '.author.login'<<<"$PR")
-          BASE=$(jq   -r '.baseRefName' <<<"$PR")
-          HEAD=$(jq   -r '.headRefOid'  <<<"$PR")
-          MERGEABLE=$(jq -r '.mergeable'<<<"$PR")
+          PR=$(gh pr view "$NUMBER" --repo "$REPO" \
+                 --json number,author,baseRefName,headRefName,headRefOid,mergeable,isDraft,labels,title)
 
-          # The PR must be the bot's. A branch named autofixes/* is not by
-          # itself evidence of anything — anyone can push one.
-          if [ "$AUTHOR" != "github-actions" ] && [ "$AUTHOR" != "app/github-actions" ]; then
-            echo "::notice::PR #$NUMBER is authored by $AUTHOR, not the autofix bot. Leaving it."
-            echo "eligible=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
+          AUTHOR=$(jq -r '.author.login'  <<<"$PR")
+          BASE=$(jq   -r '.baseRefName'   <<<"$PR")
+          HEAD_REF=$(jq -r '.headRefName' <<<"$PR")
+          HEAD=$(jq   -r '.headRefOid'    <<<"$PR")
+          DRAFT=$(jq  -r '.isDraft'       <<<"$PR")
+          MERGEABLE=$(jq -r '.mergeable'  <<<"$PR")
+          HAS_LABEL=$(jq -r '[.labels[].name] | index("autofix") != null' <<<"$PR")
 
-          if [ "$BASE" != "main" ]; then
-            echo "::notice::PR #$NUMBER targets $BASE, not main. Leaving it."
-            echo "eligible=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
+          # The label is the marker for "a machine wrote this". It carries the
+          # weight that the author check used to: now that PRs are authored with
+          # a PAT they look like the owner's own, so authorship alone can no
+          # longer distinguish an agent's PR from a hand-written one.
+          [ "$HAS_LABEL" = "true" ] || skip "PR #$NUMBER has no 'autofix' label. Leaving it."
+          case "$HEAD_REF" in
+            autofixes/*) ;;
+            *) skip "PR #$NUMBER is on '$HEAD_REF', not an autofixes/* branch. Leaving it." ;;
+          esac
+          [ "$BASE" = "main" ] || skip "PR #$NUMBER targets $BASE, not main. Leaving it."
+          # A draft is an explicit "not ready" — the natural way for an agent to
+          # submit a low-confidence attempt for human eyes.
+          [ "$DRAFT" = "false" ] || skip "PR #$NUMBER is a draft. Leaving it for review."
+          # Defence in depth behind the label: the PAT means these come from the
+          # repo owner, and the bot remains valid for un-migrated setups.
+          case "$AUTHOR" in
+            "$OWNER"|github-actions|app/github-actions) ;;
+            *) skip "PR #$NUMBER is authored by $AUTHOR. Leaving it." ;;
+          esac
 
-          # Guards against merging code CI never saw: if a commit landed on the
-          # branch after this Tests run started, the green tick is stale.
-          if [ "$HEAD" != "$TESTED_SHA" ]; then
-            echo "::notice::PR #$NUMBER moved on ($HEAD) since Tests ran ($TESTED_SHA). Waiting for the newer run."
-            echo "eligible=false" >> "$GITHUB_OUTPUT"
-            exit 0
+          # Guard against merging code CI never saw.
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            # No triggering run to compare against, so require every check on the
+            # current head to have finished green.
+            ROLLUP=$(gh pr view "$NUMBER" --repo "$REPO" --json statusCheckRollup --jq '.statusCheckRollup')
+            TOTAL=$(jq 'length' <<<"$ROLLUP")
+            GREEN=$(jq '[.[] | select(.conclusion == "SUCCESS")] | length' <<<"$ROLLUP")
+            [ "$TOTAL" -gt 0 ] || skip "PR #$NUMBER has no checks. Refusing to merge unverified code."
+            [ "$TOTAL" = "$GREEN" ] || skip "PR #$NUMBER has $GREEN/$TOTAL checks green. Leaving it."
+          else
+            if [ "$HEAD" != "$TESTED_SHA" ]; then
+              skip "PR #$NUMBER moved on ($HEAD) since Tests ran ($TESTED_SHA). Waiting for the newer run."
+            fi
           fi
 
           # GitHub computes mergeability asynchronously, so the first read is
@@ -101,9 +134,7 @@ jobs:
           if [ "$MERGEABLE" != "MERGEABLE" ]; then
             gh pr comment "$NUMBER" --repo "$REPO" \
               --body "Autofix ship: CI is green but this PR is \`$MERGEABLE\` against main, so it wasn't merged automatically. Needs a human."
-            echo "::notice::PR #$NUMBER is $MERGEABLE. Left for a human."
-            echo "eligible=false" >> "$GITHUB_OUTPUT"
-            exit 0
+            skip "PR #$NUMBER is $MERGEABLE. Left for a human."
           fi
 
           # Does this fix touch anything the backend deploy would ship? A
@@ -163,7 +194,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
-          BRANCH: ${{ github.event.workflow_run.head_branch }}
+          BRANCH: ${{ github.event.workflow_run.head_branch || format('PR #{0}', inputs.pr) }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
