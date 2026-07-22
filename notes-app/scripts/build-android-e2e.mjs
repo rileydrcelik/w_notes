@@ -12,7 +12,7 @@
 // there is exactly one definition of them and both paths use it.
 
 import { spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { platform } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -31,6 +31,29 @@ export const E2E_BUILD_ENV = {
 };
 
 export const APK_PATH = join(appRoot, 'android', 'app', 'build', 'outputs', 'apk', 'release', 'app-release.apk');
+
+// Expo's generated gradle.properties ships -XX:MaxMetaspaceSize=512m, which
+// KSP exhausts on this module set — :expo-updates:kspReleaseKotlin dies with
+// "OutOfMemoryError: Metaspace". Worse, Gradle doesn't abort cleanly when it
+// happens: the daemon wedges and sits there until something kills the job, so
+// the symptom looks like a slow build rather than a failed one.
+//
+// Patched after prebuild because prebuild regenerates the file. Values are
+// sized for a GitHub-hosted runner (4 vCPU / 16 GB).
+function raiseGradleMemory() {
+  const propsPath = join(appRoot, 'android', 'gradle.properties');
+  const original = readFileSync(propsPath, 'utf8');
+  const patched = original.replace(
+    /^org\.gradle\.jvmargs=.*$/m,
+    'org.gradle.jvmargs=-Xmx4096m -XX:MaxMetaspaceSize=1024m',
+  );
+  if (patched === original) {
+    console.warn('! could not find org.gradle.jvmargs to patch — build may OOM in KSP');
+    return;
+  }
+  writeFileSync(propsPath, patched);
+  console.log('• raised Gradle heap/metaspace for the release build');
+}
 
 function run(command, args, cwd) {
   const result = spawnSync(command, args, {
@@ -54,6 +77,8 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   // gets tested.
   console.log('• prebuilding android/');
   run('npx', ['expo', 'prebuild', '-p', 'android', '--clean'], appRoot);
+
+  raiseGradleMemory();
 
   console.log('• assembling release APK (several minutes)');
   run(isWindows ? 'gradlew.bat' : './gradlew', ['assembleRelease'], join(appRoot, 'android'));

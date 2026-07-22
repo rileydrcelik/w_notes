@@ -87,6 +87,11 @@ jobs:
       # Owns the env that pins sync off; see the script for why that matters.
       - name: Build release APK
         working-directory: notes-app
+        # Scoped separately from the job timeout: a Gradle daemon that OOMs
+        # doesn't exit, it wedges. Without a bound here that shows up as the
+        # whole job dying at its own timeout with no indication of which step
+        # was at fault — which is exactly how the first run of this failed.
+        timeout-minutes: 25
         run: node scripts/build-android-e2e.mjs
 
       - name: Install Maestro
