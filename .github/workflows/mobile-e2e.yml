@@ -33,10 +33,11 @@ jobs:
   android:
     name: Android E2E (maestro)
     runs-on: ubuntu-latest
-    # Generous, because it has to cover the cold-cache case. A warm run should
-    # land far inside this; if warm runs start approaching it, something is
-    # wrong with the caching rather than with the timeout.
-    timeout-minutes: 45
+    # Sized for the cold-cache case, which measured ~25-30 minutes for the build
+    # alone before the Gradle cache had anything in it. A warm run should land
+    # far inside this; if warm runs start approaching it, the caching is broken
+    # rather than the timeout being too tight.
+    timeout-minutes: 60
 
     env:
       API_LEVEL: '34'
@@ -74,10 +75,20 @@ jobs:
           java-version: '17'
 
       # Caches both the dependency cache and the Gradle build cache across runs.
-      # This is what turns an 18-minute build into a few minutes for a PR that
-      # only touches JS — the native compile is reused and only the bundle and
-      # dex genuinely re-run.
+      # This is what turns a 25-minute cold build into something viable: with a
+      # populated build cache most of the ~1400 tasks resolve FROM-CACHE even
+      # though android/ is regenerated each run.
+      #
+      # cache-read-only is the subtle part. By default this action only *writes*
+      # the cache from the default branch, so a PR branch reads main's cache and
+      # never seeds one. Until this workflow has run on main there is nothing to
+      # read, and every run is cold no matter how many times you retry it.
+      # Writing from this branch too is a temporary measure to prove the warm
+      # path before merge — revert to the default once main has seeded it, or
+      # every PR writes its own cache and thrashes the 10GB repo limit.
       - uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: false
 
       - name: Install
         working-directory: notes-app
@@ -91,7 +102,9 @@ jobs:
         # doesn't exit, it wedges. Without a bound here that shows up as the
         # whole job dying at its own timeout with no indication of which step
         # was at fault — which is exactly how the first run of this failed.
-        timeout-minutes: 25
+        # 40, not 25: the cold build genuinely needs ~30 and the earlier bound
+        # was set against a projection rather than a measurement.
+        timeout-minutes: 40
         run: node scripts/build-android-e2e.mjs
 
       - name: Install Maestro

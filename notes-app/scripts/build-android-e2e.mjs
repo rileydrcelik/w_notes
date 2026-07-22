@@ -71,17 +71,26 @@ function run(command, args, cwd) {
 // Only run the build when invoked directly — importing this for E2E_BUILD_ENV
 // must not kick off a twenty-minute Gradle run.
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
-  // `--clean` regenerates android/ from app.config.js rather than patching
-  // whatever was there. The directory is gitignored, so on CI it is absent
-  // anyway; locally this keeps a stale prebuild from silently changing what
-  // gets tested.
+  // Deliberately *not* `--clean`. Regenerating android/ from scratch forces a
+  // cold build every time, which on CI cost ~25 minutes and a step timeout.
+  // The directory is gitignored so CI starts without it regardless, and
+  // prebuild is deterministic from app.config.js — the clean bought nothing
+  // there while guaranteeing the slowest possible path.
   console.log('• prebuilding android/');
-  run('npx', ['expo', 'prebuild', '-p', 'android', '--clean'], appRoot);
+  run('npx', ['expo', 'prebuild', '-p', 'android'], appRoot);
 
   raiseGradleMemory();
 
   console.log('• assembling release APK (several minutes)');
-  run(isWindows ? 'gradlew.bat' : './gradlew', ['assembleRelease'], join(appRoot, 'android'));
+  // Android lint has nothing to say about a build whose only purpose is to be
+  // driven by Maestro, and lintVitalAnalyze is one of the more expensive tasks
+  // in the graph. `assembleRelease` pulls it in automatically, so it has to be
+  // excluded explicitly.
+  run(
+    isWindows ? 'gradlew.bat' : './gradlew',
+    ['assembleRelease', '-x', 'lintVitalRelease', '-x', 'lintVitalAnalyzeRelease'],
+    join(appRoot, 'android'),
+  );
 
   if (!existsSync(APK_PATH)) {
     console.error(`\n✗ build reported success but no APK at ${APK_PATH}\n`);
