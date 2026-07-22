@@ -52,6 +52,20 @@ it's a detection mechanism, not a prevention one.
 To go back to review-before-merge, delete `autofix-ship.yml`; nothing else
 depends on it.
 
+### Which repo a fix lands in
+
+A note may carry its own `repo` (`owner/name`); without one the server falls
+back to `AUTOFIX_REPO`. That fallback is guarded by **`AUTOFIX_PROJECTS`** — the
+Sentry project slugs whose code actually lives in `AUTOFIX_REPO` (several
+projects can map to one repo; here `w-notes-fastapi` and `w-notes-rn` both do).
+
+A note watching any other project must name its own repo, or the dispatch is
+refused with a message saying which project it came from. Without this, tapping
+Fix on an unrelated project's issue silently aims an agent at *this* repo, to
+fix a bug that isn't in it — and with full automation on, that PR merges and
+deploys unreviewed. Leaving `AUTOFIX_PROJECTS` empty disables the check and
+restores the old open fallback.
+
 > **Current target: this repo (`rileydrcelik/w_notes`).** `AUTOFIX_REPO` points at
 > w_notes and the live workflow already lives at
 > [`.github/workflows/sentry-autofix.yml`](../../../.github/workflows/sentry-autofix.yml).
