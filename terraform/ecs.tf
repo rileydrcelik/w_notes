@@ -32,6 +32,7 @@ locals {
     local.sentry_api_enabled ? [{ name = "SENTRY_API_TOKEN", valueFrom = aws_ssm_parameter.sentry_api_token[0].arn }] : [],
     local.autofix_enabled ? [{ name = "GITHUB_TOKEN", valueFrom = aws_ssm_parameter.github_token[0].arn }] : [],
     local.firebase_enabled ? [{ name = "FIREBASE_CREDENTIALS", valueFrom = aws_ssm_parameter.firebase[0].arn }] : [],
+    local.publishing_enabled ? [{ name = "PORTFOLIO_INGEST_SECRET", valueFrom = aws_ssm_parameter.portfolio_ingest_secret[0].arn }] : [],
   )
 }
 
@@ -66,6 +67,11 @@ resource "aws_ecs_task_definition" "api" {
         { name = "CORS_ORIGINS", value = join(",", var.web_origins) },
         # Target repo for /sentry/autofix dispatches (empty => autofix disabled).
         { name = "AUTOFIX_REPO", value = var.autofix_repo },
+        # Where embedded-note updates are pushed, and which accounts may
+        # publish. The matching secret rides in `secrets` below; all three must
+        # be set or the app disables publishing entirely.
+        { name = "PORTFOLIO_API_BASE", value = var.portfolio_api_base },
+        { name = "PUBLISHER_EMAILS", value = var.publisher_emails },
       ]
 
       # Secret config, pulled from SSM Parameter Store by the execution role.

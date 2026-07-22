@@ -60,3 +60,12 @@ resource "aws_ssm_parameter" "firebase" {
   type  = "SecureString"
   value = var.firebase_credentials_json
 }
+
+# PORTFOLIO_INGEST_SECRET — shared secret for the portfolio's note endpoints;
+# only created when publishing is fully configured.
+resource "aws_ssm_parameter" "portfolio_ingest_secret" {
+  count = local.publishing_enabled ? 1 : 0
+  name  = "/${local.name}/portfolio-ingest-secret"
+  type  = "SecureString"
+  value = var.portfolio_ingest_secret
+}

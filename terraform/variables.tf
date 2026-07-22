@@ -142,3 +142,27 @@ variable "web_origins" {
     tighten to the deployed origin(s) (e.g. ["https://app.example.com"]) later.
   EOT
 }
+
+# ---- Publish notes to the portfolio website ----
+#
+# All three must be set or publishing stays off entirely (fail closed) and note
+# sync behaves exactly as it did before the feature existed.
+
+variable "portfolio_api_base" {
+  type        = string
+  default     = ""
+  description = "Base URL of the portfolio API that receives embedded-note updates, e.g. \"https://portfolio2-production-0509.up.railway.app\". Empty => publishing disabled."
+}
+
+variable "portfolio_ingest_secret" {
+  type        = string
+  default     = ""
+  sensitive   = true
+  description = "Shared secret for the portfolio's note endpoints. Authenticates both the outbound push of note updates and the portfolio's reads of /embed/notes. Must equal NOTES_INGEST_SECRET on the portfolio side. Empty => publishing disabled."
+}
+
+variable "publisher_emails" {
+  type        = string
+  default     = ""
+  description = "Comma-separated account emails allowed to publish, matched against users.email. This API is multi-tenant: without it, any account could put posts on the site owner's portfolio. Empty => nobody can publish."
+}

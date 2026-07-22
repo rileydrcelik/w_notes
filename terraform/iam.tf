@@ -41,6 +41,7 @@ data "aws_iam_policy_document" "read_secrets" {
       local.sentry_api_enabled ? [aws_ssm_parameter.sentry_api_token[0].arn] : [],
       local.autofix_enabled ? [aws_ssm_parameter.github_token[0].arn] : [],
       local.firebase_enabled ? [aws_ssm_parameter.firebase[0].arn] : [],
+      local.publishing_enabled ? [aws_ssm_parameter.portfolio_ingest_secret[0].arn] : [],
     )
   }
 }
