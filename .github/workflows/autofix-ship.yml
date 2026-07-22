@@ -180,6 +180,11 @@ jobs:
     needs: merge
     if: needs.merge.outputs.merged == 'true' && needs.merge.outputs.backend_changed == 'true'
     uses: ./.github/workflows/deploy-backend.yml
+    # Build main's tip, not this run's github.sha. A workflow_run's github.sha is
+    # main *before* the merge that just happened in the job above, so without
+    # this the deploy ships the pre-merge commit and green-checks stale code.
+    with:
+      ref: main
     secrets: inherit
 
   # A merged fix that never reached production is the failure worth shouting

@@ -22,6 +22,17 @@ on:
       - '.github/workflows/deploy-backend.yml'
   workflow_dispatch:
   workflow_call:
+    inputs:
+      ref:
+        description: >-
+          Git ref (branch or SHA) to build and deploy. Callers triggered by
+          workflow_run MUST pass this: their github.sha is the default branch's
+          tip *when the run was queued*, which for a post-merge deploy is the
+          commit BEFORE the merge — so a bare checkout builds the parent and
+          ships stale code while reporting success. Omitted for push/dispatch,
+          where github.sha is already the intended commit.
+        required: false
+        type: string
 
 permissions:
   # Required for the OIDC token AWS trades for temporary credentials.
@@ -48,7 +59,16 @@ jobs:
     name: Build + deploy
     runs-on: ubuntu-latest
     steps:
+      # inputs.ref when a workflow_call passes one, else github.sha (correct for
+      # push/dispatch). Everything downstream keys off the resolved HEAD, never
+      # GITHUB_SHA, which stays pinned to the triggering commit even after this.
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+
+      - name: Resolve the commit being deployed
+        id: sha
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -67,9 +87,10 @@ jobs:
         id: build
         env:
           REGISTRY: ${{ steps.ecr.outputs.registry }}
+          DEPLOY_SHA: ${{ steps.sha.outputs.sha }}
         run: |
           set -euo pipefail
-          IMAGE="$REGISTRY/$ECR_REPOSITORY:${GITHUB_SHA}"
+          IMAGE="$REGISTRY/$ECR_REPOSITORY:${DEPLOY_SHA}"
           docker build -t "$IMAGE" -t "$REGISTRY/$ECR_REPOSITORY:latest" ./backend
           docker push "$IMAGE"
           docker push "$REGISTRY/$ECR_REPOSITORY:latest"
