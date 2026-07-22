@@ -67,6 +67,11 @@ resource "aws_ecs_task_definition" "api" {
         { name = "CORS_ORIGINS", value = join(",", var.web_origins) },
         # Target repo for /sentry/autofix dispatches (empty => autofix disabled).
         { name = "AUTOFIX_REPO", value = var.autofix_repo },
+        # Sentry projects whose code actually lives in AUTOFIX_REPO. Notes for
+        # any other project must name their own repo — otherwise the fallback
+        # would dispatch an agent here to fix a bug from another codebase, and
+        # autofix-ship would merge and deploy the result unreviewed.
+        { name = "AUTOFIX_PROJECTS", value = join(",", var.autofix_projects) },
         # Where embedded-note updates are pushed, and which accounts may
         # publish. The matching secret rides in `secrets` below; all three must
         # be set or the app disables publishing entirely.
