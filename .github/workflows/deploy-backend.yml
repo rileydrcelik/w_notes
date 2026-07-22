@@ -16,6 +16,9 @@ on:
     branches: [main]
     paths:
       - 'backend/**'
+      # Docs ship nothing. Without this a README edit rolls production, which at
+      # desired_count = 1 is a real (if brief) gap in service for no change.
+      - '!backend/docs/**'
       - '.github/workflows/deploy-backend.yml'
   workflow_dispatch:
   workflow_call:
