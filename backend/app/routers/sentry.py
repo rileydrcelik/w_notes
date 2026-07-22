@@ -586,7 +586,7 @@ def _github_client() -> httpx.AsyncClient:
     return httpx.AsyncClient(
         base_url=settings.github_api_base.rstrip("/"),
         headers={
-            "Authorization": f"Bearer {settings.github_token}",
+            "Authorization": f"token {settings.github_token}",
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28",
         },
