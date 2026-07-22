@@ -194,7 +194,11 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
-          BRANCH: ${{ github.event.workflow_run.head_branch || format('PR #{0}', inputs.pr) }}
+          # No '#' in this expression: an unquoted YAML scalar treats " #" as the
+          # start of a comment, which truncates the expression and leaves GitHub
+          # staring at an unclosed ${{. It parses as valid YAML either way, so
+          # only GitHub's expression parser catches it — at dispatch time.
+          BRANCH: ${{ github.event.workflow_run.head_branch || format('PR {0}', inputs.pr) }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
