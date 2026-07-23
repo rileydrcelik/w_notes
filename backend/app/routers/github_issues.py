@@ -237,9 +237,14 @@ def _raise_for_upstream(resp: httpx.Response) -> None:
     if resp.is_success:
         return
     if resp.status_code in (401, 403):
-        raise HTTPException(
-            status.HTTP_502_BAD_GATEWAY, "GitHub rejected the server token"
-        )
+        # GitHub names the permission it wanted in this header when the token is
+        # merely under-scoped; passing it through turns "the token is bad" into
+        # "the token is missing issues=write". Mirrors sentry._raise_for_github.
+        needed = resp.headers.get("x-accepted-github-permissions")
+        detail = "GitHub rejected the server token"
+        if needed:
+            detail = f"{detail} (needs: {needed})"
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, detail)
     code = resp.status_code if resp.status_code < 500 else status.HTTP_502_BAD_GATEWAY
     raise HTTPException(code, f"GitHub API error ({resp.status_code})")
 
