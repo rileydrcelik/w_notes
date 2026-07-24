@@ -62,6 +62,14 @@ export default function CopaBlockScreen() {
   // between two open clients, is what made conflicting values flip back and
   // forth. Seeding on navigation does not set it; only the input handlers do.
   const editedRef = useRef(false);
+  // What we last committed to (or seeded from) the store for this block. Local
+  // state ahead of it is an uncommitted edit of ours; a *stored* block ahead of
+  // it is a change that arrived from another device. Telling those apart is what
+  // lets the screen adopt remote edits without ever eating a keystroke.
+  const committedRef = useRef({ label: item?.label ?? '', content: item?.content ?? '' });
+  // Bumped when a remote body is adopted, to remount the (uncontrolled) editor
+  // so it reseeds — see MarkdownEditor, which freezes its initial value.
+  const [contentRev, setContentRev] = useState(0);
   const onChangeLabel = (t: string) => {
     editedRef.current = true;
     setLabel(t);
@@ -91,10 +99,36 @@ export default function CopaBlockScreen() {
     if (current) {
       setLabel(current.label);
       setContent(current.content);
+      committedRef.current = { label: current.label, content: current.content };
     }
     editedRef.current = false;
     // Re-run only on a different block, not on every keystroke.
   }, [id]);
+
+  // Adopt an edit made to this block on another device. Without this the screen
+  // kept rendering whatever it held when it opened, even though the change had
+  // already landed in SQLite and in the copa list. Uncommitted local edits win
+  // (they're newer and about to be committed), and nothing is reseeded while the
+  // editor holds focus — `editing` is a dependency, so a deferred change lands
+  // on blur. Same reasoning as the note screen.
+  const storedLabel = item?.label;
+  const storedContent = item?.content;
+  useEffect(() => {
+    if (storedLabel === undefined || storedContent === undefined) return;
+    if (editing) return;
+    const committed = committedRef.current;
+    if (label !== committed.label || content !== committed.content) return;
+    if (storedLabel === label && storedContent === content) return;
+    committedRef.current = { label: storedLabel, content: storedContent };
+    // See the note screen for why this can't come through a sync subscription:
+    // the engine's event fires before the store has reloaded.
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- adopt remote edit
+    setLabel(storedLabel);
+    if (storedContent !== content) {
+      setContent(storedContent);
+      setContentRev((n) => n + 1); // remount the editor so it reseeds
+    }
+  }, [storedLabel, storedContent, editing, label, content]);
 
   // Debounced commit so typing stays smooth and storage isn't hit per keystroke.
   // Driven only by user edits (via the local label/content state) — deliberately
@@ -107,6 +141,7 @@ export default function CopaBlockScreen() {
       // bump updated_at and re-trigger sync. Compares against the latest stored
       // value via the snapshot, avoiding an `item` dependency here.
       const stored = snapshot.current.stored;
+      committedRef.current = { label, content };
       if (stored && stored.label === label && stored.content === content) return;
       updateCopa(id, { label, content });
     }, 350);
@@ -180,7 +215,7 @@ export default function CopaBlockScreen() {
             <FilePreview item={item} />
           ) : (
             <MarkdownEditor
-              key={id}
+              key={`${id}:${contentRev}`}
               value={content}
               onChangeText={onChangeContent}
               placeholder="Contents to copy…"

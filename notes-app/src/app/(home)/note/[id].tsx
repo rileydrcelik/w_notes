@@ -46,6 +46,14 @@ export default function NoteScreen() {
   // between two open clients, is what made conflicting titles flip back and
   // forth. Seeding on navigation does not set it; only the input handlers do.
   const editedRef = useRef(false);
+  // What we last committed to (or seeded from) the store for this note. Local
+  // state ahead of it is an uncommitted edit of ours; a *stored* note ahead of
+  // it is a change that arrived from another device. Telling those apart is what
+  // lets the screen adopt remote edits without ever eating a keystroke.
+  const committedRef = useRef({ title: note?.title ?? '', body: note?.body ?? '' });
+  // Bumped when a remote body is adopted, to remount the (uncontrolled) editor
+  // so it reseeds — see MarkdownEditor, which freezes its initial value.
+  const [bodyRev, setBodyRev] = useState(0);
   const onChangeTitle = (t: string) => {
     editedRef.current = true;
     setTitle(t);
@@ -78,10 +86,42 @@ export default function NoteScreen() {
     if (current) {
       setTitle(current.title);
       setBody(current.body);
+      committedRef.current = { title: current.title, body: current.body };
     }
     editedRef.current = false;
     // Re-run only on a different note, not on every keystroke.
   }, [id]);
+
+  // Adopt an edit made to this note on another device. Without this the screen
+  // showed whatever the note held when it opened: an edit synced from the web
+  // client landed in SQLite and in every list, but the open note kept rendering
+  // the stale copy until you navigated away and back.
+  //
+  // Two guards keep it from fighting the user. Uncommitted local edits win (they
+  // are newer and about to be committed — and the pull itself is last-writer-
+  // wins, so a stored value only gets *ahead* of ours when it really is newer).
+  // And nothing is reseeded while the body editor holds focus, which would steal
+  // the caret; `editing` is a dependency, so a deferred change lands on blur.
+  const storedTitle = note?.title;
+  const storedBody = note?.body;
+  useEffect(() => {
+    if (storedTitle === undefined || storedBody === undefined) return;
+    if (editing) return;
+    const committed = committedRef.current;
+    if (title !== committed.title || body !== committed.body) return;
+    if (storedTitle === title && storedBody === body) return;
+    committedRef.current = { title: storedTitle, body: storedBody };
+    // The lint rule wants state derived from an external system to arrive via a
+    // subscription callback. Sync's own event fires *before* the store finishes
+    // reloading, so the store value is the only trustworthy signal here — and it
+    // settles in one extra render per remote change, not per keystroke.
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- adopt remote edit
+    setTitle(storedTitle);
+    if (storedBody !== body) {
+      setBody(storedBody);
+      setBodyRev((n) => n + 1); // remount the editor so it reseeds
+    }
+  }, [storedTitle, storedBody, editing, title, body]);
 
   // Debounced commit so typing stays smooth and storage isn't hit per keystroke.
   // Driven only by user edits (via the local title/body state) — deliberately
@@ -94,6 +134,7 @@ export default function NoteScreen() {
       // bump updated_at and re-trigger sync. Compares against the latest stored
       // value via the snapshot, avoiding a `note` dependency here.
       const stored = snapshot.current.stored;
+      committedRef.current = { title, body };
       if (stored && stored.title === title && stored.body === body) return;
       updateNote(id, { title, body });
     }, 350);
@@ -166,7 +207,7 @@ export default function NoteScreen() {
             keyboardShouldPersistTaps="handled"
             showsVerticalScrollIndicator={false}>
             <MarkdownEditor
-              key={id}
+              key={`${id}:${bodyRev}`}
               value={body}
               onChangeText={onChangeBody}
               placeholder="Start typing…"
