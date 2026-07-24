@@ -82,20 +82,21 @@ jobs:
           java-version: '17'
 
       # Caches both the dependency cache and the Gradle build cache across runs.
-      # This is what turns a 25-minute cold build into something viable: with a
-      # populated build cache most of the ~1400 tasks resolve FROM-CACHE even
+      # This is what turns a 27-minute cold build into something viable: with a
+      # populated build cache most of the ~1000 tasks resolve FROM-CACHE even
       # though android/ is regenerated each run.
       #
-      # cache-read-only is the subtle part. By default this action only *writes*
-      # the cache from the default branch, so a PR branch reads main's cache and
-      # never seeds one. Until this workflow has run on main there is nothing to
-      # read, and every run is cold no matter how many times you retry it.
-      # Writing from this branch too is a temporary measure to prove the warm
-      # path before merge — revert to the default once main has seeded it, or
-      # every PR writes its own cache and thrashes the 10GB repo limit.
+      # Restoring the cache is only half of it — the build cache also has to be
+      # switched on, which Expo's generated gradle.properties doesn't do. That
+      # happens in scripts/build-android-e2e.mjs, after prebuild. Without it this
+      # step restores a cache nothing ever reads.
+      #
+      # Left at the action's default, which writes the cache only from the
+      # default branch. PR branches read main's cache and don't seed their own —
+      # deliberately, because a ~1.1GB write per branch would thrash the 10GB
+      # repo limit and evict the entry every PR depends on. The consequence is
+      # that the first main run after this merges is cold; runs after it are not.
       - uses: gradle/actions/setup-gradle@v4
-        with:
-          cache-read-only: false
 
       - name: Install
         working-directory: notes-app
