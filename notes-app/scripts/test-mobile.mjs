@@ -18,6 +18,8 @@ import { existsSync } from 'node:fs';
 import { homedir, platform } from 'node:os';
 import { join } from 'node:path';
 
+import { E2E_BUILD_ENV } from './build-android-e2e.mjs';
+
 const args = process.argv.slice(2);
 const shouldBuild = args.includes('--build');
 const keepEmulator = args.includes('--keep');
@@ -96,16 +98,10 @@ if (shouldBuild) {
   const build = spawnSync('npx', ['expo', 'run:android', '--variant', 'release'], {
     stdio: 'inherit',
     shell: true,
-    env: {
-      ...process.env,
-      // Sentry's Gradle plugin uploads source maps on release builds and fails
-      // the build without an auth token. A local test build has no reason to.
-      SENTRY_DISABLE_AUTO_UPLOAD: 'true',
-      // Sync off, matching the web E2E config: no backend, no Firebase, no
-      // sign-in, and no chance of a test run creating junk users in production.
-      EXPO_PUBLIC_API_URL: '',
-      EXPO_PUBLIC_SENTRY_DSN: '',
-    },
+    // Shared with the CI build (scripts/build-android-e2e.mjs) so both produce
+    // the same app. A local run that differed here would be testing something
+    // CI never sees, and vice versa.
+    env: { ...process.env, ...E2E_BUILD_ENV },
   });
   if (build.status !== 0) fail('build failed — see the Gradle output above');
 }
