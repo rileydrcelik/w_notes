@@ -18,6 +18,7 @@ import * as VideoThumbnails from 'expo-video-thumbnails';
 import { Directory, File, Paths } from 'expo-file-system';
 
 import { Sentry } from '@/lib/sentry';
+import { canSaveToDevice, saveFileToDevice } from '@/lib/save-file';
 import type { CopaItem } from '@/data/copa';
 
 type FeatherName = ComponentProps<typeof Feather>['name'];
@@ -156,46 +157,94 @@ export async function openCopaFile(item: CopaItem): Promise<void> {
 }
 
 /**
- * Handles the download action for a file block. Media (image/video/audio) is
- * saved straight into the device's media library; any other type (or a media
- * save we couldn't complete) falls back to the share sheet, which offers "Save
- * to Files" / "Save image" and needs no permission — so there's always a path.
+ * Handles the download action for a file block. Where it goes depends on what
+ * it is, and the two routes are deliberately exclusive:
  *
- * Android note: `writeOnly` is effectively an iOS-only hint. On Android 13+ the
- * request is for broad read-media access, and picking "Select photos" (partial
- * access) resolves to `granted: false` with `accessPrivileges: 'limited'`. That
- * limited grant is still enough to add our *own* asset, so we treat it as OK and
- * only fall through to sharing on a hard denial (which previously dead-ended).
+ * - Media (image/video/audio) goes into the device's media library, where the
+ *   gallery and music apps will find it. If that doesn't work out it falls back
+ *   to the share sheet, never to the folder below — a photo saved into some
+ *   folder is a photo the gallery won't show.
+ * - Anything else on Android — a PDF, a zip, a doc — is written to a folder the
+ *   user picks once, the picker opening at Downloads. Android's share sheet can
+ *   only hand bytes to another app, so without this a PDF had no way at all to
+ *   reach the user's own files.
+ *
+ * The share sheet backs both up: on iOS it offers "Save to Files" / "Save
+ * image" and needs no permission, so there's always a path.
  */
 export async function downloadCopaFile(item: CopaItem): Promise<void> {
   if (!item.fileUri) return;
 
   if (isSaveableMedia(item.mimeType)) {
+    if (await saveToMediaLibrary(item.fileUri)) {
+      Alert.alert('Saved', 'The file was saved to your device.');
+      return;
+    }
+  } else if (canSaveToDevice()) {
     try {
-      // Write-only is all we need to save, and asks for the least access. Only
-      // (re)prompt when it can actually help — a permanently denied permission
-      // (canAskAgain: false) skips straight to the share-sheet fallback below.
-      let perm = await MediaLibrary.getPermissionsAsync(true);
-      if (!perm.granted && perm.canAskAgain) {
-        perm = await MediaLibrary.requestPermissionsAsync(true);
-      }
-      if (perm.granted) {
-        await MediaLibrary.Asset.create(item.fileUri);
-        Alert.alert('Saved', 'The file was saved to your device.');
+      const outcome = await saveFileToDevice({
+        uri: item.fileUri,
+        fileName: saveNameFor(item),
+      });
+      // A cancelled folder pick is the user saying no — don't then surprise
+      // them with a share sheet they didn't ask for.
+      if (outcome.status === 'saved') {
+        Alert.alert('Saved', `The file was saved to ${outcome.folder}.`);
         return;
       }
-      // Denied, or a partial "Select photos" grant (Android 13+) — which this
-      // SDK reports as not-granted: fall through to the share sheet instead of
-      // dead-ending. It saves the file ("Save image" / "Save to Files") with no
-      // media permission at all, so there's always a way out. A user declining
-      // the prompt isn't an error, so it isn't reported to Sentry.
+      if (outcome.status === 'cancelled') return;
     } catch (e) {
-      // An unexpected native failure during the save itself: fall through to
-      // sharing so the user can still get the file out.
-      console.warn('[copa] save to device failed:', e);
-      Sentry.captureException(e, { tags: { source: 'copa-files', op: 'save' } });
+      console.warn('[copa] save to folder failed:', e);
+      Sentry.captureException(e, { tags: { source: 'copa-files', op: 'save-file' } });
     }
   }
 
   await openCopaFile(item);
+}
+
+/**
+ * Adds a file to the device's media library, reporting whether it landed.
+ *
+ * The save is *attempted before any permission is requested*, because on
+ * Android 10+ none is needed — an app may always add its own asset to
+ * MediaStore. Asking first was worse than useless there: on Android 13+ the
+ * request covers broad read-media access, so choosing "Select photos" (partial
+ * access) comes back `granted: false`, and a save that would have succeeded was
+ * abandoned untried. Permission is only worth asking for when the attempt
+ * actually fails — older Android, which writes through external storage, and
+ * iOS, where PhotoKit needs authorization.
+ */
+async function saveToMediaLibrary(fileUri: string): Promise<boolean> {
+  try {
+    await MediaLibrary.Asset.create(fileUri);
+    return true;
+  } catch {
+    // Expected wherever the media library really is permission-gated.
+  }
+
+  try {
+    // Write-only is all we need to save, and asks for the least access. Only
+    // (re)prompt when it can help — a permanently denied permission
+    // (canAskAgain: false) gives up here rather than prompting into a wall.
+    let perm = await MediaLibrary.getPermissionsAsync(true);
+    if (!perm.granted && perm.canAskAgain) {
+      perm = await MediaLibrary.requestPermissionsAsync(true);
+    }
+    // Declining the prompt is a choice, not an error, so it isn't reported.
+    if (!perm.granted) return false;
+
+    await MediaLibrary.Asset.create(fileUri);
+    return true;
+  } catch (e) {
+    console.warn('[copa] save to media library failed:', e);
+    Sentry.captureException(e, { tags: { source: 'copa-files', op: 'save' } });
+    return false;
+  }
+}
+
+/** The name a file block should be written under, however sparse its metadata. */
+function saveNameFor(item: CopaItem): string {
+  if (item.fileName) return item.fileName;
+  const ext = extensionOf(item.fileUri ?? '');
+  return `${item.label || 'file'}${ext}`;
 }

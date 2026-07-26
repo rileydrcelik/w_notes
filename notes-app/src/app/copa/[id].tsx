@@ -28,7 +28,6 @@ import {
   fileIconFor,
   formatBytes,
   isImage,
-  isSaveableMedia,
   isVideo,
   openCopaFile,
 } from '@/lib/copa-files';
@@ -241,7 +240,11 @@ function FilePreview({ item }: { item: CopaItem }) {
         {[item.mimeType, formatBytes(item.fileSize)].filter(Boolean).join('  ·  ')}
       </ThemedText>
 
-      {isSaveableMedia(item.mimeType) && (
+      {/* Every file type can be saved now — media into the library, anything
+          else into a folder on Android or via the share sheet on iOS — so this
+          no longer hides behind `isSaveableMedia`, which left PDFs with no
+          save affordance at all. */}
+      {!!item.fileUri && (
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="Save to device"

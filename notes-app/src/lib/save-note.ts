@@ -1,13 +1,15 @@
 /**
  * Native "save note to device". Writes the note's exported text to a temp file
- * in the cache directory and hands it to the OS share sheet, which offers "Save
- * to Files", AirDrop, mail, etc. Mirrors the copa file share flow.
+ * in the cache directory, then gets it out the same way a copa file block does:
+ * into a user-chosen folder on Android (its share sheet can't save anywhere),
+ * and via the share sheet on iOS, which offers "Save to Files", AirDrop, mail.
  */
 import { Alert } from 'react-native';
 import * as Sharing from 'expo-sharing';
 import { Directory, File, Paths } from 'expo-file-system';
 
 import { Sentry } from '@/lib/sentry';
+import { canSaveToDevice, saveFileToDevice } from '@/lib/save-file';
 import type { Note } from '@/data/notes';
 import { buildNoteText, noteFileName, noteFileTitle } from '@/lib/note-export';
 
@@ -23,6 +25,19 @@ export async function saveNoteToDevice(note: Note): Promise<void> {
     if (dest.exists) dest.delete();
     dest.create();
     dest.write(buildNoteText(note));
+
+    if (canSaveToDevice()) {
+      const outcome = await saveFileToDevice({
+        uri: dest.uri,
+        fileName: noteFileName(note),
+      });
+      if (outcome.status === 'saved') {
+        Alert.alert('Saved', `The note was saved to ${outcome.folder}.`);
+        return;
+      }
+      // Cancelling the folder pick means no — don't fall through to sharing.
+      if (outcome.status === 'cancelled') return;
+    }
 
     if (!(await Sharing.isAvailableAsync())) {
       Alert.alert('Unavailable', 'Sharing is not available on this device.');
