@@ -5,3 +5,6 @@
 crash.txt
 
 /local
+
+# Staging dir the mobile-e2e workflow copies Maestro output into
+/maestro-artifacts/
