@@ -750,10 +750,13 @@ export const db = {
   async createCopa({
     id,
     label = '',
+    content = '',
     file,
   }: {
     id: string;
     label?: string;
+    /** Rich-text HTML body; seeded when the block is created from a paste. */
+    content?: string;
     /** Local-only file attachment metadata; omitted for plain text blocks. */
     file?: Pick<CopaItem, 'fileUri' | 'fileName' | 'mimeType' | 'fileSize' | 'thumbUri'>;
   }): Promise<void> {
@@ -768,7 +771,7 @@ export const db = {
       [
         id,
         label,
-        '',
+        content,
         now,
         now,
         file?.fileUri ?? null,

@@ -37,3 +37,22 @@ export function htmlToPlainText(html: string): string {
     .join('\n')
     .trim();
 }
+
+/**
+ * Wrap plain text in the canonical rich-text HTML both editors read and write,
+ * so text that arrives from outside the app (a clipboard paste, a dropped
+ * selection) renders as real paragraphs instead of one escaped blob. Roughly the
+ * inverse of `htmlToPlainText` for text that carries no formatting.
+ */
+export function plainTextToHtml(text: string): string {
+  if (!text) return '';
+  const escape = (s: string) =>
+    s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return text
+    .replace(/\r\n?/g, '\n')
+    .split('\n')
+    // An empty line still needs a <br> inside its paragraph, or the editors
+    // collapse it away and the pasted spacing is lost.
+    .map((line) => `<p>${escape(line) || '<br>'}</p>`)
+    .join('');
+}

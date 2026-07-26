@@ -87,3 +87,59 @@ test('a note can be reopened from the home grid', async ({ page }) => {
   await expect(page).toHaveURL(/\/note\/note-/);
   await expect(page.getByPlaceholder('Title')).toHaveValue(title);
 });
+
+/**
+ * Copa's paste/drop entry points are window-level listeners bound in a
+ * `.web`-only hook (`use-copa-paste-drop.web.ts`) — pure wiring, invisible to
+ * every Node-based test, and silently dead if Metro ever resolved the native
+ * no-op variant instead. Real clipboard/drag gestures can't be driven from
+ * Playwright, so these dispatch the same events the browser would, carrying a
+ * real `DataTransfer`.
+ */
+test('pasting text on the copa feed creates a block that persists', async ({ page }) => {
+  await page.goto('/copa');
+  await ready(page);
+
+  const text = `e2e paste ${Date.now()}`;
+
+  await page.evaluate((value) => {
+    const dt = new DataTransfer();
+    dt.setData('text/plain', value);
+    document.body.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true }));
+  }, text);
+
+  await expect(page.getByText(text)).toBeVisible();
+
+  // Surviving a reload proves the paste went through the store into wa-sqlite,
+  // not just into React state.
+  await page.reload();
+  await expect(page.getByText(text)).toBeVisible();
+});
+
+test('dropping a file on the copa feed creates a file block', async ({ page }) => {
+  await page.goto('/copa');
+  await ready(page);
+
+  const name = `e2e-drop-${Date.now()}.png`;
+
+  // A drag has to be announced before it can be dropped: dragenter is what
+  // raises the overlay, so asserting it also covers that half of the hook.
+  await page.evaluate(() => {
+    const dt = new DataTransfer();
+    // dragenter/dragover carry the *types* but never the files themselves.
+    dt.setData('text/plain', '');
+    document.body.dispatchEvent(new DragEvent('dragenter', { dataTransfer: dt, bubbles: true }));
+  });
+  await expect(page.getByText('Drop to add a block')).toBeVisible();
+
+  await page.evaluate((fileName) => {
+    const dt = new DataTransfer();
+    dt.items.add(new File([new Uint8Array([1, 2, 3])], fileName, { type: 'image/png' }));
+    document.body.dispatchEvent(new DragEvent('drop', { dataTransfer: dt, bubbles: true }));
+  }, name);
+
+  // The card footer shows the file's name and size, so the name being on screen
+  // means the file block rendered rather than an empty text block.
+  await expect(page.getByText(name)).toBeVisible();
+  await expect(page.getByText('Drop to add a block')).toBeHidden();
+});

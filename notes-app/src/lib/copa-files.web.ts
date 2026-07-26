@@ -5,10 +5,10 @@
  * on web. Here the picker hands back a browser object URL we use directly, and
  * opening/saving goes through a plain anchor download.
  *
- * Scoped limitation (local-only first pass): object URLs don't survive a page
- * reload, so a web-attached file's bytes are session-only. The row metadata
- * (name, type, size) persists; the bytes would need the S3 sync path to round-
- * trip, which isn't wired on web yet.
+ * Object URLs don't survive a page reload, so the uri a block holds here is
+ * session-only. That's fine because the bytes themselves live in S3: the sync
+ * engine uploads them (lib/sync/files.web.ts) and re-downloads them into a fresh
+ * object URL each session.
  */
 import type { ComponentProps } from 'react';
 import Feather from '@expo/vector-icons/Feather';
@@ -22,6 +22,14 @@ export type ImportedFile = Pick<
   CopaItem,
   'fileUri' | 'fileName' | 'mimeType' | 'fileSize' | 'thumbUri'
 >;
+
+/**
+ * A file the browser hands over outside the picker — a clipboard paste or a
+ * drag-and-drop. Structurally a DOM `File`, typed as a named `Blob` so the
+ * native counterpart can declare the same signature without pulling in DOM
+ * globals it doesn't have.
+ */
+export type DroppedFile = Blob & { name?: string };
 
 export const isImage = (mime?: string): boolean => !!mime?.startsWith('image/');
 export const isVideo = (mime?: string): boolean => !!mime?.startsWith('video/');
@@ -85,6 +93,45 @@ export async function importPickedFile(_id: string): Promise<ImportedFile | null
     fileName: asset.name,
     mimeType: asset.mimeType,
     fileSize: asset.size ?? undefined,
+    thumbUri: undefined,
+  };
+}
+
+/**
+ * Names a pasted/dropped file. Every clipboard screenshot arrives as the same
+ * generic `image.png`, so those get stamped with the time they landed — five
+ * pastes in a row should not produce five identically-named blocks.
+ */
+function droppedFileName(file: DroppedFile): string {
+  const given = file.name?.trim();
+  if (given && given !== 'image.png') return given;
+  // `image/svg+xml` → `.svg`; a type-less blob falls back to `.bin`.
+  const subtype = file.type.split('/')[1]?.split('+')[0];
+  const ext = extensionOf(given ?? '') || `.${subtype || 'bin'}`;
+  const stamp = new Date().toISOString().slice(0, 19).replace('T', ' ').replace(/:/g, '-');
+  return `Pasted ${stamp}${ext}`;
+}
+
+/**
+ * Imports a file the browser already handed us (a Ctrl+V paste or a drop) into a
+ * new file block, skipping the picker. Same contract as `importPickedFile`: the
+ * object URL becomes the block's `fileUri`, and the sync engine uploads its bytes
+ * to S3 from there. Returns `null` if the file is over the size cap.
+ */
+export async function importDroppedFile(
+  _id: string,
+  file: DroppedFile,
+): Promise<ImportedFile | null> {
+  if (file.size > MAX_UPLOAD_BYTES) {
+    window.alert('Files must be under 2 GB to add.');
+    return null;
+  }
+
+  return {
+    fileUri: URL.createObjectURL(file),
+    fileName: droppedFileName(file),
+    mimeType: file.type || undefined,
+    fileSize: file.size || undefined,
     thumbUri: undefined,
   };
 }

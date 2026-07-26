@@ -18,6 +18,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { BottomFade } from '@/components/bottom-fade';
 import { FavoriteStar } from '@/components/favorite-star';
+import { CopaDropOverlay } from '@/components/copa-drop-overlay';
 import { useCopaOptions } from '@/components/copa-options-modal';
 import { ScrollToTopButton } from '@/components/scroll-to-top';
 import { SearchBar, SEARCH_BAR_HEIGHT } from '@/components/search-bar';
@@ -26,6 +27,7 @@ import { ThemedView } from '@/components/themed-view';
 import { Spacing } from '@/constants/theme';
 import { type CopaItem } from '@/data/copa';
 import { useContextMenu } from '@/hooks/use-context-menu';
+import { useCopaPasteDrop } from '@/hooks/use-copa-paste-drop';
 import { useDoubleTap } from '@/hooks/use-double-tap';
 import { useScreenFadeStyle } from '@/hooks/use-screen-fade';
 import { useScrollToTop } from '@/hooks/use-scroll-to-top';
@@ -243,6 +245,8 @@ export default function CopaScreen() {
   const { refreshing, onRefresh } = useSyncRefresh();
   const [query, setQuery] = useState('');
   const fadeStyle = useScreenFadeStyle();
+  // Web only: Ctrl/Cmd+V and drag-and-drop add blocks straight to the feed.
+  const { dragging } = useCopaPasteDrop();
 
   const q = query.trim().toLowerCase();
   const searching = q.length > 0;
@@ -303,6 +307,11 @@ export default function CopaScreen() {
             <ThemedText themeColor="textSecondary" style={styles.empty}>
               No copy blocks match “{query.trim()}”.
             </ThemedText>
+          ) : Platform.OS === 'web' ? (
+            // Nothing on screen advertises paste/drop, so the empty feed does.
+            <ThemedText themeColor="textSecondary" style={styles.empty}>
+              Paste (⌘/Ctrl + V) or drop a file anywhere here to add a copy block.
+            </ThemedText>
           ) : null
         }
         renderItem={({ item }) => {
@@ -322,6 +331,7 @@ export default function CopaScreen() {
       </View>
       <BottomFade />
       <ScrollToTopButton visible={scrolled} onPress={scrollToTop} />
+      <CopaDropOverlay visible={dragging} />
     </ThemedView>
     </Animated.View>
   );

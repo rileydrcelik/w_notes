@@ -32,6 +32,14 @@ export type ImportedFile = Pick<
   'fileUri' | 'fileName' | 'mimeType' | 'fileSize' | 'thumbUri'
 >;
 
+/**
+ * A file handed over by a clipboard paste or a drag-and-drop. Only web produces
+ * these (see `copa-files.web.ts`); the type exists here so both modules expose
+ * the same surface. Typed as a named `Blob` rather than a DOM `File` — `File` is
+ * expo-file-system's class in this module.
+ */
+export type DroppedFile = Blob & { name?: string };
+
 export const isImage = (mime?: string): boolean => !!mime?.startsWith('image/');
 export const isVideo = (mime?: string): boolean => !!mime?.startsWith('video/');
 export const isAudio = (mime?: string): boolean => !!mime?.startsWith('audio/');
@@ -131,6 +139,20 @@ export async function importPickedFile(id: string): Promise<ImportedFile | null>
     fileSize: asset.size,
     thumbUri,
   };
+}
+
+/**
+ * Web-only counterpart of `importPickedFile`, for a file that arrived by paste
+ * or drag-and-drop. Neither gesture exists on native — the paste/drop hook is a
+ * no-op there — so this never has a file to import and always returns `null`.
+ * It's declared here only to keep the module's exports identical across
+ * platforms; see `copa-files.web.ts` for the real implementation.
+ */
+export async function importDroppedFile(
+  _id: string,
+  _file: DroppedFile,
+): Promise<ImportedFile | null> {
+  return null;
 }
 
 /** Best-effort removal of a block's file bytes (and thumbnail) from disk. */

@@ -6,7 +6,7 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { htmlToPlainText } from '@/lib/html-text';
+import { htmlToPlainText, plainTextToHtml } from '@/lib/html-text';
 
 describe('htmlToPlainText', () => {
   it('returns an empty string for empty input', () => {
@@ -82,5 +82,45 @@ describe('htmlToPlainText', () => {
   it('handles a nested list without losing items', () => {
     const html = '<ul><li>outer<ul><li>inner</li></ul></li></ul>';
     expect(htmlToPlainText(html)).toBe('• outer\n• inner');
+  });
+});
+
+/**
+ * `plainTextToHtml` is the inbound half: text arriving from outside the app (a
+ * clipboard paste, a dropped selection) has to become the canonical HTML the
+ * editors read. The risk is escaping — pasted text that looks like markup must
+ * survive as text, not become live tags.
+ */
+describe('plainTextToHtml', () => {
+  it('returns an empty string for empty input', () => {
+    expect(plainTextToHtml('')).toBe('');
+  });
+
+  it('wraps each line in its own paragraph', () => {
+    expect(plainTextToHtml('one\ntwo')).toBe('<p>one</p><p>two</p>');
+  });
+
+  it('escapes markup so pasted text can never become live tags', () => {
+    expect(plainTextToHtml('<script>alert(1)</script>')).toBe(
+      '<p>&lt;script&gt;alert(1)&lt;/script&gt;</p>',
+    );
+    // Ampersands escape first, or the entity itself would be double-decoded.
+    expect(plainTextToHtml('a & b')).toBe('<p>a &amp; b</p>');
+    expect(plainTextToHtml('&lt;')).toBe('<p>&amp;lt;</p>');
+  });
+
+  it('keeps a blank line as a break rather than collapsing it', () => {
+    expect(plainTextToHtml('a\n\nb')).toBe('<p>a</p><p><br></p><p>b</p>');
+  });
+
+  it('normalises Windows and classic-Mac line endings', () => {
+    // Text pasted out of a Windows app arrives with CRLF.
+    expect(plainTextToHtml('a\r\nb')).toBe('<p>a</p><p>b</p>');
+    expect(plainTextToHtml('a\rb')).toBe('<p>a</p><p>b</p>');
+  });
+
+  it('round-trips back through htmlToPlainText', () => {
+    const text = 'first line\nsecond & <third>';
+    expect(htmlToPlainText(plainTextToHtml(text))).toBe(text);
   });
 });
