@@ -76,6 +76,23 @@ export async function reopenDbAndRefresh(): Promise<void> {
 
 let inflight: Promise<SyncResult> | null = null;
 
+/**
+ * When sync last carried real data in either direction (epoch ms, 0 = never).
+ * The poll uses it to run tight while a device is part of a live conversation
+ * — the user editing here, or another device's edits landing — and to fall back
+ * to a lazy interval once everything has been quiet for a while.
+ */
+let lastActivityAt = 0;
+
+function markActivity(): void {
+  lastActivityAt = Date.now();
+}
+
+/** How long since sync last moved data (Infinity if it never has this session). */
+export function msSinceSyncActivity(): number {
+  return lastActivityAt === 0 ? Infinity : Date.now() - lastActivityAt;
+}
+
 // One-time per-session reconciliation of local file paths (see prepareLocalFiles).
 let filesPrepared = false;
 
@@ -133,6 +150,9 @@ async function runSync(): Promise<SyncResult> {
     const downloaded = await downloadMissingFiles();
 
     if (changed > 0 || downloaded > 0) emitSynced();
+    // Anything moving in either direction means this device is mid-conversation
+    // with another one; keep the poll tight (see poll.ts).
+    if (pushed > 0 || changed > 0 || downloaded > 0) markActivity();
     return { status: 'ok', cursor: pulled.server_seq, pushed, pulled: changed };
   } catch (e) {
     // 501 = endpoints not wired (shouldn't happen now, but stays graceful).
@@ -259,6 +279,9 @@ const DEBOUNCE_MS = 800;
  * mid-pass, since concurrent calls return the same in-flight promise.
  */
 export function requestSync(delayMs: number = DEBOUNCE_MS): void {
+  // A local edit is activity in its own right: the other device is likely being
+  // watched right now, and this one should stay tight for its reply.
+  markActivity();
   if (debounceTimer) clearTimeout(debounceTimer);
   debounceTimer = setTimeout(() => {
     debounceTimer = null;
