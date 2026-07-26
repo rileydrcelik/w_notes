@@ -9,8 +9,7 @@ and these exercise the other, and the two have failed differently before.
 
 ## Prerequisites
 
-Mobile E2E is much heavier than web E2E, which is why it stays local-only for
-now. Every run needs:
+These also run in CI (see below). To run them locally you need:
 
 1. **Maestro** — a JVM CLI. `~/.maestro-cli/maestro/bin/maestro.bat` on Windows
    (the release zip ships a `.bat`; the documented `curl | bash` installer is
@@ -101,13 +100,36 @@ invisible until something runs the other side.
 
 That's the argument for keeping these, despite the cost below.
 
-## Why this isn't in CI
+## In CI
 
-Each run needs an emulator plus a full native build — minutes, not seconds,
-versus ~30s for the whole web E2E job. Wiring that into GitHub Actions is
-possible (there are emulator actions) but it's a large, slow, historically flaky
-addition, and it would gate every push on infrastructure far heavier than
-anything else in the pipeline.
+`.github/workflows/mobile-e2e.yml` runs these on every PR and every push to main
+that touches `notes-app/**`, on a real emulator. It's a separate workflow from
+`tests.yml` because it costs an order of magnitude more than the suites there —
+it builds a release APK and boots an Android emulator, where the rest of the
+pipeline finishes in ~1m30s.
 
-Run these by hand before a mobile release, or after touching the native DB
-layer. If mobile-specific regressions start slipping through, revisit.
+Two caches are what make that affordable, and both have a failure mode worth
+recognising:
+
+- **Gradle build cache** — restored by `setup-gradle`, but only useful because
+  `scripts/build-android-e2e.mjs` sets `org.gradle.caching=true` after prebuild.
+  If a run logs `N actionable tasks: N executed` with no `FROM-CACHE`, that flag
+  isn't landing and the build is doing ~27 minutes of avoidable work.
+- **AVD snapshot** — keyed `avd-<api>-<target>-<arch>-v1`. Bump the `-v1` suffix
+  to force a rebuild. A stale snapshot shows up as flows failing on a device in
+  an odd state, not as a cache error.
+
+Failures upload screenshots and per-step logs as the `maestro-artifacts`
+artifact, kept 7 days.
+
+Sync stays off in CI exactly as it does locally — same `E2E_BUILD_ENV`, shared
+by both paths so a local run and a CI run can't test different apps.
+
+## Before a push
+
+`.githooks/pre-push` runs these locally before any push touching native-relevant
+paths, which is faster feedback than waiting on CI. It's opt-in per clone:
+
+```sh
+git config core.hooksPath .githooks
+```

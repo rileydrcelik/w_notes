@@ -67,6 +67,11 @@ resource "aws_ecs_task_definition" "api" {
         { name = "CORS_ORIGINS", value = join(",", var.web_origins) },
         # Target repo for /sentry/autofix dispatches (empty => autofix disabled).
         { name = "AUTOFIX_REPO", value = var.autofix_repo },
+        # Sentry projects whose code actually lives in AUTOFIX_REPO. Notes for
+        # any other project must name their own repo — otherwise the fallback
+        # would dispatch an agent here to fix a bug from another codebase, and
+        # autofix-ship would merge and deploy the result unreviewed.
+        { name = "AUTOFIX_PROJECTS", value = join(",", var.autofix_projects) },
         # Where embedded-note updates are pushed, and which accounts may
         # publish. The matching secret rides in `secrets` below; all three must
         # be set or the app disables publishing entirely.
@@ -141,6 +146,37 @@ resource "aws_ecs_service" "api" {
     subnets          = aws_subnet.public[*].id
     security_groups  = [aws_security_group.ecs.id]
     assign_public_ip = true
+  }
+
+  # Deploys are automatic (see .github/workflows/deploy-backend.yml), so nobody
+  # is watching when one goes bad. The circuit breaker watches instead: if the
+  # new tasks never reach a steady state — image won't start, `alembic upgrade
+  # head` fails on boot, /health never answers — ECS gives up and rolls back to
+  # the previous task definition revision on its own.
+  #
+  # This only catches a deploy that fails *loudly*. A fix that starts cleanly
+  # and behaves wrongly looks like a success from here.
+  deployment_circuit_breaker {
+    enable   = true
+    rollback = true
+  }
+
+  lifecycle {
+    # CI registers a new task definition revision per commit (image pinned to
+    # the commit SHA) and points the service at it. Without this, the next
+    # `terraform apply` would drag the service back to whichever revision
+    # Terraform last created, undoing every deploy since.
+    #
+    # The trade: Terraform still owns the revision's *contents* — cpu, memory,
+    # env, secrets, the container definitions above — but changing them here no
+    # longer reaches the running service by itself. `apply` writes a new latest
+    # revision; the next deploy is what puts it in front of traffic, because the
+    # workflow builds from the family's latest revision rather than from
+    # whatever the service happens to be running. So an infra-only change needs
+    # a deploy (or a manual `update-service`) to land. That's the documented
+    # "needs terraform apply + backend redeploy" dance, now enforced rather than
+    # remembered.
+    ignore_changes = [task_definition]
   }
 
   depends_on = [aws_ecs_cluster_capacity_providers.main]

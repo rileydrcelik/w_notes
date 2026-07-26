@@ -2,11 +2,16 @@
 #
 # Runs the mobile E2E flows before a push that touches native-relevant code.
 #
-# Mobile is the one suite CI can't carry: a native build on a GitHub runner took
-# over 45 minutes, against ~1 minute locally against a warm emulator. So the
-# trigger lives here instead — and only for the changes where native risk is
-# real. Every other push is untouched and still gets the full CI pipeline in
-# ~1m20s, including the `.web`/`.native` export-parity check.
+# CI does carry mobile now (.github/workflows/mobile-e2e.yml), so this hook is no
+# longer the only thing standing between a native regression and main. It stays
+# because the feedback is faster: ~1 minute here against a warm local emulator,
+# versus a CI round trip that has to build a release APK and boot an emulator
+# first. Catching it before the push is cheaper than catching it after.
+#
+# The filter below is deliberately narrower than CI's. CI runs on all of
+# notes-app/** and is the paranoid net — a change can be native-relevant without
+# touching an obviously native path (the sync identity fork lived in token.ts).
+# This hook only wants the high-signal cases, because it's spending your time.
 #
 # Install (once per clone — hooks aren't versioned by git itself):
 #

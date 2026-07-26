@@ -115,8 +115,52 @@ Set that as `EXPO_PUBLIC_API_URL` in `notes-app/.env`, rebuild the app, done.
 
 ## Redeploying later
 
-Code change → rebuild + push `:latest` → `aws ecs update-service ... --force-new-deployment`.
-Infra change → edit the `.tf` files → `terraform plan` → `terraform apply`.
+**Normally you don't.** Any push to `main` touching `backend/**` triggers the
+`Deploy backend` workflow, which builds the image, tags it with the commit SHA,
+registers a task definition revision for it, rolls the service, and verifies
+`/health`. Trigger it by hand from the Actions tab after an infra change.
+
+The manual recipe still works if CI is down — but tag the SHA, not just
+`:latest`, or you leave ECS with nothing to roll back to.
+
+Infra change → edit the `.tf` files → `terraform plan` → `terraform apply` →
+**then deploy**. The service ignores Terraform's `task_definition` (CI owns
+which revision runs), so `apply` writes a new revision but does not put it in
+front of traffic. The next deploy picks it up, because the workflow builds from
+the family's latest revision.
+
+### 6. Enable CI deploys (OIDC)
+
+```powershell
+# in terraform.tfvars
+github_deploy_repo = "rileydrcelik/w_notes"
+```
+
+```powershell
+terraform apply
+terraform output github_deploy_role_arn
+gh secret set AWS_DEPLOY_ROLE --body "<that arn>"
+```
+
+No AWS keys live in GitHub: the role trusts GitHub's OIDC issuer, and only for
+workflows running on `refs/heads/main` in that one repo. It can push to this
+ECR repo, register a revision of this task family, and update this service —
+nothing else. If the AWS account already has a GitHub OIDC provider, `apply`
+fails with `EntityAlreadyExists`; import it (command is in `github_oidc.tf`).
+
+### Rolling back
+
+Every deploy leaves an immutable `:<sha>` image and its own task definition
+revision, so rollback is picking an older revision:
+
+```powershell
+aws ecs update-service --cluster wnotes-cluster --service wnotes-api `
+  --task-definition wnotes-api:<previous-revision> --region us-east-1
+```
+
+A deploy that never stabilises rolls itself back — the service has
+`deployment_circuit_breaker { rollback = true }`. A deploy that starts cleanly
+and behaves *wrongly* does not; that one is on you to catch.
 
 ## Notes & next steps
 

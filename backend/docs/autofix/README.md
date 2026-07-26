@@ -17,14 +17,78 @@ Sentry note (app) ──Fix──▶ POST /sentry/autofix (w_notes backend)
         .github/workflows/sentry-autofix.yml in the TARGET repo
                                 │  Claude Code Action fixes on autofixes/issue-*
                                 ▼
-                     Pull request → main  (never auto-merged)
+                     Pull request → main
                                 │  then marks the Sentry issue resolved
                                 ▼
 ```
 
-Nothing is merged automatically. Every fix lands as a PR for human review; once
-the PR is open the workflow resolves the Sentry issue (Sentry auto-reopens it if
-the error regresses).
+The workflow in this file opens a PR and stops there — that's the portable
+setup, and what a new target repo gets.
+
+**In `rileydrcelik/w_notes` the chain continues automatically.** Two further
+workflows take it from PR to production with no human in the loop:
+
+```
+        Pull request → main
+                │
+                ▼
+    Tests (backend pytest + vitest + playwright)
+                │  all green
+                ▼
+    autofix-ship.yml ──▶ squash merge ──▶ deploy-backend.yml ──▶ ECS
+```
+
+`autofix-ship.yml` merges only when every one of these holds: the Tests run
+concluded `success`, the PR carries the **`autofix` label**, the branch is
+`autofixes/*`, it targets `main`, it is not a draft, the author is the repo
+owner or the bot, it's `MERGEABLE`, and its head SHA is exactly the commit CI
+tested. Anything else is left for a human, with a comment on the PR saying why.
+It deploys only if the fix touched `backend/**`.
+
+### Why a PAT and a label
+
+PRs are authored with **`AUTOFIX_PAT`**, not `GITHUB_TOKEN`. A PR opened by
+`github-actions[bot]` counts as coming from a first-time contributor, so its
+`pull_request` workflows sit unrun awaiting approval — and approving one does
+*not* emit a second `workflow_run: completed` event, so `autofix-ship` never
+sees it. The PR ends up green, unmerged, and invisible: a silent stall.
+
+Loosening the repo's approval setting fixes that too, but this repo is public,
+so it would auto-run workflows for every stranger's PR. A poisoned Actions cache
+from one of those is later restored by a main-branch run that *does* hold
+secrets and *does* deploy. The PAT unblocks only our own automation.
+
+The cost is that autofix PRs now look like the owner's own, so authorship can no
+longer identify them. The **`autofix` label** carries that weight instead —
+applied by the workflow, required by the ship gate. A draft PR is skipped, which
+gives an agent a way to submit a low-confidence attempt for human eyes.
+
+**Escape hatch:** `autofix-ship` also accepts `workflow_dispatch` with a PR
+number, for a PR stranded by the gate. It re-vets from scratch and requires
+every check on the current head to be green, since there's no triggering run to
+compare against.
+
+What this does **not** protect against: a fix that passes CI and starts cleanly
+but is wrong. The tests are the only reviewer. If a fix reaches production and
+misbehaves, the Sentry issue reopens on regression — that's the backstop, and
+it's a detection mechanism, not a prevention one.
+
+To go back to review-before-merge, delete `autofix-ship.yml`; nothing else
+depends on it.
+
+### Which repo a fix lands in
+
+A note may carry its own `repo` (`owner/name`); without one the server falls
+back to `AUTOFIX_REPO`. That fallback is guarded by **`AUTOFIX_PROJECTS`** — the
+Sentry project slugs whose code actually lives in `AUTOFIX_REPO` (several
+projects can map to one repo; here `w-notes-fastapi` and `w-notes-rn` both do).
+
+A note watching any other project must name its own repo, or the dispatch is
+refused with a message saying which project it came from. Without this, tapping
+Fix on an unrelated project's issue silently aims an agent at *this* repo, to
+fix a bug that isn't in it — and with full automation on, that PR merges and
+deploys unreviewed. Leaving `AUTOFIX_PROJECTS` empty disables the check and
+restores the old open fallback.
 
 > **Current target: this repo (`rileydrcelik/w_notes`).** `AUTOFIX_REPO` points at
 > w_notes and the live workflow already lives at

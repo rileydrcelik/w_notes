@@ -5,21 +5,42 @@
  * never sees changes made on another device until the next manual sync trigger.
  * Pause while the tab is hidden to avoid pointless background fetches; the stores
  * refresh the UI off the engine's "applied remote changes" event.
+ *
+ * The interval adapts, for the reasons spelled out in poll.ts and the schedule
+ * itself in poll-schedule.ts. Becoming visible also runs a pass immediately —
+ * switching to this tab usually means you just changed something on the other
+ * device and expect to see it here, not up to an interval later.
  */
-import { syncNow } from './sync-engine';
-
-const POLL_MS = 15_000;
+import { nextPollDelay } from './poll-schedule';
+import { msSinceSyncActivity, syncNow } from './sync-engine';
 
 export function installSyncPoll(): () => void {
-  let timer: ReturnType<typeof setInterval> | null = null;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let running = false;
+
+  const schedule = () => {
+    if (!running || timer) return;
+    timer = setTimeout(async () => {
+      timer = null;
+      // Chained rather than setInterval: the next tick is measured from the end
+      // of the pass, so a slow round trip can't queue passes back to back.
+      await syncNow().catch(() => {});
+      schedule();
+    }, nextPollDelay(msSinceSyncActivity()));
+  };
 
   const start = () => {
-    if (timer) return;
-    timer = setInterval(() => void syncNow().catch(() => {}), POLL_MS);
+    if (running) return;
+    running = true;
+    // Don't make a just-revealed tab wait a tick to catch up.
+    void syncNow().catch(() => {});
+    schedule();
   };
+
   const stop = () => {
+    running = false;
     if (timer) {
-      clearInterval(timer);
+      clearTimeout(timer);
       timer = null;
     }
   };

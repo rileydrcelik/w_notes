@@ -39,6 +39,14 @@ class Settings(BaseSettings):
     # Empty (with token) => autofix disabled.
     autofix_repo: str = ""
 
+    # Comma-separated Sentry project slugs whose code actually lives in
+    # `autofix_repo` (e.g. "w-notes-fastapi,w-notes-rn" — one repo, several
+    # projects). A note for any *other* project must name its own repo, or the
+    # request is refused: the fallback would otherwise dispatch an agent at this
+    # repo to fix a bug that lives in a different codebase. Empty => unverified,
+    # and the fallback applies to every project (the pre-guard behaviour).
+    autofix_projects: str = ""
+
     # Base URL of the GitHub REST API. Overridable for GitHub Enterprise.
     github_api_base: str = "https://api.github.com"
 

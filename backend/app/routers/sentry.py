@@ -537,10 +537,27 @@ def _require_github_token() -> str:
     return token
 
 
-def _resolve_repo(override: str | None) -> str:
+def _autofix_projects() -> set[str]:
+    """Sentry project slugs whose code lives in the default ``autofix_repo``."""
+    raw = get_settings().autofix_projects
+    return {slug.strip() for slug in raw.split(",") if slug.strip()}
+
+
+def _resolve_repo(override: str | None, project: str | None = None) -> str:
     """The repo an autofix acts on: the note's own ``owner/name`` when it passes
     a valid one, else the server default. A malformed override is rejected (422)
-    rather than silently ignored, and a missing repo with no default is a 503."""
+    rather than silently ignored, and a missing repo with no default is a 503.
+
+    ``project`` is the Sentry project the issue came from. Pass it whenever the
+    call has side effects — it gates the *fallback*, which is the dangerous path:
+    without it, a note watching an unrelated project silently resolves to this
+    server's repo, and the agent gets dispatched to fix a bug that lives in a
+    different codebase entirely. Downstream that PR is auto-merged and deployed,
+    so a wrong repo is not a harmless confusion. Read-only callers can omit it.
+
+    Left unconfigured (``autofix_projects`` empty) the check can't be made and
+    the fallback stays open, matching the behaviour before the guard existed.
+    """
     if override:
         if not _REPO_RE.match(override):
             raise HTTPException(
@@ -552,6 +569,14 @@ def _resolve_repo(override: str | None) -> str:
     if not repo:
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE, "Autofix is not configured"
+        )
+    known = _autofix_projects()
+    if project and known and project not in known:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            f"Issue belongs to Sentry project '{project}', whose code is not in "
+            f"{repo} (that repo covers: {', '.join(sorted(known))}). Set the "
+            "note's repo to the one holding this project's code.",
         )
     return repo
 
@@ -579,13 +604,23 @@ def _branch_for(short_id: str) -> str:
 
 def _raise_for_github(resp: httpx.Response) -> None:
     """Like ``_raise_for_upstream`` but for GitHub. A 401/403 means our server
-    token is bad/under-scoped — a server misconfig, surfaced as 502."""
+    token is bad/under-scoped — a server misconfig, surfaced as 502.
+
+    When the token is merely under-scoped, GitHub says exactly which permission
+    was wanted in ``x-accepted-github-permissions``. Passing that through turns
+    "GitHub rejected the server token" — which reads like the token is invalid,
+    and sends you checking the token itself — into a message naming the missing
+    grant. Diagnosing this the hard way costs an hour; the header was there the
+    whole time.
+    """
     if resp.is_success:
         return
     if resp.status_code in (401, 403):
-        raise HTTPException(
-            status.HTTP_502_BAD_GATEWAY, "GitHub rejected the server token"
-        )
+        needed = resp.headers.get("x-accepted-github-permissions")
+        detail = "GitHub rejected the server token"
+        if needed:
+            detail = f"{detail} (needs: {needed})"
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, detail)
     code = resp.status_code if resp.status_code < 500 else status.HTTP_502_BAD_GATEWAY
     raise HTTPException(code, f"GitHub API error ({resp.status_code})")
 
@@ -665,7 +700,11 @@ async def autofix(
 ) -> AutofixResponse:
     _require_token()  # need Sentry to gather context
     _require_github_token()  # and GitHub to dispatch
-    repo = _resolve_repo(req.repo)  # the note's repo, or the server default
+    # The note's repo, or the server default — but the fallback is only allowed
+    # for projects whose code actually lives there. This dispatch bills an agent
+    # run and, in a repo with autofix-ship wired up, ends in an automatic merge
+    # and deploy; aiming it at the wrong codebase is not recoverable by review.
+    repo = _resolve_repo(req.repo, req.project)
 
     # Pull issue detail + latest event to build the context bundle.
     async with _client() as client:

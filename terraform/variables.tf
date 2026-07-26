@@ -130,6 +130,20 @@ variable "autofix_repo" {
   description = "owner/name of the repo autofix dispatches target, e.g. \"rileydrcelik/aiko\". Empty => autofix disabled."
 }
 
+variable "autofix_projects" {
+  type        = list(string)
+  default     = []
+  description = "Sentry project slugs whose code lives in autofix_repo, e.g. [\"w-notes-fastapi\", \"w-notes-rn\"] — one repo, several projects. A note for any other project must name its own repo or the dispatch is refused, so an unrelated project's issue can't be 'fixed' in this repo. Empty => unverified, and any project may fall back to autofix_repo."
+}
+
+# ---- CI/CD (GitHub Actions → AWS) ----
+
+variable "github_deploy_repo" {
+  type        = string
+  default     = ""
+  description = "owner/name of the repo allowed to deploy via OIDC, e.g. \"rileydrcelik/w_notes\". This is the repo holding the deploy workflow, which is not necessarily autofix_repo. Empty => no OIDC provider or deploy role is created and deploys stay manual."
+}
+
 # ---- Web client (CORS) ----
 
 variable "web_origins" {
