@@ -207,7 +207,13 @@ function IssueCard({
       style={({ pressed }) => pressed && styles.pressed}>
       <ThemedView
         type="backgroundElementAlt"
-        style={[styles.card, { height: expanded ? undefined : tileHeight }, selected && styles.cardSelected]}>
+        style={[
+          styles.card,
+          // Expanding only ever grows the card: minHeight keeps a short issue at
+          // the tile height instead of shrinking it under the tap.
+          expanded ? { minHeight: tileHeight } : { height: tileHeight },
+          selected && styles.cardSelected,
+        ]}>
         <View style={styles.cardHeader}>
           <View style={[styles.stateDot, { backgroundColor: dot }]} />
           <ThemedText type="smallBold" numberOfLines={expanded ? undefined : 2} style={styles.cardTitle}>

@@ -120,8 +120,13 @@ function CopaCard({ item }: { item: CopaItem }) {
         <ThemedView
           type="backgroundElement"
           // Fixed height keeps every tile uniform; expanding a card lets it grow
-          // past the fixed height to reveal the full content.
-          style={[styles.card, { height: expanded ? undefined : COPA_CARD_HEIGHT }, pressed && styles.pressed]}
+          // past the fixed height to reveal the full content. minHeight holds the
+          // tile height while expanded so the card can only ever grow.
+          style={[
+            styles.card,
+            expanded ? { minHeight: COPA_CARD_HEIGHT } : { height: COPA_CARD_HEIGHT },
+            pressed && styles.pressed,
+          ]}
           onLayout={onLayout}>
           <View style={styles.header}>
             {overflowing && (
