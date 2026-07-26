@@ -14,11 +14,13 @@ import {
 import Animated, { FadeIn } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { ScrollToTopButton } from '@/components/scroll-to-top';
 import { SwipeBackView } from '@/components/swipe-back-view';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Fonts, hexToRgba, Spacing } from '@/constants/theme';
 import { useContextMenu } from '@/hooks/use-context-menu';
+import { useScrollToTop } from '@/hooks/use-scroll-to-top';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
 import { useTheme } from '@/hooks/use-theme';
 import { apiFetch } from '@/lib/sync/api';
@@ -645,6 +647,7 @@ export default function SentryIssuesScreen() {
     [note?.pluginType, note?.pluginConfig],
   );
 
+  const { scrollProps, scrolled, scrollToTop } = useScrollToTop<FlatList<Issue>>();
   const [issues, setIssues] = useState<Issue[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -859,6 +862,7 @@ export default function SentryIssuesScreen() {
           />
         ) : (
         <FlatList
+          {...scrollProps}
           data={issues}
           keyExtractor={(item) => item.id}
           // Re-render rows when selection or any fix status changes.
@@ -914,6 +918,7 @@ export default function SentryIssuesScreen() {
           )}
         />
         )}
+        <ScrollToTopButton visible={scrolled} onPress={scrollToTop} />
       </ThemedView>
     </SwipeBackView>
   );

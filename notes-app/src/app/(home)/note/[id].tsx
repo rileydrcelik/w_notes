@@ -14,10 +14,12 @@ import type { EnrichedTextInputInstance, OnChangeStateEvent } from 'react-native
 
 import { FormattingToolbar } from '@/components/formatting-toolbar';
 import { MarkdownEditor } from '@/components/markdown-editor';
+import { ScrollToTopButton } from '@/components/scroll-to-top';
 import { SwipeBackView } from '@/components/swipe-back-view';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Spacing } from '@/constants/theme';
+import { useScrollToTop } from '@/hooks/use-scroll-to-top';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
 import { useTheme } from '@/hooks/use-theme';
 import { htmlToPlainText } from '@/lib/html-text';
@@ -35,6 +37,7 @@ export default function NoteScreen() {
   // Measured height of the sticky title block, so the fade gradient sits right
   // beneath it regardless of how many lines the title wraps to.
   const [titleHeight, setTitleHeight] = useState(0);
+  const { scrollProps, scrolled, scrollToTop } = useScrollToTop<ScrollView>();
 
   const note = getNote(id);
   const [title, setTitle] = useState(note?.title ?? '');
@@ -155,6 +158,7 @@ export default function NoteScreen() {
             multiline
           />
           <ScrollView
+            {...scrollProps}
             contentContainerStyle={[
               styles.content,
               // While editing, pad a full screen below so the body scrolls well
@@ -182,6 +186,9 @@ export default function NoteScreen() {
             style={[styles.fade, { top: titleHeight }]}
           />
         </KeyboardAvoidingView>
+        {/* Jumps a long body back to the title. Hidden while editing, where the
+            formatting toolbar owns the bottom of the screen. */}
+        <ScrollToTopButton visible={scrolled && !editing} onPress={scrollToTop} />
         {/* Outside the KeyboardAvoidingView: it rides the keyboard inset itself. */}
         <FormattingToolbar editorRef={editorRef} state={fmtState} visible={editing} />
       </ThemedView>

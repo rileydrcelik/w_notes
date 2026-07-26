@@ -7,12 +7,14 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { BottomFade } from '@/components/bottom-fade';
 import { FolderCard, NoteCard } from '@/components/notes/cards';
+import { ScrollToTopButton } from '@/components/scroll-to-top';
 import { SearchBar, SEARCH_BAR_HEIGHT } from '@/components/search-bar';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Spacing } from '@/constants/theme';
 import { GRID_COLUMNS, gridEdgePadding, trailingSpacers, useGridColumnWidth } from '@/lib/grid';
 import { useScreenFadeStyle } from '@/hooks/use-screen-fade';
+import { useScrollToTop } from '@/hooks/use-scroll-to-top';
 import { useSyncRefresh } from '@/hooks/use-sync-refresh';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
 import { useTheme } from '@/hooks/use-theme';
@@ -36,6 +38,7 @@ export default function HomeScreen() {
   const { openSidebar } = useSidebar();
   const { refreshing, onRefresh } = useSyncRefresh();
   const columnWidth = useGridColumnWidth();
+  const { scrollProps, scrolled, scrollToTop } = useScrollToTop<FlatList<GridItem>>();
   const [query, setQuery] = useState('');
   // Web has no native stack transition; fade/slide the screen in when it gains
   // focus (incl. when revealed by backing out of a note).
@@ -87,6 +90,7 @@ export default function HomeScreen() {
     <Animated.View style={[styles.container, fadeStyle]}>
       <ThemedView style={styles.container}>
         <FlatList
+          {...scrollProps}
           data={items}
           keyExtractor={(item) => `${item.type}-${item.id}`}
           numColumns={GRID_COLUMNS}
@@ -146,6 +150,7 @@ export default function HomeScreen() {
           <SearchBar value={query} onChangeText={setQuery} />
         </View>
         <BottomFade />
+        <ScrollToTopButton visible={scrolled} onPress={scrollToTop} />
       </ThemedView>
     </Animated.View>
   );

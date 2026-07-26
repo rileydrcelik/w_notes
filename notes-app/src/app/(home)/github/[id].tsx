@@ -14,12 +14,14 @@ import {
 import Animated, { FadeIn } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { ScrollToTopButton } from '@/components/scroll-to-top';
 import { SwipeBackView } from '@/components/swipe-back-view';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { hexToRgba, Spacing } from '@/constants/theme';
 import { GRID_COLUMNS, gridEdgePadding, trailingSpacers, useGridColumnWidth, useTileHeight } from '@/lib/grid';
 import { useContextMenu } from '@/hooks/use-context-menu';
+import { useScrollToTop } from '@/hooks/use-scroll-to-top';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
 import { useTheme } from '@/hooks/use-theme';
 import { apiFetch } from '@/lib/sync/api';
@@ -369,6 +371,7 @@ export default function GithubIssuesScreen() {
     for (let i = 0; i < trailingSpacers(issues.length); i++) rows.push({ spacer: true, key: `spacer-${i}` });
     return rows;
   }, [issues]);
+  const { scrollProps, scrolled, scrollToTop } = useScrollToTop<FlatList<GridRow>>();
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -552,6 +555,7 @@ export default function GithubIssuesScreen() {
           <GithubConfig paddingTop={headerTop} paddingBottom={tabBarInset} onSubmit={handleConfigure} />
         ) : (
           <FlatList
+              {...scrollProps}
               data={gridData}
               keyExtractor={(item) => ('spacer' in item ? item.key : String(item.number))}
               numColumns={GRID_COLUMNS}
@@ -613,6 +617,7 @@ export default function GithubIssuesScreen() {
               }}
             />
         )}
+        <ScrollToTopButton visible={scrolled} onPress={scrollToTop} />
       </ThemedView>
     </SwipeBackView>
   );

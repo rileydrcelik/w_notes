@@ -3,11 +3,13 @@ import { FlatList, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { FolderCard, NoteCard } from '@/components/notes/cards';
+import { ScrollToTopButton } from '@/components/scroll-to-top';
 import { SwipeBackView } from '@/components/swipe-back-view';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Spacing } from '@/constants/theme';
 import { GRID_COLUMNS, gridEdgePadding, trailingSpacers, useGridColumnWidth } from '@/lib/grid';
+import { useScrollToTop } from '@/hooks/use-scroll-to-top';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
 import { useNotes } from '@/store/notes-store';
 
@@ -18,6 +20,7 @@ export default function FavoritesScreen() {
   const tabBarInset = useTabBarInset();
   const insets = useSafeAreaInsets();
   const columnWidth = useGridColumnWidth();
+  const { scrollProps, scrolled, scrollToTop } = useScrollToTop<FlatList<Item>>();
 
   const favoriteFolders = folders.filter((folder) => folder.favorite);
   const favoriteNotes = notes.filter((note) => note.favorite);
@@ -35,6 +38,7 @@ export default function FavoritesScreen() {
       <ThemedView style={styles.container}>
         <Stack.Screen options={{ headerShown: false }} />
         <FlatList
+          {...scrollProps}
           data={items}
           keyExtractor={(item) => `${item.type}-${item.id}`}
           numColumns={GRID_COLUMNS}
@@ -68,6 +72,7 @@ export default function FavoritesScreen() {
             );
           }}
         />
+        <ScrollToTopButton visible={scrolled} onPress={scrollToTop} />
       </ThemedView>
     </SwipeBackView>
   );

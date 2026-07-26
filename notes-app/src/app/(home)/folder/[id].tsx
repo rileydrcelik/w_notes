@@ -3,12 +3,14 @@ import { FlatList, StyleSheet, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { FolderCard, NoteCard } from '@/components/notes/cards';
+import { ScrollToTopButton } from '@/components/scroll-to-top';
 import { SwipeBackView } from '@/components/swipe-back-view';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Spacing } from '@/constants/theme';
 import type { Folder, Note } from '@/data/notes';
 import { GRID_COLUMNS, gridEdgePadding, trailingSpacers, useGridColumnWidth } from '@/lib/grid';
+import { useScrollToTop } from '@/hooks/use-scroll-to-top';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
 import { useTheme } from '@/hooks/use-theme';
 import { useNotes } from '@/store/notes-store';
@@ -28,6 +30,7 @@ export default function FolderScreen() {
   const tabBarInset = useTabBarInset();
   const insets = useSafeAreaInsets();
   const columnWidth = useGridColumnWidth();
+  const { scrollProps, scrolled, scrollToTop } = useScrollToTop<FlatList<GridItem>>();
 
   // Subfolders sit above the notes, mirroring the home screen's ordering.
   const items: GridItem[] = [
@@ -55,6 +58,7 @@ export default function FolderScreen() {
       <ThemedView style={styles.container}>
         <Stack.Screen options={{ headerShown: false }} />
         <FlatList
+          {...scrollProps}
           data={items}
           keyExtractor={(item, index) =>
             item.kind === 'note'
@@ -94,6 +98,7 @@ export default function FolderScreen() {
             );
           }}
         />
+        <ScrollToTopButton visible={scrolled} onPress={scrollToTop} />
       </ThemedView>
     </SwipeBackView>
   );

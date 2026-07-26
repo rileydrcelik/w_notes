@@ -15,12 +15,14 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { FolderCard, NoteCard } from '@/components/notes/cards';
 import { ProjectConfig } from '@/components/notes/project-config';
+import { ScrollToTopButton } from '@/components/scroll-to-top';
 import { SwipeBackView } from '@/components/swipe-back-view';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { hexToRgba, Spacing } from '@/constants/theme';
 import { GRID_COLUMNS, gridEdgePadding, trailingSpacers, useGridColumnWidth, useTileHeight } from '@/lib/grid';
 import { useContextMenu } from '@/hooks/use-context-menu';
+import { useScrollToTop } from '@/hooks/use-scroll-to-top';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
 import { useTheme } from '@/hooks/use-theme';
 import type { Folder, Note } from '@/data/notes';
@@ -252,6 +254,7 @@ export default function ProjectScreen() {
   for (let i = 0; i < trailingSpacers(items.length); i++) items.push({ kind: 'spacer' });
 
   const headerTop = insets.top + Spacing.four;
+  const { scrollProps, scrolled, scrollToTop } = useScrollToTop<FlatList<GridItem>>();
 
   if (folder?.kind === 'project' && !config) {
     return (
@@ -269,6 +272,7 @@ export default function ProjectScreen() {
       <ThemedView style={styles.container}>
         <Stack.Screen options={{ headerShown: false }} />
         <FlatList
+          {...scrollProps}
           data={items}
           keyExtractor={(item, index) =>
             item.kind === 'type' || item.kind === 'note'
@@ -334,6 +338,7 @@ export default function ProjectScreen() {
             </ThemedText>
           }
         />
+        <ScrollToTopButton visible={scrolled} onPress={scrollToTop} />
       </ThemedView>
     </SwipeBackView>
   );

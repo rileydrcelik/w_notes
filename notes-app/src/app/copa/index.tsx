@@ -19,6 +19,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BottomFade } from '@/components/bottom-fade';
 import { FavoriteStar } from '@/components/favorite-star';
 import { useCopaOptions } from '@/components/copa-options-modal';
+import { ScrollToTopButton } from '@/components/scroll-to-top';
 import { SearchBar, SEARCH_BAR_HEIGHT } from '@/components/search-bar';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
@@ -27,6 +28,7 @@ import { type CopaItem } from '@/data/copa';
 import { useContextMenu } from '@/hooks/use-context-menu';
 import { useDoubleTap } from '@/hooks/use-double-tap';
 import { useScreenFadeStyle } from '@/hooks/use-screen-fade';
+import { useScrollToTop } from '@/hooks/use-scroll-to-top';
 import { useSyncRefresh } from '@/hooks/use-sync-refresh';
 import { htmlToPlainText } from '@/lib/html-text';
 import { gridEdgePadding } from '@/lib/grid';
@@ -262,10 +264,13 @@ export default function CopaScreen() {
   const barTop = insets.top + Spacing.two;
   const contentTop = barTop + SEARCH_BAR_HEIGHT + Spacing.three;
 
+  const { scrollProps, scrolled, scrollToTop } = useScrollToTop<FlatList<Row>>();
+
   return (
     <Animated.View style={[styles.container, fadeStyle]}>
     <ThemedView style={styles.container}>
       <FlatList
+        {...scrollProps}
         data={data}
         keyExtractor={(item) => item.id}
         numColumns={COPA_COLUMNS}
@@ -311,6 +316,7 @@ export default function CopaScreen() {
         <SearchBar value={query} onChangeText={setQuery} placeholder="Search copy blocks" />
       </View>
       <BottomFade />
+      <ScrollToTopButton visible={scrolled} onPress={scrollToTop} />
     </ThemedView>
     </Animated.View>
   );

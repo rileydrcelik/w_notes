@@ -15,12 +15,14 @@ import { Alert, FlatList, Pressable, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { IssueAttributesSheet } from '@/components/notes/issue-attributes-sheet';
+import { ScrollToTopButton } from '@/components/scroll-to-top';
 import { SwipeBackView } from '@/components/swipe-back-view';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { hexToRgba, Spacing } from '@/constants/theme';
 import { useContextMenu } from '@/hooks/use-context-menu';
 import { useDoubleTap } from '@/hooks/use-double-tap';
+import { useScrollToTop } from '@/hooks/use-scroll-to-top';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
 import { useTheme } from '@/hooks/use-theme';
 import { effectiveTypeIds, normalizeTypeIds, type Issue, type IssueAttrValue } from '@/data/notes';
@@ -285,6 +287,7 @@ export default function IssueTypeScreen() {
     for (let i = 0; i < trailingSpacers(data.length); i++) rows.push({ spacer: true, id: `spacer-${i}` });
     return rows;
   }, [data]);
+  const { scrollProps, scrolled, scrollToTop } = useScrollToTop<FlatList<GridRow>>();
   // The project's issue-type notes (id + title), ordered — powers both the Types
   // picker in the edit sheet and the "other types" chips on each card.
   const typeNotesList = useMemo(
@@ -463,6 +466,7 @@ export default function IssueTypeScreen() {
       <ThemedView style={styles.container}>
         <Stack.Screen options={{ headerShown: false }} />
         <FlatList
+          {...scrollProps}
           data={gridData}
           keyExtractor={(item) => item.id}
           numColumns={GRID_COLUMNS}
@@ -514,6 +518,7 @@ export default function IssueTypeScreen() {
             </ThemedText>
           }
         />
+        <ScrollToTopButton visible={scrolled} onPress={scrollToTop} />
         <IssueAttributesSheet
           open={editingIds !== null}
           count={editingIds?.length ?? 0}

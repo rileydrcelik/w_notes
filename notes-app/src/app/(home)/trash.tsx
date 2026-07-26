@@ -5,11 +5,13 @@ import { FlatList, Pressable, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { ConfirmDialog } from '@/components/confirm-dialog';
+import { ScrollToTopButton } from '@/components/scroll-to-top';
 import { SwipeBackView } from '@/components/swipe-back-view';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Spacing } from '@/constants/theme';
 import { GRID_COLUMNS, gridEdgePadding, trailingSpacers, useGridColumnWidth, useTileHeight } from '@/lib/grid';
+import { useScrollToTop } from '@/hooks/use-scroll-to-top';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
 import { useTheme } from '@/hooks/use-theme';
 import { useNotes, type TrashEntry } from '@/store/notes-store';
@@ -35,6 +37,7 @@ export default function TrashScreen() {
   const insets = useSafeAreaInsets();
   const tileHeight = useTileHeight();
   const columnWidth = useGridColumnWidth();
+  const { scrollProps, scrolled, scrollToTop } = useScrollToTop<FlatList<GridItem>>();
   const [restoreTarget, setRestoreTarget] = useState<TrashEntry | null>(null);
 
   const items: GridItem[] = trash.map((entry) => ({ kind: 'entry' as const, entry }));
@@ -53,6 +56,7 @@ export default function TrashScreen() {
       <ThemedView style={styles.container}>
         <Stack.Screen options={{ headerShown: false }} />
         <FlatList
+          {...scrollProps}
           data={items}
           keyExtractor={(it, index) => (it.kind === 'entry' ? it.entry.id : `spacer-${index}`)}
           numColumns={GRID_COLUMNS}
@@ -96,6 +100,7 @@ export default function TrashScreen() {
             );
           }}
         />
+        <ScrollToTopButton visible={scrolled} onPress={scrollToTop} />
       </ThemedView>
       <ConfirmDialog
         open={restoreTarget !== null}

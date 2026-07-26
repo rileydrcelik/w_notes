@@ -17,6 +17,29 @@ body {
   font-family: var(--font-sans);
 }
 
+/* Slim, self-effacing scrollbars on web, so a scrolled feed shows its position
+   without the browser's chunky default bar cutting into the glass surfaces. A
+   single translucent grey reads correctly on every palette (light, dark and both
+   Solarized variants), which CSS can't select on — the theme lives in JS. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(128, 128, 128, 0.4) transparent;
+}
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background-color: rgba(128, 128, 128, 0.35);
+  border-radius: 8px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(128, 128, 128, 0.55);
+}
+
 /* No blue focus ring on web text fields — the editing surfaces are meant to be
    chromeless to match the app's minimalist look. */
 input:focus,
