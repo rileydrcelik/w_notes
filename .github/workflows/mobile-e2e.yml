@@ -1,0 +1,201 @@
+# Runs the Maestro flows against a real Android emulator.
+#
+# These are the only tests in the repo that launch the app, and the only ones
+# that touch expo-sqlite's *native* module rather than the wa-sqlite/OPFS build
+# the Playwright suite covers — the two have failed differently before.
+#
+# Kept out of `tests.yml` because it costs an order of magnitude more than the
+# suites there: it builds a release APK and boots an emulator. The two things
+# that made this impractical to automate are both handled below — Gradle build
+# caching for the build, AVD snapshot caching for the boot. Expect the first run
+# on a fresh cache to be slow; judge this on run 2 onward.
+name: Mobile E2E
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'notes-app/**'
+      - '.github/workflows/mobile-e2e.yml'
+  # Path-filtered, unlike tests.yml: a backend- or terraform-only PR cannot
+  # break a mobile flow, and shouldn't wait ten minutes to prove it.
+  pull_request:
+    paths:
+      - 'notes-app/**'
+      - '.github/workflows/mobile-e2e.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: mobile-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  android:
+    name: Android E2E (maestro)
+    runs-on: ubuntu-latest
+    # Sized for the cold-cache case, which measured ~25-30 minutes for the build
+    # alone before the Gradle cache had anything in it. A warm run should land
+    # far inside this; if warm runs start approaching it, the caching is broken
+    # rather than the timeout being too tight.
+    timeout-minutes: 60
+
+    env:
+      API_LEVEL: '34'
+      # AOSP, deliberately. The google_apis image ships GBoard, which on this
+      # emulator loops trying to show itself (and reach the network for
+      # spell-check) and starves Maestro's inputText — note-persistence hung on
+      # a single field for nearly three minutes. The default image uses the
+      # plain AOSP keyboard, which doesn't fight the driver.
+      #
+      # google_apis was originally chosen for Play Services, on the assumption
+      # google-signin needs it at launch. It doesn't: providers.ts only calls
+      # configure()/hasPlayServices() inside signInWithGoogle(), which the flows
+      # never reach (sync is off, nobody signs in). The smoke flow passing on
+      # google_apis already proved launch doesn't depend on it. Dropping Play
+      # Services also boots faster.
+      EMULATOR_TARGET: default
+      EMULATOR_ARCH: x86_64
+
+    steps:
+      - uses: actions/checkout@v5
+
+      # Without KVM the emulator falls back to software virtualisation and is
+      # slow enough to blow the job timeout. This is the single highest-leverage
+      # line in the file.
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: notes-app/package-lock.json
+
+      # Needed twice over: Gradle runs on it, and Maestro is itself a JVM tool.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      # Caches both the dependency cache and the Gradle build cache across runs.
+      # This is what turns a 27-minute cold build into something viable: with a
+      # populated build cache most of the ~1000 tasks resolve FROM-CACHE even
+      # though android/ is regenerated each run.
+      #
+      # Restoring the cache is only half of it — the build cache also has to be
+      # switched on, which Expo's generated gradle.properties doesn't do. That
+      # happens in scripts/build-android-e2e.mjs, after prebuild. Without it this
+      # step restores a cache nothing ever reads.
+      #
+      # Left at the action's default, which writes the cache only from the
+      # default branch. PR branches read main's cache and don't seed their own —
+      # deliberately, because a ~1.1GB write per branch would thrash the 10GB
+      # repo limit and evict the entry every PR depends on. The consequence is
+      # that the first main run after this merges is cold; runs after it are not.
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Install
+        working-directory: notes-app
+        run: npm ci
+
+      # Builds without installing — there is no device attached at this point.
+      # Owns the env that pins sync off; see the script for why that matters.
+      - name: Build release APK
+        working-directory: notes-app
+        # Scoped separately from the job timeout: a Gradle daemon that OOMs
+        # doesn't exit, it wedges. Without a bound here that shows up as the
+        # whole job dying at its own timeout with no indication of which step
+        # was at fault — which is exactly how the first run of this failed.
+        # 40, not 25: the cold build genuinely needs ~30 and the earlier bound
+        # was set against a projection rather than a measurement.
+        timeout-minutes: 40
+        run: node scripts/build-android-e2e.mjs
+
+      - name: Install Maestro
+        run: |
+          curl -Ls "https://get.maestro.mobile.dev" | bash
+          echo "$HOME/.maestro/bin" >> "$GITHUB_PATH"
+
+      # Booting a fresh AVD costs several minutes. Booting one from a snapshot
+      # costs seconds, so the snapshot is built once and cached. Bump the -v1
+      # suffix to force a rebuild if a snapshot ever goes stale — that failure
+      # mode shows up as flows failing on a device in an odd state, not as a
+      # cache error, so it is worth knowing the escape hatch exists.
+      - name: Cache AVD snapshot
+        uses: actions/cache@v4
+        id: avd-cache
+        with:
+          path: |
+            ~/.android/avd/*
+            ~/.android/adb*
+          key: avd-${{ env.API_LEVEL }}-${{ env.EMULATOR_TARGET }}-${{ env.EMULATOR_ARCH }}-v1
+
+      - name: Create AVD snapshot
+        if: steps.avd-cache.outputs.cache-hit != 'true'
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: ${{ env.API_LEVEL }}
+          target: ${{ env.EMULATOR_TARGET }}
+          arch: ${{ env.EMULATOR_ARCH }}
+          profile: pixel_6
+          force-avd-creation: false
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          disable-animations: false
+          script: echo "snapshot generated"
+
+      - name: Run Maestro flows
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: ${{ env.API_LEVEL }}
+          target: ${{ env.EMULATOR_TARGET }}
+          arch: ${{ env.EMULATOR_ARCH }}
+          profile: pixel_6
+          force-avd-creation: false
+          emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          # Animations make Maestro's waits flaky for no benefit here.
+          disable-animations: true
+          working-directory: notes-app
+          script: |
+            # Under CI load the Pixel Launcher regularly ANRs shortly after
+            # boot, and the resulting "isn't responding" dialog sits on top of
+            # the app and owns the view hierarchy. Maestro then reports the app
+            # element as missing when the app is in fact running fine — which
+            # is exactly how this first failed, with a screenshot showing the
+            # app rendering correctly behind the dialog. Suppressing system
+            # error dialogs is the standard fix; it only hides the dialog, an
+            # actual app crash still fails the flow on the assertion.
+            adb shell settings put global hide_error_dialogs 1 || true
+            adb install -r android/app/build/outputs/apk/release/app-release.apk
+            # A notification shade left open covers the app and reads as a
+            # baffling "element not visible" failure. Best-effort.
+            adb shell cmd statusbar collapse || true
+            maestro test --format junit --output maestro-report.xml .maestro/
+
+      # Maestro writes its screenshots and per-step logs under ~/.maestro, which
+      # is outside the workspace. Collecting them into the workspace first keeps
+      # the upload to a single root — mixing an absolute path with a
+      # workspace-relative one makes upload-artifact reduce them to their common
+      # ancestor and produce a confusingly flattened archive.
+      - name: Collect Maestro artifacts
+        if: failure()
+        run: |
+          mkdir -p maestro-artifacts
+          cp -r "$HOME/.maestro/tests" maestro-artifacts/ 2>/dev/null || true
+          cp notes-app/maestro-report.xml maestro-artifacts/ 2>/dev/null || true
+
+      # Screenshots and per-step logs for whatever failed — the difference
+      # between debugging a CI failure and trying to reproduce it on a device.
+      - name: Upload Maestro artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: maestro-artifacts
+          path: maestro-artifacts/
+          retention-days: 7
+          # A run that failed before Maestro produced anything is a real
+          # outcome, not a reason to red-flag the upload step as well.
+          if-no-files-found: ignore
