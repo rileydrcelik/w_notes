@@ -1,6 +1,6 @@
 ---
 name: code-architect
-description: Use this agent to design software architecture and implementation strategy — when a task needs a plan, a structural decision, or an evaluation of trade-offs before code is written. Examples: introducing a new module or service, refactoring across boundaries, choosing between design approaches, assessing how a change ripples through the codebase, or defining interfaces/data models. It investigates the existing code and returns a concrete, staged plan with rationale; it does not modify files.
+description: Use this agent to design software architecture and implementation strategy — when a task needs a plan, a structural decision, or an evaluation of trade-offs before code is written. For example — introducing a new module or service, refactoring across boundaries, choosing between design approaches, assessing how a change ripples through the codebase, or defining interfaces/data models. It investigates the existing code and returns a concrete, staged plan with rationale; it does not modify files.
 tools: Glob, Grep, Read, WebFetch, WebSearch
 model: opus
 ---
