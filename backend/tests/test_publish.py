@@ -1,18 +1,23 @@
 """Publish-to-portfolio tests.
 
-The delivery half is plain HTTP and is not exercised here; what these cover is
-the half that decides *what* gets published, where the failure modes are silent
-and public: publishing a note nobody asked to publish, publishing a stale body
-that last-writer-wins rejected, or letting an account publish onto someone
-else's website.
+Most of these cover the half that decides *what* gets published, where the
+failure modes are silent and public: publishing a note nobody asked to publish,
+publishing a stale body that last-writer-wins rejected, or letting an account
+publish onto someone else's website.
+
+The delivery half is plain HTTP, so only its one piece of real judgement is
+exercised here: which upstream statuses count as failures. See the delivery
+section at the bottom.
 """
 
 from __future__ import annotations
 
+import httpx
 import pytest
 
+from app import publisher
 from app.config import get_settings
-from app.publisher import collect_publish_actions, strip_html_wrapper
+from app.publisher import PublishAction, collect_publish_actions, deliver, strip_html_wrapper
 from app.db import SessionLocal
 from app.models import User
 from sqlalchemy import select
@@ -204,3 +209,100 @@ async def test_publishing_is_off_until_configured(client, device):
     await push(client, device, notes=[row])
 
     assert await _actions(await _user(device), [row["id"]]) == []
+
+
+# ---- delivery: which upstream statuses count as failures ---------------------
+
+
+class _FakeClient:
+    """Stands in for httpx.AsyncClient, returning one canned response."""
+
+    def __init__(self, response: httpx.Response, calls: list[str]):
+        self._response = response
+        self._calls = calls
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def post(self, url, json=None):
+        self._calls.append("POST")
+        return self._response
+
+    async def delete(self, url):
+        self._calls.append("DELETE")
+        return self._response
+
+
+@pytest.fixture
+def delivery(monkeypatch, publishing):
+    """Run `deliver` against a canned upstream status, capturing Sentry reports.
+
+    Returns a coroutine taking (action, status) and returning the list of
+    exceptions `deliver` reported.
+    """
+    publishing(PUBLISHER)
+    reported: list[Exception] = []
+    monkeypatch.setattr(
+        publisher.sentry_sdk, "capture_exception", lambda exc: reported.append(exc)
+    )
+
+    async def run(action: PublishAction, status: int) -> list[Exception]:
+        response = httpx.Response(
+            status, request=httpx.Request("POST", "https://portfolio.test/ingest")
+        )
+        calls: list[str] = []
+        monkeypatch.setattr(
+            publisher.httpx,
+            "AsyncClient",
+            lambda **kw: _FakeClient(response, calls),
+        )
+        await deliver([action])
+        return reported
+
+    return run
+
+
+_UPSERT = PublishAction(note_id="n1", present=True, payload={"title": "t"})
+_DELETE = PublishAction(note_id="n1", present=False)
+
+
+async def test_delete_treats_404_as_success(delivery):
+    """Most notes are not embedded anywhere, so a delete 404s routinely.
+    Reporting those would bury real errors in noise."""
+    assert await delivery(_DELETE, 404) == []
+
+
+async def test_upsert_reports_404(delivery):
+    """A regression guard for a silent failure that was live.
+
+    The 404-is-fine rule was shared by both branches, so an upsert 404 was
+    skipped too. But the portfolio's update endpoint returns 200 and does
+    nothing for a note that was never embedded — it never 404s for that reason.
+    A 404 here means the ingest endpoint is missing or misrouted, i.e. *every*
+    publish is failing, and it was being swallowed silently.
+    """
+    reported = await delivery(_UPSERT, 404)
+
+    assert len(reported) == 1
+    assert isinstance(reported[0], httpx.HTTPStatusError)
+
+
+async def test_upsert_reports_server_errors(delivery):
+    reported = await delivery(_UPSERT, 500)
+
+    assert len(reported) == 1
+    assert isinstance(reported[0], httpx.HTTPStatusError)
+
+
+async def test_delete_still_reports_non_404_failures(delivery):
+    """Narrowing the 404 skip must not make deletes swallow everything else."""
+    reported = await delivery(_DELETE, 500)
+
+    assert len(reported) == 1
+
+
+async def test_success_reports_nothing(delivery):
+    assert await delivery(_UPSERT, 200) == []

@@ -196,11 +196,14 @@ async def deliver(actions: list[PublishAction]) -> None:
                     response = await client.delete(
                         f"{base}/api/notes/ingest/{action.note_id}"
                     )
-                # 404 is the ordinary outcome, not a failure: it means the note
-                # is not embedded anywhere. That is true of most notes on most
-                # edits, so reporting it would bury real errors in noise.
-                if response.status_code == 404:
-                    continue
+                    # On a delete, 404 is the ordinary outcome rather than a
+                    # failure: it means the note is not embedded anywhere. That
+                    # is true of most notes on most deletes, so reporting it
+                    # would bury real errors in noise. An upsert is different —
+                    # a 404 there means the ingest endpoint itself is missing or
+                    # misrouted, and silently skipping it hid failed publishes.
+                    if response.status_code == 404:
+                        continue
                 response.raise_for_status()
             except Exception as exc:  # noqa: BLE001 — background task, isolate
                 log.warning(
