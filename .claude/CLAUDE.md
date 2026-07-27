@@ -1,3 +1,9 @@
+## WORKING STYLE
+- When requirements are ambiguous, ask before implementing rather than assuming.
+  Permission prompts are off in this repo, so a clarifying question is the only
+  checkpoint left — use it when two readings of a request would lead to
+  materially different work.
+
 ## DESIGN RULES
 - use glassmorphic, minimalist design language
 - for design, use squircle/rounded rects, avoid using pill shapes
