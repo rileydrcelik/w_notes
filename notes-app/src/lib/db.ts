@@ -187,11 +187,28 @@ export type CopaSync = {
   remote_key: string | null;
 };
 
+/**
+ * A finance note's spreadsheet. `id` *is* the owning note's id — one sheet per
+ * note, so there's no way to end up with two sheets for one note or an orphan
+ * with no note. `data` is the whole document as JSON (see `lib/finance/sheet`),
+ * synced as a single row: a bulk edit across hundreds of cells is one upsert
+ * rather than hundreds, which matters because the backend upserts rows
+ * sequentially under a per-user lock.
+ */
+export type FinanceSheetSync = {
+  id: string;
+  data: string;
+  created_at: number;
+  updated_at: number;
+  deleted_at: number | null;
+};
+
 export type SyncPayload = {
   folders: FolderSync[];
   notes: NoteSync[];
   copa_items: CopaSync[];
   issues: IssueSync[];
+  finance_sheets: FinanceSheetSync[];
 };
 
 // ---- Connection (opened + migrated once, lazily) ----
@@ -286,6 +303,15 @@ async function open(): Promise<SQLite.SQLiteDatabase> {
       dirty        INTEGER NOT NULL DEFAULT 1
     );
 
+    CREATE TABLE IF NOT EXISTS finance_sheets (
+      id          TEXT PRIMARY KEY NOT NULL,
+      data        TEXT NOT NULL DEFAULT '{}',
+      created_at  INTEGER NOT NULL,
+      updated_at  INTEGER NOT NULL DEFAULT 0,
+      deleted_at  INTEGER,
+      dirty       INTEGER NOT NULL DEFAULT 1
+    );
+
     CREATE TABLE IF NOT EXISTS settings (
       key    TEXT PRIMARY KEY NOT NULL,
       value  TEXT NOT NULL
@@ -307,6 +333,7 @@ async function open(): Promise<SQLite.SQLiteDatabase> {
     CREATE INDEX IF NOT EXISTS idx_copa_dirty ON copa_items (dirty);
     CREATE INDEX IF NOT EXISTS idx_issues_note_id ON issues (note_id);
     CREATE INDEX IF NOT EXISTS idx_issues_dirty ON issues (dirty);
+    CREATE INDEX IF NOT EXISTS idx_finance_dirty ON finance_sheets (dirty);
   `);
   return database;
 }
@@ -989,12 +1016,63 @@ export const db = {
     );
   },
 
+  // ---- Finance sheets ----
+
+  /**
+   * A finance note's stored sheet JSON, or null when it has none yet (the note
+   * was created but never opened, or its row hasn't pulled down on this device).
+   * Callers hand the result straight to `parseSheet`, which treats null and
+   * malformed JSON alike as an empty sheet.
+   */
+  async getFinanceSheet(noteId: string): Promise<string | null> {
+    const database = await getDb();
+    const row = await database.getFirstAsync<{ data: string }>(
+      'SELECT data FROM finance_sheets WHERE id = ? AND deleted_at IS NULL',
+      [noteId],
+    );
+    return row?.data ?? null;
+  },
+
+  /**
+   * Writes the whole sheet document. One row, one upsert — the reason a bulk
+   * format across a drag-selected range costs the same to sync as a single
+   * keystroke. `updated_at` drives last-writer-wins on both push and pull, so it
+   * always advances.
+   */
+  async saveFinanceSheet(noteId: string, data: string): Promise<void> {
+    const database = await getDb();
+    const now = Date.now();
+    await database.runAsync(
+      `INSERT INTO finance_sheets (id, data, created_at, updated_at, dirty)
+       VALUES (?, ?, ?, ?, 1)
+       ON CONFLICT(id) DO UPDATE SET
+         data = excluded.data, updated_at = excluded.updated_at,
+         -- Re-saving a sheet whose note was restored from trash revives it.
+         deleted_at = NULL, dirty = 1`,
+      [noteId, data, now, now],
+    );
+  },
+
+  /**
+   * Tombstones a note's sheet. Soft-deleted rather than removed so the delete
+   * propagates to other devices; a hard delete would let a device that hadn't
+   * pulled yet push the sheet straight back.
+   */
+  async deleteFinanceSheet(noteId: string): Promise<void> {
+    const database = await getDb();
+    const now = Date.now();
+    await database.runAsync(
+      'UPDATE finance_sheets SET deleted_at = ?, updated_at = ?, dirty = 1 WHERE id = ?',
+      [now, now, noteId],
+    );
+  },
+
   // ---- Sync support ----
 
   /** All rows with un-pushed local changes, in the backend's wire shape. */
   async getDirty(): Promise<SyncPayload> {
     const database = await getDb();
-    const [folders, notes, copa_items, issues] = await Promise.all([
+    const [folders, notes, copa_items, issues, finance_sheets] = await Promise.all([
       database.getAllAsync<FolderSync>(
         `SELECT id, name, parent_id, favorite, created_at, updated_at, deleted_at,
                 trashed_with_folder_id, kind, config
@@ -1015,8 +1093,12 @@ export const db = {
                 created_at, updated_at, deleted_at
          FROM issues WHERE dirty = 1`,
       ),
+      database.getAllAsync<FinanceSheetSync>(
+        `SELECT id, data, created_at, updated_at, deleted_at
+         FROM finance_sheets WHERE dirty = 1`,
+      ),
     ]);
-    return { folders, notes, copa_items, issues };
+    return { folders, notes, copa_items, issues, finance_sheets };
   },
 
   /**
@@ -1050,6 +1132,12 @@ export const db = {
           i.id,
           i.updated_at,
         ]);
+      }
+      for (const s of payload.finance_sheets ?? []) {
+        await database.runAsync(
+          'UPDATE finance_sheets SET dirty = 0 WHERE id = ? AND updated_at = ?',
+          [s.id, s.updated_at],
+        );
       }
     });
   },
@@ -1195,6 +1283,22 @@ export const db = {
         );
         changed += r.changes;
       }
+      // A backend that predates this table omits the field entirely. Defaulting
+      // to [] keeps an old server from throwing here and taking down the whole
+      // sync pass — folders and notes must still apply.
+      for (const s of payload.finance_sheets ?? []) {
+        const r = await database.runAsync(
+          `INSERT INTO finance_sheets
+             (id, data, created_at, updated_at, deleted_at, dirty)
+           VALUES (?, ?, ?, ?, ?, 0)
+           ON CONFLICT(id) DO UPDATE SET
+             data = excluded.data, created_at = excluded.created_at,
+             updated_at = excluded.updated_at, deleted_at = excluded.deleted_at, dirty = 0
+           WHERE excluded.updated_at >= finance_sheets.updated_at`,
+          [s.id, s.data, s.created_at, s.updated_at, s.deleted_at],
+        );
+        changed += r.changes;
+      }
     });
     return changed;
   },
@@ -1206,7 +1310,7 @@ export const db = {
   async markAllDirty(): Promise<void> {
     const database = await getDb();
     await database.execAsync(
-      'UPDATE folders SET dirty = 1; UPDATE notes SET dirty = 1; UPDATE copa_items SET dirty = 1; UPDATE issues SET dirty = 1;',
+      'UPDATE folders SET dirty = 1; UPDATE notes SET dirty = 1; UPDATE copa_items SET dirty = 1; UPDATE issues SET dirty = 1; UPDATE finance_sheets SET dirty = 1;',
     );
   },
 
@@ -1218,7 +1322,7 @@ export const db = {
   async clearAllData(): Promise<void> {
     const database = await getDb();
     await database.execAsync(
-      'DELETE FROM folders; DELETE FROM notes; DELETE FROM copa_items; DELETE FROM issues;',
+      'DELETE FROM folders; DELETE FROM notes; DELETE FROM copa_items; DELETE FROM issues; DELETE FROM finance_sheets;',
     );
   },
 
@@ -1315,6 +1419,8 @@ const WRITE_METHODS = [
   'createIssue',
   'updateIssue',
   'deleteIssue',
+  'saveFinanceSheet',
+  'deleteFinanceSheet',
   'markSynced',
   'applyServerRows',
   'markAllDirty',

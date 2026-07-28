@@ -26,8 +26,13 @@ export type Note = {
    * Plugin-note marker. When set, the note renders live plugin content (e.g. a
    * Sentry project's issues, or a GitHub repo's issues) instead of an editable
    * body. Ordinary notes leave it undefined.
+   *
+   * `finance` is a spreadsheet; unlike the others its content isn't in
+   * `pluginConfig` but in its own synced `finance_sheets` row keyed by the note
+   * id (see `@/lib/finance/sheet`), because a sheet is far too large and too
+   * frequently rewritten to sit in a config column.
    */
-  pluginType?: 'sentry' | 'github' | 'issuetype';
+  pluginType?: 'sentry' | 'github' | 'issuetype' | 'finance';
   /**
    * Opaque per-plugin JSON config. For Sentry: `{org, project, projectName?,
    * repo?}` (see `@/lib/sentry-note`). For GitHub: `{repo, repoName?}` (see

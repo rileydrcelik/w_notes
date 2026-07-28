@@ -246,7 +246,7 @@ function EditorSection() {
             <View style={styles.rowText}>
               <ThemedText style={styles.optionLabel}>Formatting hints</ThemedText>
               <ThemedText type="small" themeColor="textSecondary">
-                Show the markdown cheatsheet button while editing
+                Show the markdown and formula cheatsheet buttons while editing
               </ThemedText>
             </View>
             {/* Squircle check indicator (not a pill switch) — accent-filled when
@@ -270,10 +270,13 @@ function EditorSection() {
 }
 
 /**
- * Toggles for which plugin options show in the navbar's create (+) menu — Sentry
- * views, GitHub views, and task managers — each defaulting on. Enabling one
+ * The note plugins available in the navbar's create (+) menu — Sentry views,
+ * GitHub views, task managers, and sheets — each defaulting on. Enabling one
  * reveals its (currently inert) credential fields: they persist on-device but
  * aren't yet wired to auth, since the server holds the real tokens.
+ *
+ * The section is labelled "Plugins"; the underlying settings keys stay
+ * `createOptions.*` so renaming the copy doesn't reset anyone's toggles.
  */
 function CreateOptionsSection() {
   const theme = useTheme();
@@ -283,12 +286,13 @@ function CreateOptionsSection() {
     { key: 'sentryEnabled', label: 'Sentry views', description: 'Show “New Sentry view” in the create menu' },
     { key: 'githubEnabled', label: 'GitHub views', description: 'Show “New GitHub view” in the create menu' },
     { key: 'taskManagerEnabled', label: 'Task managers', description: 'Show “New task manager” in the create menu' },
+    { key: 'financeEnabled', label: 'Sheets', description: 'Show “New sheet” in the create menu' },
   ];
 
   return (
     <>
       <ThemedText type="small" themeColor="textSecondary" style={styles.sectionLabel}>
-        CREATE OPTIONS
+        PLUGINS
       </ThemedText>
       <View style={styles.options}>
         {toggles.map((t) => {

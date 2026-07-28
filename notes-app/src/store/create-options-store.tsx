@@ -23,13 +23,24 @@ const KEYS = {
   sentryEnabled: 'createOptions.sentryEnabled',
   githubEnabled: 'createOptions.githubEnabled',
   taskManagerEnabled: 'createOptions.taskManagerEnabled',
+  financeEnabled: 'createOptions.financeEnabled',
   sentryToken: 'createOptions.sentryToken',
   githubToken: 'createOptions.githubToken',
   githubRepo: 'createOptions.githubRepo',
 } as const;
 
-/** Keys of the on/off create-menu toggles. */
-export type CreateToggleKey = 'sentryEnabled' | 'githubEnabled' | 'taskManagerEnabled';
+/**
+ * Keys of the on/off plugin toggles.
+ *
+ * The `createOptions.*` strings above are the persisted SQLite keys and must not
+ * be renamed alongside UI copy — changing one silently resets that toggle to its
+ * default for every existing user.
+ */
+export type CreateToggleKey =
+  | 'sentryEnabled'
+  | 'githubEnabled'
+  | 'taskManagerEnabled'
+  | 'financeEnabled';
 /** Keys of the (inert) stored credential strings. */
 export type CreateCredentialKey = 'sentryToken' | 'githubToken' | 'githubRepo';
 
@@ -37,6 +48,7 @@ type CreateOptionsState = {
   sentryEnabled: boolean;
   githubEnabled: boolean;
   taskManagerEnabled: boolean;
+  financeEnabled: boolean;
   sentryToken: string;
   githubToken: string;
   githubRepo: string;
@@ -51,12 +63,18 @@ const DEFAULTS: CreateOptionsState = {
   sentryEnabled: true,
   githubEnabled: true,
   taskManagerEnabled: true,
+  financeEnabled: true,
   sentryToken: '',
   githubToken: '',
   githubRepo: '',
 };
 
-const TOGGLE_KEYS: CreateToggleKey[] = ['sentryEnabled', 'githubEnabled', 'taskManagerEnabled'];
+const TOGGLE_KEYS: CreateToggleKey[] = [
+  'sentryEnabled',
+  'githubEnabled',
+  'taskManagerEnabled',
+  'financeEnabled',
+];
 const isToggle = (k: keyof CreateOptionsState): k is CreateToggleKey =>
   (TOGGLE_KEYS as string[]).includes(k);
 

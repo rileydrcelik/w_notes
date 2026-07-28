@@ -73,13 +73,27 @@ class IssueIn(_Syncable):
     position: int = 0
 
 
+class FinanceSheetIn(_Syncable):
+    # The whole spreadsheet as opaque JSON the client owns. The server never
+    # parses it — see FinanceSheet in models.py for why it is one row, not one
+    # row per cell.
+    data: str = "{}"
+
+
 class PushRequest(BaseModel):
-    """A batch of local changes the client wants the server to absorb."""
+    """A batch of local changes the client wants the server to absorb.
+
+    Every synced table needs a field here *and* on PullResponse. Pydantic
+    ignores fields it doesn't declare, so a table missing from this model is
+    accepted with a 200 and silently thrown away — the client clears its dirty
+    flags believing the push succeeded.
+    """
 
     folders: list[FolderIn] = []
     notes: list[NoteIn] = []
     copa_items: list[CopaItemIn] = []
     issues: list[IssueIn] = []
+    finance_sheets: list[FinanceSheetIn] = []
 
 
 class PushResponse(BaseModel):
@@ -94,4 +108,5 @@ class PullResponse(BaseModel):
     notes: list[NoteIn] = []
     copa_items: list[CopaItemIn] = []
     issues: list[IssueIn] = []
+    finance_sheets: list[FinanceSheetIn] = []
     server_seq: int

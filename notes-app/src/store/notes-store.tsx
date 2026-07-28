@@ -110,6 +110,12 @@ type NotesContextValue = {
    */
   createGithubNote: (folderId: string | null, config?: GithubTarget) => string;
   /**
+   * Creates a finance (spreadsheet) note and returns its id. The sheet document
+   * lives in its own synced row, written by the finance screen on first edit —
+   * this only creates the note that marks the kind.
+   */
+  createFinanceNote: (folderId: string | null) => string;
+  /**
    * Creates a task-manager "project" folder (null parent = root) and returns its
    * id. Created unconfigured — the project screen shows a name/repo setup UI,
    * which writes the folder's `config` in place via `updateFolder`.
@@ -272,6 +278,24 @@ export function NotesProvider({ children }: { children: ReactNode }) {
     },
     [],
   );
+
+  const createFinanceNote = useCallback<NotesContextValue['createFinanceNote']>((folderId) => {
+    const id = rid('note');
+    // The spreadsheet itself is a separate synced row, written by the finance
+    // screen on first edit — the note only marks the kind. Title is user-authored
+    // here (unlike Sentry/GitHub notes, which label themselves from their config).
+    const note: Note = {
+      id,
+      title: '',
+      body: '',
+      folderId,
+      updatedAt: today(),
+      pluginType: 'finance',
+    };
+    setNotes((prev) => [note, ...prev]);
+    persist(db.createNote({ id, folderId, pluginType: 'finance' }));
+    return id;
+  }, []);
 
   const createProject = useCallback<NotesContextValue['createProject']>((parentId) => {
     const id = rid('folder');
@@ -439,6 +463,7 @@ export function NotesProvider({ children }: { children: ReactNode }) {
       createNote,
       createSentryNote,
       createGithubNote,
+      createFinanceNote,
       createProject,
       createIssueTypeNote,
       createFolder,
@@ -460,6 +485,7 @@ export function NotesProvider({ children }: { children: ReactNode }) {
       createNote,
       createSentryNote,
       createGithubNote,
+      createFinanceNote,
       createProject,
       createIssueTypeNote,
       createFolder,

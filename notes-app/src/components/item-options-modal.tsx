@@ -24,6 +24,7 @@ import {
   githubSyncErrorMessage,
   openGithubIssueForIssue,
 } from '@/lib/issue-github';
+import { db } from '@/lib/db';
 import { parseTypeConfig, projectConfig, serializeTypeConfig, type AttrDef } from '@/lib/project';
 import { Sentry } from '@/lib/sentry';
 import { useIssues } from '@/store/issues-store';
@@ -90,10 +91,18 @@ export function ItemOptionsProvider({ children }: { children: ReactNode }) {
       // An issue type owns issues in the separate `issues` table — remove those
       // too so they don't linger orphaned once their type note is gone.
       if (t.type === 'issuetype') getIssuesForNote(t.id).forEach((i) => deleteIssue(i.id));
+      // Likewise a finance note owns a row in `finance_sheets`. Tombstoned, not
+      // dropped: a hard delete would let a device that hasn't pulled yet push
+      // the sheet straight back.
+      if (getNote(t.id)?.pluginType === 'finance') {
+        db.deleteFinanceSheet(t.id).catch((e) =>
+          console.warn('[options] failed to delete sheet:', e),
+        );
+      }
       deleteNote(t.id);
     });
     setDeleteTargets(null);
-  }, [deleteTargets, deleteNote, deleteFolder, getIssuesForNote, deleteIssue]);
+  }, [deleteTargets, deleteNote, deleteFolder, getNote, getIssuesForNote, deleteIssue]);
 
   const value = useMemo<ItemOptionsContextValue>(() => ({ openOptions }), [openOptions]);
 

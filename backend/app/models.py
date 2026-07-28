@@ -215,3 +215,37 @@ class Issue(Base):
         Index("idx_issues_user_seq", "user_id", "server_seq"),
         Index("idx_issues_user_note", "user_id", "note_id"),
     )
+
+
+class FinanceSheet(Base):
+    """The spreadsheet behind a ``plugin_type='finance'`` note.
+
+    ``id`` is the owning note's id — one sheet per note, so there is no way to
+    end up with two sheets for one note or an orphan with none. ``data`` is the
+    entire document (cells, per-cell formatting, formula sources) as opaque JSON
+    the client owns; the server never looks inside it.
+
+    Deliberately one row per sheet rather than one per cell: this router upserts
+    rows sequentially under a per-user advisory lock, so a bulk edit across a
+    few hundred cells would otherwise hold that lock across a few hundred round
+    trips. The cost is whole-document LWW, the same trade note bodies make.
+    """
+
+    __tablename__ = "finance_sheets"
+
+    user_id: Mapped[str] = mapped_column(
+        String, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+
+    data: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+
+    created_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    updated_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    deleted_at: Mapped[int | None] = mapped_column(BigInteger)
+
+    server_seq: Mapped[int] = mapped_column(
+        BigInteger, server_default=SERVER_SEQ_DEFAULT, nullable=False
+    )
+
+    __table_args__ = (Index("idx_finance_user_seq", "user_id", "server_seq"),)

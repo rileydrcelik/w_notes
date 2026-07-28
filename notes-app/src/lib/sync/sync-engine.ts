@@ -132,8 +132,14 @@ async function runSync(): Promise<SyncResult> {
     // 1) Push local changes. The server takes them last-writer-wins; on success
     //    we clear the dirty flags for exactly what we sent.
     const dirty = await db.getDirty();
+    // Every table has to be counted here: this total gates the request below, so
+    // omitting one means a sync that changed only that table pushes nothing.
     const pushed =
-      dirty.folders.length + dirty.notes.length + dirty.copa_items.length + dirty.issues.length;
+      dirty.folders.length +
+      dirty.notes.length +
+      dirty.copa_items.length +
+      dirty.issues.length +
+      dirty.finance_sheets.length;
     if (pushed > 0) {
       await apiFetch('/sync/push', { method: 'POST', body: dirty });
       await db.markSynced(dirty);

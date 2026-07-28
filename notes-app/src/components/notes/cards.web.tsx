@@ -3,6 +3,7 @@ import { useRouter } from 'expo-router';
 import { Pressable, StyleSheet, View } from 'react-native';
 
 import { FavoriteStar } from '@/components/favorite-star';
+import { SheetGlyph } from '@/components/notes/sheet-glyph';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { hexToRgba, Spacing } from '@/constants/theme';
@@ -21,6 +22,7 @@ import { useNotes } from '@/store/notes-store';
 const SENTRY_ACCENT = '#7553FF';
 const GITHUB_ACCENT = '#8250df';
 const PROJECT_ACCENT = '#16a394';
+const FINANCE_ACCENT = '#2f9e6e';
 /** Accent for a long-pressed/right-clicked (selected) card. */
 const SELECT_ACCENT = '#7a89b8';
 const PREVIEW_TEXT = { fontSize: 14, lineHeight: 20, fontWeight: '500' } as const;
@@ -135,7 +137,49 @@ export function NoteCard({ note }: { note: Note }) {
   // text editor. Branch before any hooks so those cards keep their own hook order.
   if (note.pluginType === 'sentry') return <SentryNoteCard note={note} />;
   if (note.pluginType === 'github') return <GithubNoteCard note={note} />;
+  if (note.pluginType === 'finance') return <FinanceNoteCard note={note} />;
   return <TextNoteCard note={note} />;
+}
+
+/**
+ * A finance plugin note: opens the spreadsheet. Mirrors the native card, with
+ * right-click standing in for long-press. Keep this branch in step with
+ * `cards.tsx` — the platform-parity test compares exported *names*, so a case
+ * added to only one of these two files passes every check and silently renders
+ * the wrong card on one platform.
+ */
+function FinanceNoteCard({ note }: { note: Note }) {
+  const router = useRouter();
+  const { toggleNoteFavorite } = useNotes();
+  const { active, isSelected, toggle } = useItemSelection();
+  const selected = isSelected('note', note.id);
+
+  const openOrFavorite = useDoubleTap(
+    () => router.push({ pathname: '/finance/[id]', params: { id: note.id } }),
+    () => toggleNoteFavorite(note.id),
+  );
+  const onSelectToggle = () => toggle({ type: 'note', id: note.id });
+  const contextMenuRef = useContextMenu(onSelectToggle);
+  const tileHeight = useTileHeight();
+
+  return (
+    <Pressable
+      ref={contextMenuRef}
+      style={({ pressed }) => [styles.cardWrapper, { height: tileHeight }, pressed && styles.pressed]}
+      onPress={active ? onSelectToggle : openOrFavorite}
+      onLongPress={onSelectToggle}>
+      <ThemedView type="backgroundElementAlt" style={[styles.card, selected && styles.selected]}>
+        <View style={styles.titleRow}>
+          <Feather name="grid" size={15} color={FINANCE_ACCENT} />
+          <ThemedText type="smallBold" numberOfLines={1} style={styles.titleText}>
+            {note.title.trim() || 'Untitled sheet'}
+          </ThemedText>
+          {note.favorite && <FavoriteStar size={13} />}
+        </View>
+        <SheetGlyph />
+      </ThemedView>
+    </Pressable>
+  );
 }
 
 function TextNoteCard({ note }: { note: Note }) {

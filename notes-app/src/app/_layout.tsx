@@ -14,6 +14,7 @@ import { AnimatedSplashOverlay } from '@/components/animated-icon';
 import { DbTabGuard } from '@/components/db-tab-guard';
 import { FloatingTabBar } from '@/components/floating-tab-bar';
 import { MarkdownHelp } from '@/components/markdown-help';
+import { SheetHelp } from '@/components/sheet-help';
 import { SelectionBackdrop } from '@/components/selection-backdrop';
 import { SelectionDismissView } from '@/components/selection-dismiss-view';
 import { CopaOptionsProvider, useCopaOptions } from '@/components/copa-options-modal';
@@ -156,6 +157,10 @@ function AppShell() {
           {/* Web-only markdown cheatsheet button, docked bottom-left on the
               note/copa editor screens. Native renders nothing regardless. */}
           {formattingHints && <MarkdownHelp />}
+          {/* The same idea for sheets: a formula cheatsheet docked bottom-left
+              of a finance note. Cross-platform, unlike the markdown one —
+              formulas work the same everywhere. */}
+          {formattingHints && <SheetHelp />}
           {/* Web-only: covers extra browser tabs, which can't hold the SQLite
               database (OPFS is single-owner). Native renders nothing. */}
           <DbTabGuard />

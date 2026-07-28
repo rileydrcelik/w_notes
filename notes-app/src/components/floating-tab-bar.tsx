@@ -42,6 +42,7 @@ import { useContextMenu } from '@/hooks/use-context-menu';
 import { useTabBarBottom } from '@/hooks/use-tab-bar-inset';
 import { useTheme } from '@/hooks/use-theme';
 import { saveNoteToDevice } from '@/lib/save-note';
+import { saveSheetToDevice } from '@/lib/save-sheet';
 import { useCopa } from '@/store/copa-store';
 import { useCreateOptions } from '@/store/create-options-store';
 import { useNotes } from '@/store/notes-store';
@@ -193,7 +194,12 @@ export function FloatingTabBar({ blurTarget }: FloatingTabBarProps) {
   // body to export, so they're excluded.
   const noteMatch = pathname.match(/^\/note\/([^/]+)/);
   const currentNote = noteMatch ? getNote(decodeURIComponent(noteMatch[1])) : undefined;
-  const showSave = !!currentNote && !currentNote.pluginType && !doneMode;
+  // A finance note lives on its own route and exports as CSV rather than text.
+  const financeMatch = pathname.match(/^\/finance\/([^/]+)/);
+  const currentSheet = financeMatch ? getNote(decodeURIComponent(financeMatch[1])) : undefined;
+  // `!doneMode` applies to both: save is a view-mode action, and on a sheet a
+  // live download button mid-keystroke exports without the cell being typed.
+  const showSave = !doneMode && ((!!currentNote && !currentNote.pluginType) || !!currentSheet);
 
   const goBack = () => {
     dismissActiveEditor();
@@ -285,7 +291,8 @@ export function FloatingTabBar({ blurTarget }: FloatingTabBarProps) {
                   return;
                 }
                 if (tab.key === 'save') {
-                  if (currentNote) void saveNoteToDevice(currentNote);
+                  if (currentSheet) void saveSheetToDevice(currentSheet);
+                  else if (currentNote) void saveNoteToDevice(currentNote);
                   return;
                 }
                 if (tab.path) router.navigate(tab.path);
@@ -509,10 +516,17 @@ function CreateMenu({
   const router = useRouter();
   const pathname = usePathname();
   const { width: winW, height: winH } = useWindowDimensions();
-  const { createNote, createSentryNote, createGithubNote, createProject, createFolder, getNote } =
-    useNotes();
+  const {
+    createNote,
+    createSentryNote,
+    createGithubNote,
+    createFinanceNote,
+    createProject,
+    createFolder,
+    getNote,
+  } = useNotes();
   const { createCopa, createFileCopa } = useCopa();
-  const { sentryEnabled, githubEnabled, taskManagerEnabled } = useCreateOptions();
+  const { sentryEnabled, githubEnabled, taskManagerEnabled, financeEnabled } = useCreateOptions();
   // Inside a task-manager project (its feed or a per-type screen), the menu leads
   // with "New issue" and everything else (note, Sentry/GitHub view…) is created
   // inside the project rather than at the root.
@@ -554,6 +568,14 @@ function CreateMenu({
     router.push({ pathname: '/github/[id]', params: { id } });
   };
 
+  const onCreateFinance = () => {
+    onClose();
+    // Created empty — the sheet document is written on the first edit, so a note
+    // opened and abandoned leaves no spreadsheet row behind.
+    const id = createFinanceNote(currentFolderId(pathname, getNote));
+    router.push({ pathname: '/finance/[id]', params: { id } });
+  };
+
   const onCreateProject = () => {
     onClose();
     // Create it unconfigured — the project screen collects name + repo and seeds
@@ -586,6 +608,7 @@ function CreateMenu({
     sentry: sentryEnabled,
     github: githubEnabled,
     project: taskManagerEnabled,
+    finance: financeEnabled,
   };
   const allOptions: { key: string; label: string; icon: FeatherName; onPress: () => void }[] = onCopa
     ? [
@@ -600,6 +623,7 @@ function CreateMenu({
           : []),
         { key: 'note', label: 'New note', icon: 'file-plus', onPress: onCreateNote },
         { key: 'folder', label: 'New folder', icon: 'folder-plus', onPress: onCreateFolder },
+        { key: 'finance', label: 'New sheet', icon: 'grid', onPress: onCreateFinance },
         { key: 'sentry', label: 'New Sentry view', icon: 'alert-triangle', onPress: onCreateSentry },
         { key: 'github', label: 'New GitHub view', icon: 'github', onPress: onCreateGithub },
         ...(inProject
