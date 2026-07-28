@@ -12,5 +12,15 @@
         ]
       }
     ]
+  },
+  "permissions": {
+    "allow": [
+      "Bash(./.venv/Scripts/python.exe -m pytest)",
+      "Bash(./.venv/Scripts/python.exe -m pytest *)",
+      "Bash(.venv/Scripts/python.exe -m pytest)",
+      "Bash(.venv/Scripts/python.exe -m pytest *)",
+      "Bash(MSYS_NO_PATHCONV=1 aws logs *)",
+      "Bash(MSYS_NO_PATHCONV=1 aws ecs describe-services *)"
+    ]
   }
 }

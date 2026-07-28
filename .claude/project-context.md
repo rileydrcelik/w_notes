@@ -77,9 +77,27 @@ The selection stores, and the navbar's precedence when more than one could be ac
 
 When adding a new selectable surface, follow this pattern: a small ephemeral selection store + a branch in `floating-tab-bar.tsx` that swaps the `+` for a "⋯" and mounts a contextual sheet. Reuse `item-selection-store` + `OptionsSheet` when the targets are notes/folders/issue types.
 
+## Editing & the "done" check (app-wide UI pattern)
+
+**Editing is one gesture everywhere, and no screen owns a mode control of its own.** A screen shows its read view; you tap the content to edit it; the floating navbar's create `+` becomes a **"done" checkmark** while an editor is focused; pressing it (or blurring any other way) returns to the read view. Never add an edit/preview toggle, tab, or segmented control to a screen.
+
+- The bridge is `lib/active-editor.ts`. A focused editor calls `setActiveEditorDismiss(fn)` with a callback that blurs it, and clears it on blur/unmount. The navbar reads that registration (`isEditorActive`/`subscribeActiveEditor`) and swaps its icon.
+- **Why a registration and not just the keyboard:** the native rich editor (`EnrichedTextInput`) isn't registered with RN's `TextInputState`, so `Keyboard.dismiss()` can't blur it; and web has no on-screen keyboard to track at all. On native the check follows the keyboard, on web it follows this registration (`doneMode` in `components/floating-tab-bar.tsx`).
+- **Listen to the blur, not the button press.** On web the navbar press blurs the editor *before* its own `onPress` fires, so a screen that waits for the dismiss callback to change state will never hear it (`editorJustDismissed()` exists to patch the navbar's own fallthrough). Drive screen state from `onFocusChange(false)`.
+- Implementations to copy: `components/markdown-editor.web.tsx` (notes) and `components/resume/latex-source-editor.tsx` (LaTeX source → compiled preview).
+
+**Getting *into* edit mode is the other half, and it's the same button.** On a screen showing a **leaf object** — one with nothing to create inside it (note, copy block, resume, sheet) — the trailing `+` is an **edit pencil** (`edit-2`) that opens that screen's editor. Focus it and the pencil becomes the done check: pencil in, check out. A `+` there used to create a *sibling* in the parent folder, which is not what "+ while reading a note" means to anyone.
+
+- The bridge is `lib/edit-action.ts`, and screens use `hooks/use-edit-action.ts`: `useEditAction(() => editorRef.current?.focus())`, or `useEditAction(null)` when there's nothing to edit (a copa block holding a file). Pass the screen's *own* render condition so the pencil appears exactly when an editor is on screen.
+- **Register on focus, not on mount.** `useEditAction` uses `useFocusEffect` for this: expo-router keeps screens below the top of the stack mounted, and the whole copa tab stays mounted in the top-tab pager (see the copa paste/drop leak) — mount is never a proxy for "the user is looking at it".
+- **Clearing is keyed by the callback's identity** (`clearEditAction(fn)` no-ops unless `fn` still owns the slot). React Navigation doesn't promise the outgoing screen's blur cleanup runs before the incoming screen's focus effect, and a blind `setEditAction(null)` would leave the new screen showing a `+`. `src/lib/__tests__/edit-action.test.ts` pins both orderings.
+- Precedence in `floating-tab-bar.tsx`: selection "⋯" > done check > edit pencil > create. Long-press keeps opening the create menu everywhere, so a leaf screen isn't a dead end.
+
 ## Design language (hard rules, from CLAUDE.md)
 
 - Glassmorphic, minimalist.
 - Squircles / rounded rects — **avoid pill shapes.**
-- Consistent navbar; back + create buttons present where appropriate.
+- Consistent navbar; back + create buttons present where appropriate — and on a leaf object "appropriate" means an edit pencil, not a create `+`.
 - Smooth transitions between screens.
+- Editing is the app-wide gesture above — no per-screen mode toggles.
+- **Reuse the existing control before styling a new one.** Bordered chips for filters (`StateFilterBar`, `app/(home)/github/[id].tsx`); 40px squircle icon buttons for secondary actions (`components/scroll-to-top.tsx`); radii from the `Spacing` scale, never hand-picked numbers.

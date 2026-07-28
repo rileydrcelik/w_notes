@@ -9,6 +9,31 @@
 - for design, use squircle/rounded rects, avoid using pill shapes
 - make sure the navbar is consistent, and that the back button and create buttons are present where appropriate
 - use smooth transitions between screens
+- editing is one app-wide gesture, not a per-screen control. A screen shows its
+  read view; you tap the content to edit it; the navbar's create (+) button
+  becomes a "done" checkmark while an editor is focused, and pressing it returns
+  to the read view. Never add an edit/preview toggle, tab, or segmented control
+  to a screen — wire the editor to `lib/active-editor.ts` instead (see
+  `markdown-editor.web.tsx` and `components/resume/latex-source-editor.tsx`).
+- the navbar's trailing button offers **create** only where something can be
+  created *inside* what you're looking at. A screen showing a leaf object — a
+  note, a copy block, a resume, a sheet — offers an **edit pencil** there
+  instead; it has no children, and a (+) that quietly made a sibling somewhere
+  else was the old, wrong behaviour. Register the screen's "start editing" via
+  `hooks/use-edit-action.ts`; the pencil becomes the done check once the editor
+  takes focus, so the whole gesture reads pencil → check. Long-press still opens
+  the create menu.
+- exporting is a navbar action too, never a button on the screen. While you're
+  *reading* a document — a note, a compiled resume — a download icon appears
+  inside the navbar's pill, growing it; it's absent while an editor is focused,
+  and absent when there's nothing to export yet. A screen whose export the navbar
+  can't derive on its own registers it via `hooks/use-save-action.ts` (see
+  `app/(home)/resume/[id].tsx`); a plain note needs nothing, the bar reads its
+  body from the store.
+- reuse the existing control for a job before styling a new one: bordered chips
+  for filters (`StateFilterBar` in `app/(home)/github/[id].tsx`), 40px squircle
+  icon buttons for secondary actions (`components/scroll-to-top.tsx`). Radii come
+  from the `Spacing` scale, not hand-picked numbers.
 
 ## TESTING
 CI (`.github/workflows/tests.yml`) runs pytest, vitest and the Playwright e2e

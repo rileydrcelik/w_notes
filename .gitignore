@@ -8,3 +8,7 @@ crash.txt
 
 # Staging dir the mobile-e2e workflow copies Maestro output into
 /maestro-artifacts/
+
+# Agent worktrees. Each is a checkout of this same repo, so committing one nests
+# a whole second working tree inside the first.
+.claude/worktrees/
