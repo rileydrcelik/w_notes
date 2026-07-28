@@ -47,6 +47,18 @@ const BAR_HEIGHT = 48;
 const KEYBOARD_GAP = Spacing.two;
 
 /**
+ * Button width. This bar carries more controls than the note editor's, and at
+ * the shared 44 it ran past both edges of a phone — so the width is derived
+ * from the window and only reaches 44 when there's room. The floor keeps a
+ * 22px icon from touching the edges of its own button; below that the bar would
+ * have to scroll, and every floating control in this app hugs its content.
+ */
+const BUTTON_W_MAX = 44;
+const BUTTON_W_MIN = 34;
+/** Horizontal space one divider occupies, margins included. */
+const DIVIDER_W = StyleSheet.hairlineWidth + Spacing.one * 2;
+
+/**
  * Highlight swatches. Fixed rather than theme-derived so a sheet looks the same
  * on every device — the grid pairs each with a derived legible ink colour (see
  * `readableTextColor`) instead of relying on the theme's text colour.
@@ -73,21 +85,47 @@ type Props = {
   onApply: (patch: CellStyle) => void;
   /** Strips formatting from the selection. Never touches cell values. */
   onClear: () => void;
+  /**
+   * Opens the formula cheatsheet. Omitted when the `formattingHints` preference
+   * is off, which is also what hides the button — the toolbar doesn't read the
+   * preference itself, so there's one place that decides.
+   */
+  onShowHelp?: () => void;
 };
 
-export function FinanceToolbar({ sheet, selection, onApply, onClear }: Props) {
+export function FinanceToolbar({ sheet, selection, onApply, onClear, onShowHelp }: Props) {
   const theme = useTheme();
-  const { height } = useWindowDimensions();
+  const { height, width } = useWindowDimensions();
   const tabBarInset = useTabBarInset();
   const [menu, setMenu] = useState<Palette | null>(null);
 
+  // Four marks, two colour pickers, clear, and optionally help — plus the
+  // dividers between those groups. Everything the bar spends before its buttons
+  // is subtracted so what's left divides evenly across them.
+  const buttonCount = onShowHelp ? 8 : 7;
+  const dividerCount = onShowHelp ? 3 : 2;
+  const available =
+    width - Spacing.three * 2 - Spacing.one * 2 - dividerCount * DIVIDER_W;
+  const buttonWidth = Math.max(
+    BUTTON_W_MIN,
+    Math.min(BUTTON_W_MAX, Math.floor(available / buttonCount)),
+  );
+  const buttonStyle = [styles.button, { width: buttonWidth }];
+
   // Rides just above the keyboard, as the note toolbar does: Android is
   // edge-to-edge, so the keyboard doesn't resize the window and the bar has to
-  // track the inset itself. The tab-bar inset is the resting offset, so the bar
-  // clears the floating navbar instead of sitting under it.
+  // track the inset itself.
+  //
+  // The tab-bar inset is the *resting* offset only — this toolbar, unlike the
+  // note editor's, is also visible with the keyboard down (drag-selecting a
+  // range closes the cell input), and there it has to clear the floating
+  // navbar. Whichever offset is larger wins rather than the two adding up: the
+  // keyboard covers the navbar anyway, so summing them parked the bar a whole
+  // navbar's height above the keys. `max` also keeps the transition continuous
+  // — the resting offset simply stops mattering once the keyboard passes it.
   const keyboard = useAnimatedKeyboard();
   const followKeyboard = useAnimatedStyle(() => ({
-    transform: [{ translateY: -(keyboard.height.value + KEYBOARD_GAP) }],
+    transform: [{ translateY: -Math.max(keyboard.height.value + KEYBOARD_GAP, tabBarInset) }],
   }));
 
   const swatches = menu === 'bg' ? HIGHLIGHTS : TEXT_COLORS;
@@ -101,7 +139,7 @@ export function FinanceToolbar({ sheet, selection, onApply, onClear }: Props) {
   return (
     <Animated.View
       pointerEvents="box-none"
-      style={[styles.host, { bottom: tabBarInset }, followKeyboard]}>
+      style={[styles.host, followKeyboard]}>
       {/* Tap-away catcher while a flyout is open. */}
       {menu && (
         <Pressable style={[styles.backdrop, { height }]} onPress={() => setMenu(null)} />
@@ -157,7 +195,7 @@ export function FinanceToolbar({ sheet, selection, onApply, onClear }: Props) {
                   accessibilityState={{ selected: active }}
                   accessibilityLabel={key}
                   onPress={() => onApply({ [key]: !active })}
-                  style={[styles.button, active && styles.buttonActive]}>
+                  style={[buttonStyle, active && styles.buttonActive]}>
                   <MaterialCommunityIcons name={icon} size={22} color={active ? ACCENT : theme.text} />
                 </Pressable>
               );
@@ -169,7 +207,7 @@ export function FinanceToolbar({ sheet, selection, onApply, onClear }: Props) {
               accessibilityRole="button"
               accessibilityLabel="Highlight"
               onPress={() => setMenu((m) => (m === 'bg' ? null : 'bg'))}
-              style={[styles.button, menu === 'bg' && styles.buttonActive]}>
+              style={[buttonStyle, menu === 'bg' && styles.buttonActive]}>
               <MaterialCommunityIcons
                 name="marker"
                 size={22}
@@ -180,7 +218,7 @@ export function FinanceToolbar({ sheet, selection, onApply, onClear }: Props) {
               accessibilityRole="button"
               accessibilityLabel="Text colour"
               onPress={() => setMenu((m) => (m === 'color' ? null : 'color'))}
-              style={[styles.button, menu === 'color' && styles.buttonActive]}>
+              style={[buttonStyle, menu === 'color' && styles.buttonActive]}>
               <MaterialCommunityIcons
                 name="format-color-text"
                 size={22}
@@ -196,9 +234,27 @@ export function FinanceToolbar({ sheet, selection, onApply, onClear }: Props) {
               accessibilityRole="button"
               accessibilityLabel="Clear formatting"
               onPress={onClear}
-              style={styles.button}>
+              style={buttonStyle}>
               <MaterialCommunityIcons name="format-clear" size={22} color={theme.text} />
             </Pressable>
+
+            {/* The formula reference rides the toolbar rather than a dock of its
+                own — see `sheet-help.tsx`. It sits last, past a divider, since
+                it opens a reference rather than changing the selection. */}
+            {onShowHelp && (
+              <>
+                <View
+                  style={[styles.divider, { backgroundColor: hexToRgba(theme.textSecondary, 0.3) }]}
+                />
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="Formula help"
+                  onPress={onShowHelp}
+                  style={buttonStyle}>
+                  <MaterialCommunityIcons name="function-variant" size={22} color={theme.text} />
+                </Pressable>
+              </>
+            )}
           </GlassSurface>
         </Animated.View>
       </View>
@@ -209,6 +265,7 @@ export function FinanceToolbar({ sheet, selection, onApply, onClear }: Props) {
 const styles = StyleSheet.create({
   host: {
     position: 'absolute',
+    bottom: 0,
     left: Spacing.three,
     right: Spacing.three,
     alignItems: 'center',

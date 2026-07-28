@@ -5,7 +5,7 @@
 
 import '@/global.css';
 
-import { Platform } from 'react-native';
+import { Platform, type TextStyle } from 'react-native';
 
 export const Colors = {
   light: {
@@ -111,6 +111,32 @@ export const Fonts = Platform.select({
     mono: 'var(--font-mono)',
   },
 });
+
+/**
+ * Italic, in a form Android will actually honour. Use this instead of writing
+ * `fontStyle: 'italic'` directly.
+ *
+ * `fontStyle` alone only asks for the italic *face of whatever family the text
+ * inherits*, and React Native never fakes one on the span path: `CustomStyleSpan`
+ * passes the request to `Typeface.create(base, weight, italic)` and draws
+ * whatever comes back, so a family with no italic face renders upright with no
+ * error and no warning. (`TextLayoutManager.updateTextPaint` does have a
+ * `textSkewX` fallback, but it only covers text outside the spannable — never
+ * the styled runs an app actually writes.) Since nothing here sets a
+ * `fontFamily`, text inherits the device default, and plenty of Android
+ * defaults ship no italic at all — Samsung's One UI font among them. That is
+ * why italics worked on web, where the browser synthesises an oblique, and did
+ * nothing on device.
+ *
+ * Naming `sans-serif` pins the lookup to Roboto, which carries both italic and
+ * bold-italic, so this still composes with `fontWeight`. The cost is that on a
+ * device with a substituted system font the italic text renders in Roboto while
+ * its neighbours don't; the alternative is no italics at all.
+ */
+export const Italic = Platform.select<TextStyle>({
+  android: { fontStyle: 'italic', fontFamily: 'sans-serif' },
+  default: { fontStyle: 'italic' },
+}) as TextStyle;
 
 export const Spacing = {
   half: 2,

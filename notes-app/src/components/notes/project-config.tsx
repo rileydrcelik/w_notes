@@ -12,7 +12,7 @@ import { ActivityIndicator, Pressable, ScrollView, StyleSheet, TextInput, View }
 
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
-import { hexToRgba, Spacing } from '@/constants/theme';
+import { hexToRgba, Italic, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import { apiFetch } from '@/lib/sync/api';
 
@@ -256,7 +256,7 @@ const styles = StyleSheet.create({
   infoRowText: { flex: 1, gap: 2 },
   infoLine: { lineHeight: 18 },
   infoSub: { lineHeight: 18, marginLeft: Spacing.one },
-  infoFoot: { fontStyle: 'italic', lineHeight: 18 },
+  infoFoot: { ...Italic, lineHeight: 18 },
   block: { gap: Spacing.two },
   input: {
     borderWidth: 1.5,

@@ -23,8 +23,9 @@ import {
   type GestureResponderEvent,
   type LayoutChangeEvent,
 } from 'react-native';
+import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 
-import { hexToRgba } from '@/constants/theme';
+import { Italic, Spacing, hexToRgba } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import { columnLabel, cellKey, type CellValue } from '@/lib/finance/formula';
 import {
@@ -37,7 +38,6 @@ import {
   normalizeSelection,
   readableTextColor,
   resizeSheet,
-  selectionContains,
   setCellRaw,
   type Selection,
   type Sheet,
@@ -55,9 +55,22 @@ const ROW_H = 40;
 const GUTTER_W = 44;
 const HEADER_H = 32;
 
+/**
+ * How long a touch must be held before it selects a range instead of scrolling.
+ * Below the pan gesture; above it the ScrollView keeps the drag, which is what
+ * makes "hold to select, swipe to move around" two separate gestures rather
+ * than one ambiguous one.
+ */
+const LONG_PRESS_MS = 220;
+
 type Props = {
   sheet: Sheet;
-  onChange: (next: Sheet) => void;
+  /**
+   * Applies a transform to the newest sheet. An updater rather than a value
+   * because edits and toolbar styling land in the same interaction — see
+   * `commitEdit`.
+   */
+  onChange: (update: (current: Sheet) => Sheet) => void;
   selection: Selection | null;
   onSelectionChange: (next: Selection | null) => void;
 };
@@ -67,13 +80,17 @@ export function FinanceGrid({ sheet, onChange, selection, onSelectionChange }: P
   const [editing, setEditing] = useState<{ row: number; col: number } | null>(null);
   const [draft, setDraft] = useState('');
   const [dragging, setDragging] = useState(false);
+  /**
+   * The measured cell size, mirrored into state because the selection overlay
+   * is *positioned* by it and so has to re-render when it changes. The ref
+   * stays as well: the gesture reads it synchronously.
+   */
+  const [metrics, setMetrics] = useState({ colW: COL_W, rowH: ROW_H });
 
   // Read inside the gesture handlers, which are created once and would
   // otherwise close over stale state.
+  /** The web drag's anchor cell; the native gesture derives its own. */
   const anchorRef = useRef<{ row: number; col: number } | null>(null);
-  const draggingRef = useRef(false);
-  /** The cell a press started on, before it's known to be a tap or a drag. */
-  const pressAnchorRef = useRef<{ row: number; col: number } | null>(null);
   /** Set once a press turned into a drag, so its release doesn't also edit. */
   const draggedRef = useRef(false);
   /** Mirrors `editing` for the capture check, which runs outside render. */
@@ -81,11 +98,33 @@ export function FinanceGrid({ sheet, onChange, selection, onSelectionChange }: P
   const originRef = useRef({ x: 0, y: 0 });
   const contentRef = useRef<View | null>(null);
 
+  /** Mirrors `draft`, for the same reason `editingRef` mirrors `editing`. */
+  const draftRef = useRef('');
+
   /** Keeps `editingRef` in step with the state it mirrors. */
   const setEditingCell = useCallback((next: { row: number; col: number } | null) => {
     editingRef.current = next;
     setEditing(next);
   }, []);
+
+  /** Keeps `draftRef` in step with the state it mirrors. */
+  const setDraftText = useCallback((next: string) => {
+    draftRef.current = next;
+    setDraft(next);
+  }, []);
+
+  /** Flags the in-flight press as a drag, so its release won't open a cell. */
+  const markDragged = useCallback(() => {
+    draggedRef.current = true;
+  }, []);
+
+  /**
+   * The cell the drag last reported. A pan delivers events continuously, but
+   * the selection only changes when the finger crosses into another cell —
+   * without this every frame re-rendered the whole grid to produce an identical
+   * selection.
+   */
+  const lastFocusRef = useRef<{ row: number; col: number } | null>(null);
 
   const computed = useMemo(() => evaluateSheet(sheet), [sheet]);
 
@@ -105,22 +144,39 @@ export function FinanceGrid({ sheet, onChange, selection, onSelectionChange }: P
    */
   const metricsRef = useRef({ colW: COL_W, rowH: ROW_H });
 
+  /**
+   * Writes the open cell back.
+   *
+   * Built from whatever the sheet is *when this runs*, not from the copy this
+   * render closed over. A toolbar tap applies its style and blurs the cell in
+   * the same interaction, and the order isn't ours to choose: committing
+   * against the render-time sheet meant whichever landed second wrote the other
+   * one out — a colour applied to a cell being typed into would vanish on
+   * commit.
+   */
   const commitEdit = useCallback(() => {
-    if (!editing) return;
-    const { row, col } = editing;
-    const existing = getCell(sheet, row, col)?.raw ?? '';
-    if (draft !== existing) {
-      let next = sheet;
+    // Read from the refs, not the render's state. Tapping a second cell blurs
+    // the first, and the two events don't arrive in a fixed order: if the tap
+    // landed first, this ran with a `draft`/`editing` pair from a render where
+    // the *new* cell was already open, so the text typed into the old one was
+    // dropped without ever being written. The refs are always the live pair.
+    const open = editingRef.current;
+    if (!open) return;
+    const { row, col } = open;
+    const text = draftRef.current;
+    onChange((current) => {
+      if (text === (getCell(current, row, col)?.raw ?? '')) return current;
+      let next = current;
       // Committing text into the trailing ghost row/column is what actually
       // grows the sheet — tapping one and leaving it blank must not, or merely
       // looking at the edge of the grid would extend it.
-      if (draft.trim() !== '' && (row >= sheet.rows || col >= sheet.cols)) {
-        next = resizeSheet(next, Math.max(sheet.rows, row + 1), Math.max(sheet.cols, col + 1));
+      if (text.trim() !== '' && (row >= current.rows || col >= current.cols)) {
+        next = resizeSheet(next, Math.max(current.rows, row + 1), Math.max(current.cols, col + 1));
       }
-      onChange(setCellRaw(next, row, col, draft));
-    }
+      return setCellRaw(next, row, col, text);
+    });
     setEditingCell(null);
-  }, [editing, draft, sheet, onChange, setEditingCell]);
+  }, [onChange, setEditingCell]);
 
   /**
    * A tap both selects and starts typing. Requiring a second tap to edit is the
@@ -129,26 +185,42 @@ export function FinanceGrid({ sheet, onChange, selection, onSelectionChange }: P
    */
   const selectCell = useCallback(
     (row: number, col: number) => {
+      // Flush whatever cell was open before switching, rather than trusting its
+      // blur to arrive first. A late blur then finds this cell open with its own
+      // text as the draft, so it commits nothing.
+      commitEdit();
       anchorRef.current = { row, col };
       onSelectionChange({ r0: row, c0: col, r1: row, c1: col });
-      setDraft(getCell(sheet, row, col)?.raw ?? '');
+      setDraftText(getCell(sheet, row, col)?.raw ?? '');
       setEditingCell({ row, col });
     },
-    [onSelectionChange, sheet, setEditingCell],
+    [commitEdit, onSelectionChange, sheet, setDraftText, setEditingCell],
   );
 
-  /** Maps an absolute pointer position to a cell, clamped to the grid. */
-  const cellAt = useCallback(
-    (pageX: number, pageY: number) => {
+  /**
+   * Maps a position *within the content box* to a cell, clamped to the grid.
+   * The pan gesture reports coordinates in exactly this space, so it needs no
+   * window origin and can't be thrown off by scrolling.
+   */
+  const cellAtLocal = useCallback(
+    (x: number, y: number) => {
       const { colW, rowH } = metricsRef.current;
-      const col = Math.floor((pageX - originRef.current.x) / colW);
-      const row = Math.floor((pageY - originRef.current.y) / rowH);
       return {
-        row: Math.max(0, Math.min(sheet.rows - 1, row)),
-        col: Math.max(0, Math.min(sheet.cols - 1, col)),
+        row: Math.max(0, Math.min(sheet.rows - 1, Math.floor(y / rowH))),
+        col: Math.max(0, Math.min(sheet.cols - 1, Math.floor(x / colW))),
       };
     },
     [sheet.rows, sheet.cols],
+  );
+
+  /**
+   * The same mapping for absolute pointer positions, which is what the web
+   * responder events carry — hence the measured origin.
+   */
+  const cellAt = useCallback(
+    (pageX: number, pageY: number) =>
+      cellAtLocal(pageX - originRef.current.x, pageY - originRef.current.y),
+    [cellAtLocal],
   );
 
   /**
@@ -174,27 +246,26 @@ export function FinanceGrid({ sheet, onChange, selection, onSelectionChange }: P
   const onContentLayout = useCallback(
     (evt: LayoutChangeEvent) => {
       const { width, height } = evt.nativeEvent.layout;
-      if (colCount > 0 && width > 0) metricsRef.current.colW = width / colCount;
-      if (rowCount > 0 && height > 0) metricsRef.current.rowH = height / rowCount;
+      const colW = colCount > 0 && width > 0 ? width / colCount : metricsRef.current.colW;
+      const rowH = rowCount > 0 && height > 0 ? height / rowCount : metricsRef.current.rowH;
+      metricsRef.current = { colW, rowH };
+      // Returning the previous object when nothing moved keeps this from
+      // re-rendering into another layout pass.
+      setMetrics((prev) => (prev.colW === colW && prev.rowH === rowH ? prev : { colW, rowH }));
       measureOrigin();
     },
     [colCount, rowCount, measureOrigin],
   );
 
-  const onCellPressIn = useCallback(
-    (row: number, col: number) => {
-      pressAnchorRef.current = { row, col };
-      draggedRef.current = false;
-      // A new press always begins a new gesture. Clearing these here means a
-      // drag flag left set by a previous one — a pointer released outside the
-      // grid never delivers a release event to it — can't let the next move
-      // resume the old drag from the old anchor.
-      draggingRef.current = false;
-      anchorRef.current = null;
-      measureOrigin();
-    },
-    [measureOrigin],
-  );
+  const onCellPressIn = useCallback(() => {
+    draggedRef.current = false;
+    // A new press always begins a new gesture. Clearing the anchor here means
+    // one left over from a previous drag — a pointer released outside the grid
+    // never delivers a release event to it — can't let the next move resume
+    // that drag from the stale anchor.
+    anchorRef.current = null;
+    measureOrigin();
+  }, [measureOrigin]);
 
   /**
    * On web the grid container claims the gesture up front, in the capture
@@ -229,24 +300,15 @@ export function FinanceGrid({ sheet, onChange, selection, onSelectionChange }: P
     [cellAt],
   );
 
-  /** Native only: a move promotes the long-press into a drag. */
-  const onMoveShouldSetResponder = useCallback(() => draggingRef.current, []);
-
-  /**
-   * Starts a gesture. On web this is the mouse-down, so the anchor comes from
-   * the pointer position; on native the long-press already set it.
-   */
+  /** Web only: the mouse-down, so the anchor comes from the pointer position. */
   const onResponderGrant = useCallback(
     (evt: GestureResponderEvent) => {
       const { pageX, pageY } = evt.nativeEvent;
-      const anchor =
-        Platform.OS === 'web' ? cellAt(pageX, pageY) : (pressAnchorRef.current ?? null);
-      if (!anchor) return;
+      const anchor = cellAt(pageX, pageY);
 
       anchorRef.current = anchor;
       // Not yet a drag — a press that never moves is a click, and opens the cell.
       draggedRef.current = false;
-      draggingRef.current = true;
       setDragging(true);
       // Starting anywhere discards the previous selection rather than extending it.
       onSelectionChange({ r0: anchor.row, c0: anchor.col, r1: anchor.row, c1: anchor.col });
@@ -264,51 +326,167 @@ export function FinanceGrid({ sheet, onChange, selection, onSelectionChange }: P
       // inside one cell is still a click.
       if (focus.row !== anchor.row || focus.col !== anchor.col) {
         draggedRef.current = true;
-        // A range supersedes editing a single cell.
-        if (editingRef.current) setEditingCell(null);
+        // A range supersedes editing a single cell — but the cell still has to
+        // be written back, or starting a drag from a cell you were typing in
+        // throws the text away.
+        commitEdit();
       }
       onSelectionChange(normalizeSelection(anchor, focus));
     },
-    [cellAt, onSelectionChange, setEditingCell],
+    [cellAt, commitEdit, onSelectionChange],
   );
 
   const endDrag = useCallback(() => {
     const anchor = anchorRef.current;
-    draggingRef.current = false;
-    pressAnchorRef.current = null;
     setDragging(false);
-    // A press that never left its cell is a click: open it for typing. On native
-    // the cell's own Pressable does this, so only the web path needs it here.
-    if (Platform.OS === 'web' && anchor && !draggedRef.current) {
-      selectCell(anchor.row, anchor.col);
-    }
+    // A press that never left its cell is a click: open it for typing.
+    if (anchor && !draggedRef.current) selectCell(anchor.row, anchor.col);
     draggedRef.current = false;
   }, [selectCell]);
 
-  /** Touch long-press. Synchronous — the origin was measured back at press-in. */
-  const armDrag = useCallback(
-    (row: number, col: number) => {
-      anchorRef.current = { row, col };
-      draggingRef.current = true;
+  /**
+   * Native range selection.
+   *
+   * Owned by gesture-handler rather than the responder system. The previous
+   * version armed a drag from the cell's `onLongPress` and then expected the
+   * container to take the gesture over on the next move — but the cell's
+   * `Pressable` was still the responder, and handing it over is a negotiation
+   * the current responder can refuse. The transfer landed once and then stopped
+   * delivering, which is why a drag only ever selected the anchor and its
+   * neighbour however far the finger travelled. It also left `dragging` set
+   * when a hold was released without moving, permanently disabling scrolling.
+   *
+   * `activateAfterLongPress` is the whole gesture split: below the threshold
+   * the ScrollView keeps the drag and the sheet pans, above it this activates,
+   * cancels the cell's press, and selects. Coordinates arrive relative to the
+   * detector's view, so unlike the responder path there is no window origin to
+   * keep in step with scrolling.
+   */
+  const onDragStart = useCallback(
+    (x: number, y: number) => {
+      const anchor = cellAtLocal(x, y);
+      lastFocusRef.current = anchor;
+      // The release belongs to this drag, so the cell it ends on must not also
+      // open for typing. Set here rather than on first movement because the
+      // long press has already committed the gesture to selecting.
+      markDragged();
       setDragging(true);
-      onSelectionChange({ r0: row, c0: col, r1: row, c1: col });
+      // A range supersedes editing a single cell, but the open cell is written
+      // back first — a drag begun from a cell you were typing in must not throw
+      // the text away. No-ops when nothing is open.
+      commitEdit();
+      // Starting anywhere discards the previous selection rather than extending it.
+      onSelectionChange({ r0: anchor.row, c0: anchor.col, r1: anchor.row, c1: anchor.col });
     },
-    [onSelectionChange],
+    [cellAtLocal, commitEdit, markDragged, onSelectionChange],
   );
+
+  /**
+   * Extends the selection. The anchor is recovered from the gesture's own
+   * translation rather than remembered between callbacks — `x - translationX`
+   * is exactly where the finger went down, so there is no anchor state to fall
+   * out of step with the drag.
+   */
+  const onDragMove = useCallback(
+    (x: number, y: number, dx: number, dy: number) => {
+      const focus = cellAtLocal(x, y);
+      const last = lastFocusRef.current;
+      // Same cell as the last event: the selection would be identical, and
+      // re-rendering several hundred cells per frame to redraw it is what makes
+      // a drag stutter.
+      if (last && last.row === focus.row && last.col === focus.col) return;
+      lastFocusRef.current = focus;
+      onSelectionChange(normalizeSelection(cellAtLocal(x - dx, y - dy), focus));
+    },
+    [cellAtLocal, onSelectionChange],
+  );
+
+  /*
+   * `react-hooks/refs` reads this whole builder as render code, because the
+   * handlers it receives eventually reach `metricsRef` and `draggedRef`. They
+   * don't run during render — nothing here fires until a touch lands — and the
+   * alternatives are worse: dropping the drag flag would let a drag's release
+   * also open the cell it finished on, and dropping the measured metrics
+   * reintroduces the drift that made mapped cells wander from the finger.
+   */
+  /* eslint-disable react-hooks/refs */
+  const selectGesture = useMemo(
+    () =>
+      Gesture.Pan()
+        // The handlers touch React state, not shared values — running them on
+        // the JS thread is simpler than making each one a worklet.
+        .runOnJS(true)
+        .activateAfterLongPress(LONG_PRESS_MS)
+        // Web keeps the responder-capture path, which is tuned around mouse
+        // input and has no long-press step.
+        .enabled(Platform.OS !== 'web')
+        .onStart((evt) => onDragStart(evt.x, evt.y))
+        .onUpdate((evt) => onDragMove(evt.x, evt.y, evt.translationX, evt.translationY))
+        // Finalize, not end: a cancelled gesture has to restore scrolling too,
+        // or the sheet silently stops panning.
+        .onFinalize(() => setDragging(false)),
+    [onDragStart, onDragMove],
+  );
+  /* eslint-enable react-hooks/refs */
 
   const gridLine = hexToRgba(colors.textSecondary, 0.18);
   const selectionFill = hexToRgba(colors.text, 0.1);
   const selectionEdge = hexToRgba(colors.text, 0.45);
 
+  /** Content-box rect covering rows `r0..r1` and columns `c0..c1`. */
+  const rectFor = (r0: number, c0: number, r1: number, c1: number) => ({
+    left: c0 * metrics.colW,
+    top: r0 * metrics.rowH,
+    width: (c1 - c0 + 1) * metrics.colW,
+    height: (r1 - r0 + 1) * metrics.rowH,
+  });
+
+  /**
+   * Where the selection overlay sits. Suppressed while a cell is open for
+   * typing: that cell already wears the active ring, and a range only exists
+   * once a drag has closed the editor.
+   */
+  const selectionRect =
+    selection && !editing
+      ? rectFor(selection.r0, selection.c0, selection.r1, selection.c1)
+      : null;
+
+  /** The ring on the cell being typed into. */
+  const activeRect = editing ? rectFor(editing.row, editing.col, editing.row, editing.col) : null;
+
   const renderCell = (row: number, col: number) => {
     const cell = getCell(sheet, row, col);
     const style = cell?.style;
-    const selected = selection ? selectionContains(selection, row, col) : false;
     const isEditing = editing?.row === row && editing?.col === col;
     const value: CellValue | undefined = computed.get(cellKey(row, col));
     // The trailing row/column: real enough to tap and type into, faded until
     // committing text turns it into part of the sheet.
     const ghost = row >= sheet.rows || col >= sheet.cols;
+
+    /**
+     * The cell's formatting, shared by the static text and the input that
+     * replaces it while typing. The input used to carry none of this, so every
+     * mark was invisible until the cell closed — and on a touch device tapping
+     * a toolbar button doesn't take focus off the input, so the cell doesn't
+     * close. Formatting looked like it only applied once you pressed done.
+     */
+    const marks = [
+      {
+        // A highlighted cell derives its own legible ink, since the theme's
+        // text colour is near-white in dark mode and would vanish on a pale
+        // swatch.
+        color: style?.color ?? (style?.bg ? readableTextColor(style.bg) : colors.text),
+      },
+      style?.bold && styles.bold,
+      style?.italic && styles.italic,
+      (style?.underline || style?.strike) && {
+        textDecorationLine: (style?.underline
+          ? style?.strike
+            ? 'underline line-through'
+            : 'underline'
+          : 'line-through') as 'underline' | 'line-through' | 'underline line-through',
+      },
+    ];
 
     return (
       <View
@@ -318,33 +496,23 @@ export function FinanceGrid({ sheet, onChange, selection, onSelectionChange }: P
           { borderColor: gridLine },
           ghost && !isEditing && styles.ghost,
           !!style?.bg && { backgroundColor: style.bg },
-          selected && !isEditing && { backgroundColor: selectionFill },
-          selected && { borderColor: selectionEdge },
-          // Last, so it wins over the selection edge: the cell being typed into
-          // gets a ring on all four sides, the way Excel and Sheets mark the
-          // active cell. Border only — no fill, or it would fight the cell's own
-          // highlight colour.
-          isEditing && styles.editingCell,
+          // Neither the selection nor the active-cell ring is drawn here — both
+          // are overlays below. A cell's borders never change.
         ]}>
         {isEditing ? (
           <TextInput
             value={draft}
-            onChangeText={setDraft}
+            onChangeText={setDraftText}
             onBlur={commitEdit}
             onSubmitEditing={commitEdit}
             autoFocus
-            // Same contrast rule as the static cell — the highlight stays
-            // visible behind the input while editing.
-            style={[
-              styles.input,
-              { color: style?.bg ? readableTextColor(style.bg) : colors.text },
-            ]}
+            style={[styles.input, ...marks]}
             // A formula is easier to correct than to retype from scratch.
             selectTextOnFocus={!draft.startsWith('=')}
           />
         ) : (
           <Pressable
-            onPressIn={() => onCellPressIn(row, col)}
+            onPressIn={onCellPressIn}
             onPress={() => {
               // A drag already consumed this press; releasing must not also drop
               // the user into the cell they happened to finish on.
@@ -354,30 +522,12 @@ export function FinanceGrid({ sheet, onChange, selection, onSelectionChange }: P
               }
               selectCell(row, col);
             }}
-            // Drag-select can't start from the ghost edge — there's nothing
-            // there to select until it holds content.
-            onLongPress={ghost ? undefined : () => armDrag(row, col)}
-            delayLongPress={220}
             style={styles.cellPress}>
             <Text
               numberOfLines={1}
               style={[
                 styles.cellText,
-                {
-                  // A highlighted cell derives its own legible ink, since the
-                  // theme's text colour is near-white in dark mode and would
-                  // vanish on a pale swatch.
-                  color: style?.color ?? (style?.bg ? readableTextColor(style.bg) : colors.text),
-                },
-                style?.bold && styles.bold,
-                style?.italic && styles.italic,
-                (style?.underline || style?.strike) && {
-                  textDecorationLine: style?.underline
-                    ? style?.strike
-                      ? 'underline line-through'
-                      : 'underline'
-                    : 'line-through',
-                },
+                ...marks,
                 { textAlign: style?.align ?? (typeof value === 'number' ? 'right' : 'left') },
                 typeof value === 'object' && value !== null && styles.errorText,
               ]}>
@@ -403,6 +553,10 @@ export function FinanceGrid({ sheet, onChange, selection, onSelectionChange }: P
       // follow it or every mapped cell is offset by the scroll distance.
       onScroll={measureOrigin}
       scrollEventThrottle={16}
+      // Both scrollers need this, not just the inner one: either would
+      // otherwise swallow the first tap while the keyboard is up to dismiss it,
+      // so moving from one cell to another took two taps.
+      keyboardShouldPersistTaps="handled"
       contentContainerStyle={styles.hScroll}>
       <View>
         {/* Column headers, pinned above the scrolling body. */}
@@ -433,7 +587,6 @@ export function FinanceGrid({ sheet, onChange, selection, onSelectionChange }: P
             style={styles.body}
             onStartShouldSetResponderCapture={onStartShouldSetResponderCapture}
             onStartShouldSetResponder={() => false}
-            onMoveShouldSetResponder={onMoveShouldSetResponder}
             onResponderGrant={onResponderGrant}
             onResponderMove={onResponderMove}
             onResponderRelease={endDrag}
@@ -451,16 +604,47 @@ export function FinanceGrid({ sheet, onChange, selection, onSelectionChange }: P
                 </View>
               ))}
             </View>
-            {/* The origin and cell metrics have to be current at mouse-down,
-                since `cellAt` reads them synchronously while `measureInWindow`
-                is async — re-measuring on layout keeps them so. */}
-            <View ref={contentRef} collapsable={false} onLayout={onContentLayout}>
-              {rows.map((r) => (
-                <View key={r} style={styles.row}>
-                  {cols.map((c) => renderCell(r, c))}
+            {/* The detector owns its own view, so the content box below keeps
+                `contentRef` for measurement rather than having it cloned away.
+                Both share an origin, so the gesture's local coordinates map
+                straight onto the content box. */}
+            <GestureDetector gesture={selectGesture}>
+              <View collapsable={false}>
+                {/* The origin and cell metrics have to be current at mouse-down,
+                    since `cellAt` reads them synchronously while `measureInWindow`
+                    is async — re-measuring on layout keeps them so. */}
+                <View ref={contentRef} collapsable={false} onLayout={onContentLayout}>
+                  {rows.map((r) => (
+                    <View key={r} style={styles.row}>
+                      {cols.map((c) => renderCell(r, c))}
+                    </View>
+                  ))}
+                  {/* Selection and active cell are both drawn as single
+                      rectangles over the grid rather than as borders on the
+                      cells they cover.
+
+                      Android does not reliably repaint a View's border when the
+                      style that introduced it goes away: deselecting left the
+                      old edge behind, and moving the active cell left its 2px
+                      ring behind recoloured but not resized. Declaring every
+                      width up front wasn't enough. Now no cell's border ever
+                      changes at all, so nothing can be stranded — and dragging
+                      a range moves one view instead of restyling hundreds. */}
+                  {selectionRect && (
+                    <View
+                      pointerEvents="none"
+                      style={[
+                        styles.selectionOverlay,
+                        selectionRect,
+                        { backgroundColor: selectionFill, borderColor: selectionEdge },
+                      ]}
+                    />
+                  )}
+                  {/* Last, so the active ring reads over the selection fill. */}
+                  {activeRect && <View pointerEvents="none" style={[styles.activeOverlay, activeRect]} />}
                 </View>
-              ))}
-            </View>
+              </View>
+            </GestureDetector>
           </View>
         </ScrollView>
       </View>
@@ -499,6 +683,8 @@ const styles = StyleSheet.create({
   // selection, painting cell contents blue instead of selecting a range.
   headerText: { fontSize: 11, fontWeight: '600', userSelect: 'none' },
   row: { flexDirection: 'row' },
+  // Just the gridlines, and they never change — everything that used to mark a
+  // cell's state is an overlay now.
   cell: {
     width: COL_W,
     height: ROW_H,
@@ -506,20 +692,20 @@ const styles = StyleSheet.create({
     borderBottomWidth: StyleSheet.hairlineWidth,
     justifyContent: 'center',
   },
+  /** The selection rectangle. Sits above the cells, below the active ring. */
+  selectionOverlay: {
+    position: 'absolute',
+    borderWidth: 1.5,
+    borderRadius: Spacing.one,
+  },
   /**
-   * The active cell's ring. Every side is set explicitly: the base cell style
-   * sets `borderRightWidth`/`borderBottomWidth` for the gridlines, and those
-   * beat a plain `borderWidth` when styles are flattened — so a shorthand here
-   * would leave the right and bottom edges hairline while the other two thicken.
-   *
-   * The cell's width and height are fixed, so the thicker border eats into the
-   * cell rather than nudging its neighbours.
+   * The active cell's ring, the way Excel and Sheets mark it. Border only — no
+   * fill, or it would hide the cell's own highlight colour.
    */
-  editingCell: {
-    borderTopWidth: 2,
-    borderRightWidth: 2,
-    borderBottomWidth: 2,
-    borderLeftWidth: 2,
+  activeOverlay: {
+    position: 'absolute',
+    borderWidth: 2,
+    borderRadius: Spacing.one,
     borderColor: ACTIVE_EDGE,
   },
   cellPress: { flex: 1, justifyContent: 'center', paddingHorizontal: 8 },
@@ -527,7 +713,7 @@ const styles = StyleSheet.create({
   ghost: { opacity: 0.35 },
   cellText: { fontSize: 14, userSelect: 'none' },
   bold: { fontWeight: '700' },
-  italic: { fontStyle: 'italic' },
+  italic: Italic,
   errorText: { fontWeight: '600', opacity: 0.9 },
   input: {
     flex: 1,

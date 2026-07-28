@@ -1,26 +1,23 @@
 /**
- * The formula cheatsheet button for finance notes — a small glass button docked
- * bottom-left of the sheet screen, opening a modal of the syntax the engine
- * understands.
+ * The formula cheatsheet for finance notes — a modal listing the syntax the
+ * engine understands.
  *
- * Mirrors `markdown-help.web.tsx` in placement, shape and behaviour, but is
- * *not* web-only: markdown shortcuts only exist in the web editor, whereas
- * formulas are the same on every platform, so a single implementation serves
- * both and there's no `.web`/native pair to drift.
+ * Unlike `markdown-help.web.tsx`, which is a button docked bottom-left of the
+ * editor screen, this one has no dock of its own: at phone width that corner is
+ * where the navbar's back button lives, and the two sat on top of each other.
+ * It's opened from the sheet's formatting toolbar instead, which is where the
+ * user already is when they're writing a formula.
  *
  * Kept in step with `lib/finance/formula.ts` — every entry below is something
  * the parser actually accepts. An aspirational cheatsheet is worse than none.
  */
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
-import { usePathname } from 'expo-router';
-import { useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import Animated, { FadeIn, FadeOut, ZoomIn, ZoomOut } from 'react-native-reanimated';
 
 import { GlassSurface } from '@/components/glass-surface';
 import { ThemedText } from '@/components/themed-text';
-import { Spacing, TabBar } from '@/constants/theme';
-import { useTabBarBottom } from '@/hooks/use-tab-bar-inset';
+import { Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
@@ -48,19 +45,20 @@ const ERRORS: Row[] = [
   { syntax: '#PARSE!', label: "Formula can't be read — check brackets" },
 ];
 
-/**
- * Rendered from the root layout so it sits above the floating tab bar, matching
- * how the markdown cheatsheet is mounted. Gated at the call site by the
- * `formattingHints` preference.
- */
-export function SheetHelp() {
-  const theme = useTheme();
-  const pathname = usePathname();
-  const bottom = useTabBarBottom();
-  const [open, setOpen] = useState(false);
+type Props = {
+  open: boolean;
+  onClose: () => void;
+};
 
-  const onSheet = /^\/finance\/[^/]+/.test(pathname);
-  if (!onSheet) return null;
+/**
+ * Controlled by the sheet screen, which also gates it on the `formattingHints`
+ * preference. Rendering nothing when closed keeps the whole card — and its
+ * backdrop — out of the tree between uses.
+ */
+export function SheetHelp({ open, onClose }: Props) {
+  const theme = useTheme();
+
+  if (!open) return null;
 
   const section = (title: string, rows: Row[]) => (
     <>
@@ -86,82 +84,49 @@ export function SheetHelp() {
   );
 
   return (
-    <>
+    <View style={styles.overlay} pointerEvents="box-none">
+      <AnimatedPressable
+        entering={FadeIn.duration(180)}
+        exiting={FadeOut.duration(160)}
+        style={styles.backdrop}
+        onPress={onClose}
+        accessibilityRole="button"
+        accessibilityLabel="Dismiss"
+      />
       <Animated.View
-        entering={FadeIn.duration(200)}
-        exiting={FadeOut.duration(150)}
-        style={[styles.fabHost, { bottom, left: TabBar.margin }]}>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Formula help"
-          onPress={() => setOpen(true)}>
-          <GlassSurface intensity={75} tintOpacity={0.5} style={styles.fab}>
-            <MaterialCommunityIcons name="function-variant" size={24} color={theme.textSecondary} />
-          </GlassSurface>
-        </Pressable>
+        entering={ZoomIn.duration(200)}
+        exiting={ZoomOut.duration(150)}
+        style={styles.cardWrap}
+        pointerEvents="box-none">
+        <GlassSurface intensity={90} tintOpacity={0.85} style={styles.card}>
+          <View style={styles.header}>
+            <ThemedText type="subtitle" style={styles.headerTitle}>
+              Formulas
+            </ThemedText>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Close"
+              onPress={onClose}
+              style={styles.close}>
+              <MaterialCommunityIcons name="close" size={20} color={theme.textSecondary} />
+            </Pressable>
+          </View>
+          <ThemedText themeColor="textSecondary" style={styles.subtitle}>
+            Start a cell with = to calculate. Columns are letters, rows are numbers,
+            so B2 is the second column, second row.
+          </ThemedText>
+
+          <ScrollView style={styles.list} showsVerticalScrollIndicator={false}>
+            {section('SYNTAX', FORMULAS)}
+            {section('WHEN SOMETHING IS WRONG', ERRORS)}
+          </ScrollView>
+        </GlassSurface>
       </Animated.View>
-
-      {open && (
-        <View style={styles.overlay} pointerEvents="box-none">
-          <AnimatedPressable
-            entering={FadeIn.duration(180)}
-            exiting={FadeOut.duration(160)}
-            style={styles.backdrop}
-            onPress={() => setOpen(false)}
-            accessibilityRole="button"
-            accessibilityLabel="Dismiss"
-          />
-          <Animated.View
-            entering={ZoomIn.duration(200)}
-            exiting={ZoomOut.duration(150)}
-            style={styles.cardWrap}
-            pointerEvents="box-none">
-            <GlassSurface intensity={90} tintOpacity={0.85} style={styles.card}>
-              <View style={styles.header}>
-                <ThemedText type="subtitle" style={styles.headerTitle}>
-                  Formulas
-                </ThemedText>
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel="Close"
-                  onPress={() => setOpen(false)}
-                  style={styles.close}>
-                  <MaterialCommunityIcons name="close" size={20} color={theme.textSecondary} />
-                </Pressable>
-              </View>
-              <ThemedText themeColor="textSecondary" style={styles.subtitle}>
-                Start a cell with = to calculate. Columns are letters, rows are numbers,
-                so B2 is the second column, second row.
-              </ThemedText>
-
-              <ScrollView style={styles.list} showsVerticalScrollIndicator={false}>
-                {section('SYNTAX', FORMULAS)}
-                {section('WHEN SOMETHING IS WRONG', ERRORS)}
-              </ScrollView>
-            </GlassSurface>
-          </Animated.View>
-        </View>
-      )}
-    </>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  fabHost: {
-    position: 'absolute',
-  },
-  fab: {
-    width: TabBar.height,
-    height: TabBar.height,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderRadius: Spacing.three,
-    shadowColor: '#000',
-    shadowOpacity: 0.4,
-    shadowRadius: 16,
-    shadowOffset: { width: 0, height: 0 },
-    elevation: 16,
-  },
   overlay: {
     position: 'absolute',
     top: 0,
@@ -171,6 +136,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     padding: Spacing.four,
+    // Android orders siblings by elevation before document order, and the
+    // toolbar that opens this sits at 16 — without a higher value here the
+    // backdrop would fall behind the bar, leaving it lit and still tappable.
+    elevation: 32,
+    zIndex: 32,
   },
   backdrop: {
     position: 'absolute',

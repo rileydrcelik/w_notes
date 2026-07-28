@@ -13,8 +13,9 @@
  * navbar's "done" check clears the selection and puts them away again. That
  * check is driven by `active-editor`, the same bridge the rich-text editor uses.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  Keyboard,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -28,6 +29,7 @@ import Feather from '@expo/vector-icons/Feather';
 
 import { FinanceGrid } from '@/components/finance/finance-grid';
 import { FinanceToolbar } from '@/components/finance/finance-toolbar';
+import { SheetHelp } from '@/components/sheet-help';
 import { SwipeBackView } from '@/components/swipe-back-view';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
@@ -36,12 +38,10 @@ import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
 import { useTheme } from '@/hooks/use-theme';
 import { setActiveEditorDismiss } from '@/lib/active-editor';
 import { db } from '@/lib/db';
-import { addressToRef } from '@/lib/finance/formula';
 import {
   applyStyle,
   clearFormatting,
   emptySheet,
-  getCell,
   parseSheet,
   serializeSheet,
   type CellStyle,
@@ -51,6 +51,7 @@ import {
 import { Sentry } from '@/lib/sentry';
 import { registerSheetFlush } from '@/lib/finance/pending';
 import { requestSync, subscribeSynced } from '@/lib/sync/sync-engine';
+import { useEditorPrefs } from '@/store/editor-prefs-store';
 import { useNotes } from '@/store/notes-store';
 
 /** Matches the note body's debounce: long enough to batch a burst of edits. */
@@ -62,12 +63,14 @@ export default function FinanceScreen() {
   const theme = useTheme();
   const insets = useSafeAreaInsets();
   const tabBarInset = useTabBarInset();
+  const { formattingHints } = useEditorPrefs();
 
   const note = getNote(id);
   const [title, setTitle] = useState(note?.title ?? '');
   const [sheet, setSheet] = useState<Sheet | null>(null);
   const [selection, setSelection] = useState<Selection | null>(null);
   const [editing, setEditing] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
 
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingRef = useRef<Sheet | null>(null);
@@ -167,7 +170,10 @@ export default function FinanceScreen() {
     (fn: (current: Sheet) => Sheet) => {
       const current = latestRef.current;
       if (!current) return;
-      onChangeSheet(fn(current));
+      const next = fn(current);
+      // A transform that changed nothing shouldn't schedule a write.
+      if (next === current) return;
+      onChangeSheet(next);
     },
     [onChangeSheet],
   );
@@ -181,8 +187,26 @@ export default function FinanceScreen() {
   );
 
   const leaveEditMode = useCallback(() => {
+    // Blur the open cell before anything else — that is what commits its draft,
+    // via the input's `onBlur`. `editing` only gates the toolbar and this
+    // button; the grid stays mounted either way, so without this the "done"
+    // check tidies away the chrome and leaves the cell live with unsaved text
+    // behind it. Walking back from there unmounts the input without ever firing
+    // a blur, and the typing is gone. Same reason `showHelp` dismisses below.
+    //
+    // Web already blurs the editor on the navbar press before `onPress` runs,
+    // so this is native's equivalent rather than a second dismissal.
+    Keyboard.dismiss();
     setEditing(false);
     setSelection(null);
+  }, []);
+
+  // The cheatsheet is a full-screen card, and on a phone the keyboard covers
+  // most of it. Dismissing also blurs the focused cell, which commits whatever
+  // was being typed — the reference is for composing the *next* formula.
+  const showHelp = useCallback(() => {
+    Keyboard.dismiss();
+    setHelpOpen(true);
   }, []);
 
   // Register with the navbar's "done" check while editing, so it can return this
@@ -208,19 +232,6 @@ export default function FinanceScreen() {
     mutateSheet((current) => clearFormatting(current, selection));
   }, [selection, mutateSheet]);
 
-  /** The formula-bar text: the selected cell's source, not its computed value. */
-  const formulaText = useMemo(() => {
-    if (!sheet || !selection) return '';
-    return getCell(sheet, selection.r0, selection.c0)?.raw ?? '';
-  }, [sheet, selection]);
-
-  const selectionLabel = useMemo(() => {
-    if (!selection) return '';
-    const start = addressToRef(selection.r0, selection.c0);
-    if (selection.r0 === selection.r1 && selection.c0 === selection.c1) return start;
-    return `${start}:${addressToRef(selection.r1, selection.c1)}`;
-  }, [selection]);
-
   if (!note) {
     return (
       <ThemedView style={styles.centered}>
@@ -230,35 +241,31 @@ export default function FinanceScreen() {
     );
   }
 
+  // `disableSwipes`: the grid scrolls horizontally, and a horizontal drag can
+  // only mean one thing — left to both, scrolling sideways sometimes navigated
+  // back or opened the drawer instead. Back stays available on the navbar.
   return (
-    <SwipeBackView>
+    <SwipeBackView disableSwipes>
       <ThemedView style={styles.container}>
         <Stack.Screen options={{ headerShown: false }} />
 
-        <TextInput
-          value={title}
-          onChangeText={onChangeTitle}
-          placeholder="Untitled sheet"
-          placeholderTextColor={theme.textSecondary}
-          style={[
-            styles.title,
-            { color: theme.text, paddingTop: insets.top + Spacing.two },
-            Platform.OS === 'web' && ({ outlineStyle: 'none' } as never),
-          ]}
-        />
-
-        {/* Address + formula source for the selection. Reads as a status line in
-            view mode and becomes the reference while editing. */}
-        <View style={styles.formulaBar}>
-          <ThemedText
-            type="small"
-            themeColor="textSecondary"
-            style={[styles.address, { borderColor: hexToRgba(theme.textSecondary, 0.25) }]}>
-            {selectionLabel || '—'}
-          </ThemedText>
-          <ThemedText type="small" numberOfLines={1} style={styles.formula}>
-            {formulaText}
-          </ThemedText>
+        {/* The done check rides the title row. It used to sit in a bar below,
+            alongside an address chip and the selected cell's formula — a desktop
+            spreadsheet's status line, which at phone width spent a whole row
+            restating what the grid already shows. Folding the check up here
+            gives that row back to the sheet. */}
+        <View style={[styles.titleRow, { paddingTop: insets.top + Spacing.two }]}>
+          <TextInput
+            value={title}
+            onChangeText={onChangeTitle}
+            placeholder="Untitled sheet"
+            placeholderTextColor={theme.textSecondary}
+            style={[
+              styles.title,
+              { color: theme.text },
+              Platform.OS === 'web' && ({ outlineStyle: 'none' } as never),
+            ]}
+          />
           {editing && (
             <Pressable
               onPress={leaveEditMode}
@@ -284,7 +291,7 @@ export default function FinanceScreen() {
             {sheet && (
               <FinanceGrid
                 sheet={sheet}
-                onChange={onChangeSheet}
+                onChange={mutateSheet}
                 selection={selection}
                 onSelectionChange={(next) => {
                   setSelection(next);
@@ -299,14 +306,21 @@ export default function FinanceScreen() {
 
         {/* Positions itself against the bottom and rides the keyboard, exactly
             as the note editor's formatting toolbar does — hence no wrapper. */}
-        {editing && selection && sheet && (
+        {/* Hidden behind the cheatsheet: the card dims everything under it, and
+            a formatting bar showing through the scrim read as an accident. The
+            navbar stays — it's mounted above this screen, not inside it. */}
+        {editing && selection && sheet && !helpOpen && (
           <FinanceToolbar
             sheet={sheet}
             selection={selection}
             onApply={onApplyStyle}
             onClear={onClearFormatting}
+            onShowHelp={formattingHints ? showHelp : undefined}
           />
         )}
+
+        {/* Last child, so the cheatsheet covers the toolbar that opened it. */}
+        <SheetHelp open={helpOpen} onClose={() => setHelpOpen(false)} />
       </ThemedView>
     </SwipeBackView>
   );
@@ -315,28 +329,19 @@ export default function FinanceScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1 },
   centered: { flex: 1, alignItems: 'center', justifyContent: 'center' },
-  title: {
-    paddingHorizontal: Spacing.four,
-    fontSize: 32,
-    lineHeight: 38,
-    fontWeight: '700',
-  },
-  formulaBar: {
+  titleRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: Spacing.two,
     paddingHorizontal: Spacing.four,
-    paddingVertical: Spacing.two,
+    paddingBottom: Spacing.two,
   },
-  address: {
-    minWidth: 56,
-    paddingHorizontal: Spacing.two,
-    paddingVertical: 2,
-    borderRadius: 8,
-    borderWidth: StyleSheet.hairlineWidth,
-    textAlign: 'center',
+  title: {
+    flex: 1,
+    fontSize: 32,
+    lineHeight: 38,
+    fontWeight: '700',
   },
-  formula: { flex: 1 },
   done: {
     width: 30,
     height: 30,

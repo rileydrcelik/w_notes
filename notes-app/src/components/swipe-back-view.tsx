@@ -22,6 +22,15 @@ const OPEN_VELOCITY = 500;
 type Props = {
   children: React.ReactNode;
   style?: StyleProp<ViewStyle>;
+  /**
+   * Drops both horizontal swipes for screens whose own content scrolls
+   * sideways. A horizontal drag can only mean one thing at a time, and these
+   * gestures claim it after 20px without deferring to a nested RN `ScrollView`
+   * — so on such a screen a sideways scroll intermittently navigates away
+   * instead. Screens that set this keep the navbar's back button, which is the
+   * affordance the design rules require anyway.
+   */
+  disableSwipes?: boolean;
 };
 
 /**
@@ -34,7 +43,7 @@ type Props = {
  * Android has no native equivalent, so it additionally animates and drives the
  * back gesture in JS.
  */
-export function SwipeBackView({ children, style }: Props) {
+export function SwipeBackView({ children, style, disableSwipes }: Props) {
   const { openSidebar } = useSidebar();
   // Web has no native stack transition; fade/slide the screen in on focus.
   const fadeStyle = useScreenFadeStyle();
@@ -45,7 +54,11 @@ export function SwipeBackView({ children, style }: Props) {
   // the browser's native text selection (and makes it jump to adjacent lines)
   // in the note editor. Pointer users open the drawer via the menu button /
   // backdrop and go back via the navbar, so the swipes are redundant here.
-  if (Platform.OS === 'web') {
+  //
+  // An opted-out screen takes the same path: no GestureDetector at all, rather
+  // than a disabled one, so gesture-handler never tracks the drag in the first
+  // place.
+  if (Platform.OS === 'web' || disableSwipes) {
     return <Animated.View style={[styles.fill, style, fadeStyle]}>{children}</Animated.View>;
   }
 
