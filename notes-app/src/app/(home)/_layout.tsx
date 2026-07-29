@@ -25,6 +25,7 @@ export default function HomeStackLayout() {
       <Stack.Screen name="note/[id]" options={{ title: '' }} />
       <Stack.Screen name="sentry/[id]" options={{ headerShown: false }} />
       <Stack.Screen name="github/[id]" options={{ headerShown: false }} />
+      <Stack.Screen name="resume/[id]" options={{ headerShown: false }} />
       <Stack.Screen name="project/[id]" options={{ headerShown: false }} />
       <Stack.Screen name="project/[id]/new" options={{ headerShown: false }} />
       <Stack.Screen name="project/[id]/type/[typeId]" options={{ headerShown: false }} />

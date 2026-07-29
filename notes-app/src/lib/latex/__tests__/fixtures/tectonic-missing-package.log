@@ -1,0 +1,74 @@
+note: "version 2" Tectonic command-line interface activated
+note: Running TeX ...
+note: downloading size10.clo
+Fontconfig error: Cannot load default config file: No such file: (null)
+error: main.tex:4: ! LaTeX Error: File `definitely-not-a-real-package.sty' not found.
+note: Writing `/tmp/tmpxbplo5t_/main.log` (1.279296875 KiB)
+error: something bad happened inside XeTeX; its output follows:
+
+===============================================================================
+(main.tex
+LaTeX2e <2021-11-15> patch level 1
+L3 programming layer <2022-02-24> (article.cls
+Document Class: article 2021/10/04 v1.4n Standard LaTeX document class
+(size10.clo)) (geometry.sty (keyval.sty) (ifvtex.sty (iftex.sty)))
+! ! LaTeX Error: File `definitely-not-a-real-package.sty' not found..
+\@missingfileerror ...or: File `#1.#2' not found.}
+                                                  
+l.4 \begin
+          {document}
+No pages of output.
+Transcript written on main.log.
+===============================================================================
+error: the XeTeX engine had an unrecoverable error
+caused by: halted on potentially-recoverable error as specified
+
+**
+(main.tex
+LaTeX2e <2021-11-15> patch level 1
+L3 programming layer <2022-02-24> (article.cls
+Document Class: article 2021/10/04 v1.4n Standard LaTeX document class
+(size10.clo
+File: size10.clo 2021/10/04 v1.4n Standard LaTeX file (size option)
+)
+\c@part=\count181
+\c@section=\count182
+\c@subsection=\count183
+\c@subsubsection=\count184
+\c@paragraph=\count185
+\c@subparagraph=\count186
+\c@figure=\count187
+\c@table=\count188
+\abovecaptionskip=\skip47
+\belowcaptionskip=\skip48
+\bibindent=\dimen138
+) (geometry.sty
+Package: geometry 2020/01/02 v5.9 Page Geometry
+ (keyval.sty
+Package: keyval 2014/10/28 v1.15 key=value parser (DPC)
+\KV@toks@=\toks16
+) (ifvtex.sty
+Package: ifvtex 2019/10/25 v1.7 ifvtex legacy package. Use iftex instead.
+ (iftex.sty
+Package: iftex 2022/02/03 v1.0f TeX engine tests
+))
+\Gm@cnth=\count189
+\Gm@cntv=\count190
+\c@Gm@tempcnt=\count191
+\Gm@bindingoffset=\dimen139
+\Gm@wd@mp=\dimen140
+\Gm@odd@mp=\dimen141
+\Gm@even@mp=\dimen142
+\Gm@layoutwidth=\dimen143
+\Gm@layoutheight=\dimen144
+\Gm@layouthoffset=\dimen145
+\Gm@layoutvoffset=\dimen146
+\Gm@dimlist=\toks17
+)
+! ! LaTeX Error: File `definitely-not-a-real-package.sty' not found..
+\@missingfileerror ...or: File `#1.#2' not found.}
+                                                  
+l.4 \begin
+          {document}
+No pages of output.
+

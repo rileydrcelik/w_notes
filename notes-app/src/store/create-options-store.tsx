@@ -23,13 +23,18 @@ const KEYS = {
   sentryEnabled: 'createOptions.sentryEnabled',
   githubEnabled: 'createOptions.githubEnabled',
   taskManagerEnabled: 'createOptions.taskManagerEnabled',
+  resumeEnabled: 'createOptions.resumeEnabled',
   sentryToken: 'createOptions.sentryToken',
   githubToken: 'createOptions.githubToken',
   githubRepo: 'createOptions.githubRepo',
 } as const;
 
 /** Keys of the on/off create-menu toggles. */
-export type CreateToggleKey = 'sentryEnabled' | 'githubEnabled' | 'taskManagerEnabled';
+export type CreateToggleKey =
+  | 'sentryEnabled'
+  | 'githubEnabled'
+  | 'taskManagerEnabled'
+  | 'resumeEnabled';
 /** Keys of the (inert) stored credential strings. */
 export type CreateCredentialKey = 'sentryToken' | 'githubToken' | 'githubRepo';
 
@@ -37,6 +42,7 @@ type CreateOptionsState = {
   sentryEnabled: boolean;
   githubEnabled: boolean;
   taskManagerEnabled: boolean;
+  resumeEnabled: boolean;
   sentryToken: string;
   githubToken: string;
   githubRepo: string;
@@ -51,12 +57,18 @@ const DEFAULTS: CreateOptionsState = {
   sentryEnabled: true,
   githubEnabled: true,
   taskManagerEnabled: true,
+  resumeEnabled: true,
   sentryToken: '',
   githubToken: '',
   githubRepo: '',
 };
 
-const TOGGLE_KEYS: CreateToggleKey[] = ['sentryEnabled', 'githubEnabled', 'taskManagerEnabled'];
+const TOGGLE_KEYS: CreateToggleKey[] = [
+  'sentryEnabled',
+  'githubEnabled',
+  'taskManagerEnabled',
+  'resumeEnabled',
+];
 const isToggle = (k: keyof CreateOptionsState): k is CreateToggleKey =>
   (TOGGLE_KEYS as string[]).includes(k);
 

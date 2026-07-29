@@ -37,6 +37,8 @@ import {
   isEditorActive,
   subscribeActiveEditor,
 } from '@/lib/active-editor';
+import { getEditAction, runEditAction, subscribeEditAction } from '@/lib/edit-action';
+import { getSaveAction, subscribeSaveAction } from '@/lib/save-action';
 import { Spacing, TabBar } from '@/constants/theme';
 import { useContextMenu } from '@/hooks/use-context-menu';
 import { useTabBarBottom } from '@/hooks/use-tab-bar-inset';
@@ -72,6 +74,24 @@ function useKeyboardVisible() {
 /** Tracks whether a body editor is in edit mode (web has no keyboard to watch). */
 function useEditorActive() {
   return useSyncExternalStore(subscribeActiveEditor, isEditorActive, () => false);
+}
+
+/**
+ * Tracks whether the focused screen offers an "edit" action — true on screens
+ * showing a leaf object (note, copy block, resume), which have no children to
+ * create. See `lib/edit-action.ts`.
+ */
+function useEditActive() {
+  return useSyncExternalStore(subscribeEditAction, getEditAction, () => null) !== null;
+}
+
+/**
+ * The focused screen's own "save to device" action, if it offers one — a resume
+ * exporting its compiled PDF, say. A plain note needs no registration: the bar
+ * reads its body from the store. See `lib/save-action.ts`.
+ */
+function useScreenSaveAction() {
+  return useSyncExternalStore(subscribeSaveAction, getSaveAction, () => null);
 }
 
 type FeatherName = ComponentProps<typeof Feather>['name'];
@@ -185,15 +205,22 @@ export function FloatingTabBar({ blurTarget }: FloatingTabBarProps) {
   // surfaces the same check (tapping it returns to the read view).
   const editorActive = useEditorActive();
   const doneMode = vertical || (Platform.OS === 'web' && editorActive);
+  // On a leaf object (note, copy block, resume) the create button becomes an
+  // edit pencil — there's nothing to create inside one. The "done" check still
+  // wins while an editor is actually focused: pencil in, check out.
+  const editMode = useEditActive() && !doneMode;
   // Show back on every page except the home screen (which lives at "/").
   const showBack = pathname !== '/';
   // The current note being viewed, if any. When one is open and we're in *view*
   // mode (not editing — no keyboard/active editor), a "save to device" button
   // appears in the navbar, expanding it. Plugin notes (e.g. Sentry) carry no
-  // body to export, so they're excluded.
+  // body to export, so they're excluded — a plugin screen with something else to
+  // export registers its own action instead (a resume's compiled PDF).
   const noteMatch = pathname.match(/^\/note\/([^/]+)/);
   const currentNote = noteMatch ? getNote(decodeURIComponent(noteMatch[1])) : undefined;
-  const showSave = !!currentNote && !currentNote.pluginType && !doneMode;
+  const screenSave = useScreenSaveAction();
+  const savesNote = !!currentNote && !currentNote.pluginType;
+  const showSave = (savesNote || screenSave !== null) && !doneMode;
 
   const goBack = () => {
     dismissActiveEditor();
@@ -285,7 +312,11 @@ export function FloatingTabBar({ blurTarget }: FloatingTabBarProps) {
                   return;
                 }
                 if (tab.key === 'save') {
-                  if (currentNote) void saveNoteToDevice(currentNote);
+                  // A screen's own exporter wins over the note body — only one
+                  // of the two is ever on screen, but the registration is the
+                  // more specific answer.
+                  if (screenSave) screenSave.run();
+                  else if (currentNote) void saveNoteToDevice(currentNote);
                   return;
                 }
                 if (tab.path) router.navigate(tab.path);
@@ -295,7 +326,11 @@ export function FloatingTabBar({ blurTarget }: FloatingTabBarProps) {
                 <Pressable
                   key={tab.key}
                   accessibilityRole="button"
-                  accessibilityLabel={tab.key === 'save' ? 'Save note to device' : undefined}
+                  accessibilityLabel={
+                    tab.key === 'save'
+                      ? (screenSave?.label ?? 'Save note to device')
+                      : undefined
+                  }
                   accessibilityState={focused ? { selected: true } : {}}
                   onPress={onPress}
                   style={styles.item}>
@@ -408,6 +443,7 @@ export function FloatingTabBar({ blurTarget }: FloatingTabBarProps) {
                 <CreateButton
                   iconColor={colors.textSecondary}
                   keyboardVisible={doneMode}
+                  editMode={editMode}
                   blurTarget={blurTarget}
                   onOpenMenu={(anchor) => setCreateMenu({ anchor })}
                 />
@@ -509,10 +545,17 @@ function CreateMenu({
   const router = useRouter();
   const pathname = usePathname();
   const { width: winW, height: winH } = useWindowDimensions();
-  const { createNote, createSentryNote, createGithubNote, createProject, createFolder, getNote } =
-    useNotes();
+  const {
+    createNote,
+    createSentryNote,
+    createGithubNote,
+    createResumeNote,
+    createProject,
+    createFolder,
+    getNote,
+  } = useNotes();
   const { createCopa, createFileCopa } = useCopa();
-  const { sentryEnabled, githubEnabled, taskManagerEnabled } = useCreateOptions();
+  const { sentryEnabled, githubEnabled, taskManagerEnabled, resumeEnabled } = useCreateOptions();
   // Inside a task-manager project (its feed or a per-type screen), the menu leads
   // with "New issue" and everything else (note, Sentry/GitHub view…) is created
   // inside the project rather than at the root.
@@ -554,6 +597,13 @@ function CreateMenu({
     router.push({ pathname: '/github/[id]', params: { id } });
   };
 
+  const onCreateResume = () => {
+    onClose();
+    // Starts blank — the resume screen opens straight into the LaTeX editor.
+    const id = createResumeNote(currentFolderId(pathname, getNote));
+    router.push({ pathname: '/resume/[id]', params: { id } });
+  };
+
   const onCreateProject = () => {
     onClose();
     // Create it unconfigured — the project screen collects name + repo and seeds
@@ -586,6 +636,7 @@ function CreateMenu({
     sentry: sentryEnabled,
     github: githubEnabled,
     project: taskManagerEnabled,
+    resume: resumeEnabled,
   };
   const allOptions: { key: string; label: string; icon: FeatherName; onPress: () => void }[] = onCopa
     ? [
@@ -602,6 +653,7 @@ function CreateMenu({
         { key: 'folder', label: 'New folder', icon: 'folder-plus', onPress: onCreateFolder },
         { key: 'sentry', label: 'New Sentry view', icon: 'alert-triangle', onPress: onCreateSentry },
         { key: 'github', label: 'New GitHub view', icon: 'github', onPress: onCreateGithub },
+        { key: 'resume', label: 'New resume', icon: 'file-text', onPress: onCreateResume },
         ...(inProject
           ? []
           : [{ key: 'project', label: 'New task manager', icon: 'columns' as FeatherName, onPress: onCreateProject }]),
@@ -685,21 +737,30 @@ function currentFolderId(pathname: string, getNote: (id: string) => Note | undef
 }
 
 /**
- * Trailing action button. With the keyboard up it becomes a "done" affordance —
- * a check that dismisses the keyboard. Otherwise it's the create (+) button: on
- * the copa tab a tap opens the create menu anchored above it (copy block vs
- * file); elsewhere a tap adds a note in the current location and a long-press
- * opens the note/folder menu. The button reports its on-screen rect so the menu
- * can anchor to it.
+ * Trailing action button, in one of three states.
+ *
+ * With the keyboard up (or an editor focused on web) it's a "done" check that
+ * dismisses the editor. On a leaf object — a note, a copy block, a resume, none
+ * of which can contain anything — it's an edit pencil that opens that screen's
+ * editor. Otherwise it's the create (+) button: on the copa tab a tap opens the
+ * create menu anchored above it (copy block vs file); elsewhere a tap adds a
+ * note in the current location.
+ *
+ * A long-press always opens the create menu, including in edit mode, so a leaf
+ * screen still has a way to make something new. The button reports its on-screen
+ * rect so the menu can anchor to it.
  */
 function CreateButton({
   iconColor,
   keyboardVisible,
+  editMode,
   blurTarget,
   onOpenMenu,
 }: {
   iconColor: string;
   keyboardVisible: boolean;
+  /** The focused screen offers an edit action (see `lib/edit-action.ts`). */
+  editMode: boolean;
   blurTarget?: RefObject<View | null> | null;
   onOpenMenu: (anchor: Anchor | null) => void;
 }) {
@@ -728,6 +789,8 @@ function CreateButton({
     // blurs the editor first, so `dismissActiveEditor` is already a no-op by now;
     // `editorJustDismissed` catches that so we don't fall through to "create".
     if (keyboardVisible || dismissed || editorJustDismissed()) return;
+    // A leaf object has nothing to create inside it — edit it instead.
+    if (editMode && runEditAction()) return;
     // On the copa tab a tap opens the anchored menu; elsewhere it creates a note.
     if (onCopa) {
       openAnchoredMenu();
@@ -738,9 +801,11 @@ function CreateButton({
   };
 
   const handleLongPress = () => {
-    // The button is a "done" key while the keyboard is up — only offer the menu
-    // when plainly creating. Copa drives the menu from a tap, so long-press there
-    // just opens the same anchored menu; elsewhere it's the note/folder sheet.
+    // The button is a "done" key while the keyboard is up — never a menu. In
+    // edit mode it still opens one: the pencil takes the tap, so the long-press
+    // is all that's left of "create" on a note or resume. Copa drives the menu
+    // from a tap, so long-press there opens the same anchored menu; elsewhere
+    // it's the note/folder sheet.
     if (keyboardVisible) return;
     dismissActiveEditor();
     Keyboard.dismiss();
@@ -765,7 +830,7 @@ function CreateButton({
       <Pressable
         ref={setButtonRef}
         accessibilityRole="button"
-        accessibilityLabel={keyboardVisible ? 'Done' : 'Create'}
+        accessibilityLabel={keyboardVisible ? 'Done' : editMode ? 'Edit' : 'Create'}
         onPressIn={() => {
           scale.value = withTiming(0.92, { duration: 80 });
         }}
@@ -780,9 +845,11 @@ function CreateButton({
           blurTarget={blurTarget}
           style={[styles.createButton, { width: TabBar.height, height: TabBar.height }]}>
           <Feather
-            name={keyboardVisible ? 'check' : 'plus'}
+            name={keyboardVisible ? 'check' : editMode ? 'edit-2' : 'plus'}
             color={iconColor}
-            size={26}
+            // The pencil reads heavier than the check/plus at the same size, so
+            // it sits a touch smaller to keep the three states optically equal.
+            size={editMode ? 22 : 26}
           />
         </GlassSurface>
       </Pressable>

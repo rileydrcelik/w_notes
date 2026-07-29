@@ -89,6 +89,37 @@ test('a note can be reopened from the home grid', async ({ page }) => {
 });
 
 /**
+ * The navbar's trailing button is shared by three behaviours that no unit test
+ * can see wired together: create, edit, done. Inside a note there is nothing to
+ * create, so it must offer editing instead — and hand back to the "done" check
+ * once the editor actually has focus. Both halves are registrations made by the
+ * screen at runtime (`lib/edit-action.ts`, `lib/active-editor.ts`), which is
+ * exactly the kind of wiring that breaks silently: the button keeps rendering,
+ * it just stops meaning anything.
+ */
+test('the navbar offers editing, not creating, inside a note', async ({ page }) => {
+  await page.goto('/');
+  await ready(page);
+
+  await page.getByLabel('Create').click();
+
+  // Same slot, different job. Asserting Create is *gone* is the half that fails
+  // if the note screen never registers.
+  await expect(page.getByLabel('Edit')).toBeVisible();
+  await expect(page.getByLabel('Create')).toHaveCount(0);
+
+  const text = `e2e edit ${Date.now()}`;
+  await page.getByLabel('Edit').click();
+
+  // The body editor took focus, so the button becomes the done check.
+  await expect(page.getByLabel('Done')).toBeVisible();
+
+  // …and the caret is really in the body, not just visually implied.
+  await page.keyboard.type(text);
+  await expect(page.getByText(text)).toBeVisible();
+});
+
+/**
  * Copa's paste/drop entry points are window-level listeners bound in a
  * `.web`-only hook (`use-copa-paste-drop.web.ts`) — pure wiring, invisible to
  * every Node-based test, and silently dead if Metro ever resolved the native

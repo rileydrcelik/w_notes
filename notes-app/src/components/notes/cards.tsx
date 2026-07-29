@@ -7,10 +7,11 @@ import { EnrichedText, type EnrichedTextHtmlStyle } from 'react-native-enriched'
 import { FavoriteStar } from '@/components/favorite-star';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
-import { hexToRgba, Spacing, type Palette } from '@/constants/theme';
+import { Fonts, hexToRgba, Spacing, type Palette } from '@/constants/theme';
 import type { Folder, Note } from '@/data/notes';
 import { sentryTarget } from '@/lib/sentry-note';
 import { githubTarget } from '@/lib/github-note';
+import { isResumeNote, resumeSourceExcerpt, resumeTitle } from '@/lib/resume-note';
 import { useTileHeight } from '@/lib/grid';
 import { projectConfig } from '@/lib/project';
 import { useDoubleTap } from '@/hooks/use-double-tap';
@@ -22,6 +23,7 @@ const LINK_COLOR = '#3c87f7';
 const SENTRY_ACCENT = '#7553FF';
 const GITHUB_ACCENT = '#8250df';
 const PROJECT_ACCENT = '#16a394';
+const RESUME_ACCENT = '#c2703c';
 /** Accent for a long-pressed/right-clicked (selected) card. */
 const SELECT_ACCENT = '#7a89b8';
 const PREVIEW_TEXT = { fontSize: 14, lineHeight: 20, fontWeight: '500' } as const;
@@ -148,6 +150,9 @@ export function NoteCard({ note }: { note: Note }) {
   // text editor. Branch before any hooks so those cards keep their own hook order.
   if (note.pluginType === 'sentry') return <SentryNoteCard note={note} />;
   if (note.pluginType === 'github') return <GithubNoteCard note={note} />;
+  // A resume's body is LaTeX source, so it must never reach TextNoteCard — that
+  // would hand raw LaTeX to the rich-text renderer.
+  if (isResumeNote(note)) return <ResumeNoteCard note={note} />;
   return <TextNoteCard note={note} />;
 }
 
@@ -272,6 +277,56 @@ function GithubNoteCard({ note }: { note: Note }) {
   );
 }
 
+/** A resume plugin note: opens the LaTeX editor/preview instead of the text editor. */
+function ResumeNoteCard({ note }: { note: Note }) {
+  const router = useRouter();
+  const { toggleNoteFavorite } = useNotes();
+  const { active, isSelected, toggle } = useItemSelection();
+  const theme = useTheme();
+  const selected = isSelected('note', note.id);
+  const tileHeight = useTileHeight();
+
+  // The body is LaTeX, so the preview is a plain source excerpt in monospace —
+  // never the rich-text renderer.
+  const excerpt = useMemo(() => resumeSourceExcerpt(note.body), [note.body]);
+
+  const openOrFavorite = useDoubleTap(
+    () => router.push({ pathname: '/resume/[id]', params: { id: note.id } }),
+    () => toggleNoteFavorite(note.id),
+  );
+  const onSelectToggle = () => toggle({ type: 'note', id: note.id });
+
+  return (
+    <Pressable
+      style={({ pressed }) => [styles.cardWrapper, { height: tileHeight }, pressed && styles.pressed]}
+      onPress={active ? onSelectToggle : openOrFavorite}
+      onLongPress={onSelectToggle}>
+      <ThemedView type="backgroundElementAlt" style={[styles.card, selected && styles.selected]}>
+        <View style={styles.titleRow}>
+          <Feather name="file-text" size={15} color={RESUME_ACCENT} />
+          <ThemedText type="smallBold" numberOfLines={1} style={styles.titleText}>
+            {resumeTitle(note)}
+          </ThemedText>
+          {note.favorite && <FavoriteStar size={13} />}
+        </View>
+        {excerpt.length > 0 ? (
+          <ThemedText
+            type="small"
+            themeColor="textSecondary"
+            numberOfLines={3}
+            style={[styles.sourcePreview, { color: theme.textSecondary }]}>
+            {excerpt}
+          </ThemedText>
+        ) : (
+          <ThemedText type="small" themeColor="textSecondary" numberOfLines={1}>
+            LaTeX resume
+          </ThemedText>
+        )}
+      </ThemedView>
+    </Pressable>
+  );
+}
+
 const styles = StyleSheet.create({
   cardWrapper: {
     // The surrounding View cell (in each grid screen) is the flex item that
@@ -341,5 +396,11 @@ const styles = StyleSheet.create({
   },
   titleText: {
     flexShrink: 1,
+  },
+  // LaTeX source excerpt on a resume card — monospace, so it reads as code.
+  sourcePreview: {
+    fontFamily: Fonts.mono,
+    fontSize: 11,
+    lineHeight: 16,
   },
 });

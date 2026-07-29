@@ -26,8 +26,12 @@ export type Note = {
    * Plugin-note marker. When set, the note renders live plugin content (e.g. a
    * Sentry project's issues, or a GitHub repo's issues) instead of an editable
    * body. Ordinary notes leave it undefined.
+   *
+   * `'resume'` is the one plugin type that still owns `body`: it holds LaTeX
+   * source rather than the app's canonical rich-text HTML, so anything that
+   * parses a body as HTML must skip it (see `@/lib/resume-note`).
    */
-  pluginType?: 'sentry' | 'github' | 'issuetype';
+  pluginType?: 'sentry' | 'github' | 'issuetype' | 'resume';
   /**
    * Opaque per-plugin JSON config. For Sentry: `{org, project, projectName?,
    * repo?}` (see `@/lib/sentry-note`). For GitHub: `{repo, repoName?}` (see
