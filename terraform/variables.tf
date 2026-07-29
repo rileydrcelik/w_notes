@@ -56,15 +56,21 @@ variable "desired_count" {
   description = "Number of Fargate tasks. Keep at 1 until migrations are split out of container boot."
 }
 
+# Raised from 256/512 when the resume plugin's LaTeX compile moved server-side
+# (POST /latex/compile). These are task-level totals shared by the `api` and
+# `cloudflared` containers, and a TeX run is a short CPU spike that can take
+# several hundred MB on its own — at 512 MiB the runtime was liable to OOM-kill
+# the whole task, which reads as a container death rather than a failed request.
+# 512/1024 is the smallest valid Fargate pairing above the old one.
 variable "task_cpu" {
   type        = number
-  default     = 256 # 0.25 vCPU
+  default     = 512 # 0.5 vCPU
   description = "Fargate task CPU units."
 }
 
 variable "task_memory" {
   type        = number
-  default     = 512 # MiB
+  default     = 1024 # MiB
   description = "Fargate task memory (MiB)."
 }
 

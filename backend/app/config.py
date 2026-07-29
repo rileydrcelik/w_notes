@@ -92,6 +92,19 @@ class Settings(BaseSettings):
     # never publish, which is the desired default.
     publisher_emails: str = ""
 
+    # How /latex/compile runs TeX. latexmk drives the engine (a resume needs two
+    # or three passes to settle its references) and picks pdflatex or xelatex per
+    # request; both are baked into the image, see backend/Dockerfile.
+    latexmk_path: str = "latexmk"
+    # The unprivileged account a compile drops to. It exists only in the image,
+    # so off-image runs (a dev machine, the test suite) keep whoever they are —
+    # see `_compile_user` in routers/latex.py.
+    latex_user: str = "latex"
+    # How that drop is performed. asyncio's subprocess API rejects `user=`/
+    # `group=` (unlike subprocess.Popen), so the command is wrapped instead.
+    # util-linux, present in the Debian base.
+    setpriv_path: str = "setpriv"
+
     @property
     def publisher_email_set(self) -> set[str]:
         """`publisher_emails` parsed into the set the sync hook checks.

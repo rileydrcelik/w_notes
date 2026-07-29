@@ -1,0 +1,53 @@
+% Build-time only: compiled with every engine the image ships, so a broken
+% install fails the build instead of a user's compile. Deliberately engine
+% agnostic — nothing here may be pdfTeX-only or XeTeX-only.
+%
+% What it is actually asserting:
+%   - the LaTeX format and the packages resume templates lean on are present;
+%   - fontawesome5 renders, which on the pdfLaTeX side needs its dvips map to
+%     have been registered by updmap-sys (a silent failure otherwise: the icons
+%     come out as blank boxes rather than an error);
+%   - hyperref, paracol and tabularx work, which is where multi-pass documents
+%     tend to break.
+\documentclass[letterpaper,11pt]{article}
+
+\usepackage[margin=0.75in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage{enumitem}
+\usepackage{titlesec}
+\usepackage{hyperref}
+\usepackage{fontawesome5}
+\usepackage{xcolor}
+\usepackage{array}
+\usepackage{tabularx}
+\usepackage{paracol}
+\usepackage{changepage}
+\usepackage{needspace}
+\usepackage{lastpage}
+
+\titleformat{\section}{\large\bfseries}{}{0em}{}[\titlerule]
+\pagestyle{empty}
+
+\begin{document}
+
+\begin{center}
+  {\huge \textbf{Smoke Test}}\\[4pt]
+  {\footnotesize\faEnvelope}~\href{mailto:smoke@example.com}{smoke@example.com}
+  $\cdot$ {\footnotesize\faGithub}~smoke
+  $\cdot$ {\footnotesize\faMapMarker*}~Somewhere
+\end{center}
+
+\section{Section}
+\textbf{Bold} \hfill \textit{Italic}
+\begin{itemize}[leftmargin=*, noitemsep]
+  \item A bullet, so the list machinery and its fonts are pulled in.
+\end{itemize}
+
+\begin{tabularx}{\linewidth}{@{}lX@{}}
+  Left & Right \\
+\end{tabularx}
+
+% Page \pageref{LastPage} forces the second pass that latexmk exists to run.
+\begin{center}\footnotesize Page \thepage{} of \pageref{LastPage}\end{center}
+
+\end{document}
