@@ -45,7 +45,7 @@ import {
   subscribeVersionAction,
 } from '@/lib/version-action';
 import { getSaveAction, subscribeSaveAction } from '@/lib/save-action';
-import { Spacing, TabBar } from '@/constants/theme';
+import { Accent, Spacing, TabBar } from '@/constants/theme';
 import { useContextMenu } from '@/hooks/use-context-menu';
 import { useTabBarBottom } from '@/hooks/use-tab-bar-inset';
 import { useTheme } from '@/hooks/use-theme';
@@ -434,7 +434,7 @@ export function FloatingTabBar({ blurTarget }: FloatingTabBarProps) {
                     entering={tab.key === 'save' ? FadeIn.duration(200) : undefined}>
                     <Feather
                       name={tab.icon}
-                      color={focused ? '#7a89b8' : colors.textSecondary}
+                      color={focused ? Accent : colors.textSecondary}
                       size={tab.key === 'save' ? 24 : 28}
                     />
                   </Animated.View>

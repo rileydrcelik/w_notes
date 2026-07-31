@@ -536,12 +536,6 @@ export function ResumeEntryModal({
                                 style={[...fieldStyle, styles.multiline]}
                               />
                             </Labelled>
-
-                            <ThemedText type="small" themeColor="textSecondary">
-                              Name one bullet, one entry, a section, or the whole
-                              resume. Only what you name changes, and you&rsquo;ll
-                              see a diff of it before anything is applied.
-                            </ThemedText>
                           </>
                         ) : (
                           <>

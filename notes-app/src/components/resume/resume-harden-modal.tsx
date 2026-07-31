@@ -201,8 +201,10 @@ export function ResumeHardenModal({
               intensity={75}
               tintOpacity={SHEET_TINT_OPACITY}
               style={[styles.sheet, { maxHeight: maxSheetHeight }]}>
+              {/* No icon. The title says what the sheet is, and the icon beside
+                  it was repeating the toolbar button you just pressed to get
+                  here. */}
               <View style={styles.header}>
-                <Feather name="shield" size={16} color={ACCENT} />
                 <ThemedText type="smallBold" style={styles.headerText}>
                   Harden for a job title
                 </ThemedText>
@@ -241,11 +243,8 @@ export function ResumeHardenModal({
                     )}
 
                     <ThemedText type="small" themeColor="textSecondary" style={styles.blurb}>
-                      This builds the one-page resume you send by default for a job title — the
-                      strongest case you can make to anyone hiring for it, rather than to one
-                      posting. It checks your experience, including anything you&rsquo;ve commented
-                      out, against what that title is actually screened for. Nothing is deleted, and
-                      your current version is saved to the history first.
+                      Builds the one-page resume you send by default for a job title, checked
+                      against what that title is screened for. Nothing is deleted.
                     </ThemedText>
 
                     <ThemedText type="small" themeColor="textSecondary">
@@ -262,11 +261,14 @@ export function ResumeHardenModal({
                       onSubmitEditing={() => void run()}
                       returnKeyType="go"
                     />
-                    <ThemedText type="small" themeColor="textSecondary" style={styles.hint}>
-                      {tooLong
-                        ? 'That is a job description, not a job title. Give the title on its own.'
-                        : 'The title as postings write it — “Data Engineer”, not “the data role at a startup”. A resume is specific to one title, so harden a separate copy for each one you apply to.'}
-                    </ThemedText>
+                    {/* Only when they have actually overrun it. The guidance this
+                        replaced was there for everyone, every time, to say
+                        something most people work out from the placeholder. */}
+                    {tooLong && (
+                      <ThemedText type="small" themeColor="textSecondary" style={styles.hint}>
+                        That is a job description, not a job title. Give the title on its own.
+                      </ThemedText>
+                    )}
                   </ScrollView>
                   <LinearGradient
                     pointerEvents="none"

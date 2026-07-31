@@ -50,6 +50,39 @@ export const Colors = {
 export type ThemeColor = keyof typeof Colors.light;
 export type Palette = Record<ThemeColor, string>;
 
+/**
+ * The app's accent — the colour the navbar marks the current tab in.
+ *
+ * Deliberately **one value across all four palettes** rather than a per-theme
+ * entry in `Colors`. The palettes are neutrals: they decide what "paper" and
+ * "ink" mean for a theme, and an accent that changed with them would stop being
+ * a recognisable colour and become a fifth shade of the background. This is the
+ * one hue that stays put, which is what lets it mean "this one" wherever it
+ * appears.
+ *
+ * Plugins that carry someone else's brand keep their own — GitHub purple in
+ * `github/[id].tsx`, Sentry's in `sentry/[id].tsx` — because those say *whose*
+ * thing you are looking at rather than *which* thing is selected.
+ *
+ * Contrast, measured: 3.44:1 on the light background and 3.19:1 on Solarized
+ * Light, which clears the 3:1 that WCAG asks of icons, borders and other
+ * non-text UI, and does not clear the 4.5:1 that small text wants. Use it for
+ * icons, chips, borders and selected rows. For a **filled** control with a white
+ * label, use `AccentFill` instead.
+ */
+export const Accent = '#7a89b8';
+
+/**
+ * The accent darkened for use as a **fill under white text**.
+ *
+ * White 14px text on `Accent` reaches only 3.44:1, under the 4.5:1 that size
+ * needs; this shade clears it at 4.68:1 without shifting the hue enough to read
+ * as a different colour. Any filled button whose label is white uses this one —
+ * a rule that exists because the resume plugin once shipped white-on-accent at
+ * 3.7:1 by reaching for the plain accent out of habit.
+ */
+export const AccentFill = '#66739b';
+
 /** Hex (#rrggbb) -> rgba() string, for tints that need an alpha channel. */
 export function hexToRgba(hex: string, alpha: number): string {
   const h = hex.replace('#', '');

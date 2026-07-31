@@ -240,8 +240,9 @@ export function ResumeTailorModal({
               intensity={75}
               tintOpacity={SHEET_TINT_OPACITY}
               style={[styles.sheet, { maxHeight: maxSheetHeight }]}>
+              {/* No icon — see `resume-harden-modal.tsx`. The two sheets open
+                  from adjacent buttons and have to stay a matched pair. */}
               <View style={styles.header}>
-                <Feather name="crosshair" size={16} color={ACCENT} />
                 <ThemedText type="smallBold" style={styles.headerText}>
                   Tailor to a job
                 </ThemedText>
@@ -280,10 +281,8 @@ export function ResumeTailorModal({
                     )}
 
                     <ThemedText type="small" themeColor="textSecondary" style={styles.blurb}>
-                      This picks which of your experience and projects belong on a one-page resume
-                      for this job — including anything you&rsquo;ve commented out — and matches the
-                      posting&rsquo;s own wording so an applicant tracking system can find it.
-                      Nothing is deleted, and your current version is saved to the history first.
+                      Picks what belongs on a one-page resume for this job and matches the
+                      posting&rsquo;s wording so an ATS can find it. Nothing is deleted.
                     </ThemedText>
 
                     {!pasting && (
@@ -305,35 +304,15 @@ export function ResumeTailorModal({
                         />
                         {/* Said before they try it, not after. Most postings live
                             on sites that cannot be read, and someone who already
-                            knows that should not have to prove it first.
-
-                            The reason and the way out used to be one line of
-                            quiet text doing both jobs, which made the only
-                            alternative to a link look like a footnote. The
-                            sentence is information and stays text; the action is
-                            an action and gets the same squircle the sheet's own
-                            Discard button uses. */}
+                            knows that should not have to prove it first. The way
+                            out is a button, and it lives in the actions row with
+                            the other things you can press. */}
                         <ThemedText
                           type="small"
                           themeColor="textSecondary"
                           style={styles.linkOut}>
                           LinkedIn and Workday links can&rsquo;t be read.
                         </ThemedText>
-                        <Pressable
-                          accessibilityRole="button"
-                          accessibilityLabel="Enter the job posting manually"
-                          onPress={() => setPasting(true)}
-                          style={({ pressed }) => [
-                            styles.secondaryButton,
-                            styles.manualButton,
-                            { backgroundColor: theme.backgroundElement },
-                            pressed && styles.pressed,
-                          ]}>
-                          <Feather name="edit-3" size={15} color={theme.textSecondary} />
-                          <ThemedText type="small" themeColor="textSecondary">
-                            Enter it manually
-                          </ThemedText>
-                        </Pressable>
                       </>
                     )}
 
@@ -395,6 +374,32 @@ export function ResumeTailorModal({
               )}
 
               <View style={styles.actions}>
+                {/* Only while a link is the thing on offer: once the paste
+                    fields are showing, this is where you already are. Sits at
+                    the left, away from the Cancel/Tailor pair on the right, so
+                    "go somewhere else" doesn't sit inside "finish or abandon".
+                    Accent-on-tint rather than a filled squircle — it is a real
+                    choice, not the primary one, and a second filled button would
+                    compete with Tailor for the same glance. */}
+                {!pasting && stage.state !== 'review' && (
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel="Enter the job posting manually"
+                    onPress={() => setPasting(true)}
+                    disabled={busy}
+                    style={({ pressed }) => [
+                      styles.secondaryButton,
+                      styles.manualButton,
+                      { backgroundColor: hexToRgba(ACCENT, 0.14) },
+                      busy && styles.disabled,
+                      pressed && styles.pressed,
+                    ]}>
+                    <Feather name="edit-3" size={15} color={ACCENT} />
+                    <ThemedText type="small" style={{ color: ACCENT }}>
+                      Enter it manually
+                    </ThemedText>
+                  </Pressable>
+                )}
                 <Pressable
                   accessibilityRole="button"
                   onPress={onClose}
@@ -549,13 +554,12 @@ const styles = StyleSheet.create({
   linkOut: {
     paddingBottom: Spacing.one,
   },
-  // Borrows `secondaryButton` wholesale so the two read as one control repeated,
-  // rather than sizing a new one by hand. Only the placement differs: this sits
-  // in the form flow and hugs its label, where the sheet's own pair sits in the
-  // actions row.
+  // Borrows `secondaryButton`'s shape so the row reads as one control repeated
+  // rather than three sized by hand; only the fill differs. `marginRight: auto`
+  // is what pushes Cancel and Tailor to the right and leaves this on the left —
+  // the row is `justifyContent: 'flex-end'`, so without it all three bunch up.
   manualButton: {
-    alignSelf: 'flex-start',
-    marginBottom: Spacing.two,
+    marginRight: 'auto',
   },
   diffContent: {
     paddingBottom: SCROLL_FADE_HEIGHT,
