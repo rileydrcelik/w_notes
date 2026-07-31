@@ -1,0 +1,219 @@
+/**
+ * The resume editing toolbar, web variant.
+ *
+ * Identical bar, different anchor. The native file rides the keyboard inset with
+ * `useAnimatedKeyboard`, which reanimated does not implement on web — it logs
+ * "useAnimatedKeyboard is not available on web yet" and reports a height of zero
+ * (`JSReanimated.ts`). The fallback would land in the right place anyway, but
+ * this screen is *mostly* a web screen — compiling and previewing a resume only
+ * works here — so that warning would fire for nearly every person who ever opens
+ * the toolbar. There's no keyboard inset to track on web regardless: the browser
+ * doesn't resize the viewport for one, and the navbar never moves.
+ *
+ * So this variant sits at a fixed offset above the floating navbar.
+ *
+ * **Its exported name and props must match `resume-toolbar.tsx` exactly.** A
+ * `.web` file that drifts from its base is invisible to TypeScript and to any
+ * suite that runs one platform — `lib/__tests__/platform-parity.test.ts` exists
+ * because that once cost three days of a broken native launch with a green
+ * suite, and it covers this pair automatically.
+ */
+import Feather from '@expo/vector-icons/Feather';
+import { Pressable, StyleSheet, useWindowDimensions, View } from 'react-native';
+import Animated, { FadeIn, FadeOut } from 'react-native-reanimated';
+
+import { GlassSurface } from '@/components/glass-surface';
+import { RecompileButton } from '@/components/resume/recompile-button';
+import { ThemedText } from '@/components/themed-text';
+import { hexToRgba, Spacing, TabBar } from '@/constants/theme';
+import { useTabBarBottom } from '@/hooks/use-tab-bar-inset';
+import { useTheme } from '@/hooks/use-theme';
+
+const BAR_HEIGHT = 48;
+const GAP = Spacing.two;
+
+/** See `resume-toolbar.tsx` — the split layout adds this to its content inset. */
+export const RESUME_TOOLBAR_CLEARANCE = BAR_HEIGHT + GAP;
+
+export function ResumeToolbar({
+  visible,
+  onAddEntry,
+  onEditEntry,
+  onTailor,
+  canEdit,
+  onRecompile,
+  onChooseCompiler,
+  compilerLabel,
+  stale,
+  compiling,
+}: {
+  /**
+   * Shown while the source editor has focus — or permanently, where the source
+   * is permanently on screen (the split layout).
+   */
+  visible: boolean;
+  onAddEntry: () => void;
+  onEditEntry: () => void;
+  /** Aim the whole resume at one job (company, role, job description). */
+  onTailor: () => void;
+  /** False for an empty document — there is nothing there to rewrite. */
+  canEdit: boolean;
+  onRecompile: () => void;
+  onChooseCompiler: () => void;
+  /** The engine in force right now, e.g. "pdfLaTeX". */
+  compilerLabel: string;
+  /** The source has moved past the PDF on screen; recompiling would change it. */
+  stale: boolean;
+  /** A compile is running, so the button reports it rather than starting another. */
+  compiling: boolean;
+}) {
+  const theme = useTheme();
+  const { width } = useWindowDimensions();
+  const navbarBottom = useTabBarBottom();
+
+  if (!visible) return null;
+
+  // See `resume-toolbar.tsx` — five buttons, and every label at once needs ~630px.
+  const showCompilerLabel = width >= 380;
+  const showEntryLabels = width >= 680;
+  const showRecompileLabel = width >= 820;
+
+  return (
+    <Animated.View
+      entering={FadeIn.duration(150)}
+      exiting={FadeOut.duration(120)}
+      pointerEvents="box-none"
+      style={[styles.host, { bottom: navbarBottom + TabBar.height + GAP }]}>
+      <GlassSurface intensity={75} tintOpacity={0.6} style={styles.bar}>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Add an entry to this resume"
+          onPress={onAddEntry}
+          style={({ pressed }) => [
+            styles.button,
+            showEntryLabels && styles.wide,
+            pressed && styles.pressed,
+          ]}>
+          <Feather name="file-plus" size={18} color={theme.text} />
+          {showEntryLabels && <ThemedText type="small">Add entry</ThemedText>}
+        </Pressable>
+
+        <View style={[styles.divider, { backgroundColor: hexToRgba(theme.textSecondary, 0.3) }]} />
+
+        {/* Dimmed rather than removed when there's nothing to edit: the bar is
+            permanent furniture in the split layout, and a button that vanishes
+            re-flows the other three under the cursor. */}
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Edit part of this resume, or all of it"
+          accessibilityState={{ disabled: !canEdit }}
+          onPress={() => {
+            if (canEdit) onEditEntry();
+          }}
+          style={({ pressed }) => [
+            styles.button,
+            showEntryLabels && styles.wide,
+            pressed && canEdit && styles.pressed,
+            !canEdit && styles.disabled,
+          ]}>
+          <Feather name="edit-3" size={18} color={theme.text} />
+          {showEntryLabels && <ThemedText type="small">Edit resume</ThemedText>}
+        </Pressable>
+
+        <View style={[styles.divider, { backgroundColor: hexToRgba(theme.textSecondary, 0.3) }]} />
+
+        {/* Tailoring reads the whole document rather than one entry, so it is
+            dimmed on the same terms as Edit: an empty resume has nothing to
+            choose from. */}
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Tailor this resume to a job"
+          accessibilityState={{ disabled: !canEdit }}
+          onPress={() => {
+            if (canEdit) onTailor();
+          }}
+          style={({ pressed }) => [
+            styles.button,
+            showEntryLabels && styles.wide,
+            pressed && canEdit && styles.pressed,
+            !canEdit && styles.disabled,
+          ]}>
+          <Feather name="crosshair" size={18} color={theme.text} />
+          {showEntryLabels && <ThemedText type="small">Tailor</ThemedText>}
+        </Pressable>
+
+        <View style={[styles.divider, { backgroundColor: hexToRgba(theme.textSecondary, 0.3) }]} />
+
+        <RecompileButton
+          onPress={onRecompile}
+          stale={stale}
+          compiling={compiling}
+          showLabel={showRecompileLabel}
+        />
+
+        <View style={[styles.divider, { backgroundColor: hexToRgba(theme.textSecondary, 0.3) }]} />
+
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`Compiler: ${compilerLabel}`}
+          onPress={onChooseCompiler}
+          style={({ pressed }) => [
+            styles.button,
+            showCompilerLabel && styles.wide,
+            pressed && styles.pressed,
+          ]}>
+          <Feather name="sliders" size={18} color={theme.textSecondary} />
+          {showCompilerLabel && (
+            <ThemedText type="small" themeColor="textSecondary">
+              {compilerLabel}
+            </ThemedText>
+          )}
+        </Pressable>
+      </GlassSurface>
+    </Animated.View>
+  );
+}
+
+const styles = StyleSheet.create({
+  host: {
+    position: 'absolute',
+    left: Spacing.three,
+    right: Spacing.three,
+    alignItems: 'center',
+  },
+  bar: {
+    height: BAR_HEIGHT,
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: Spacing.one,
+    borderRadius: Spacing.three,
+    shadowColor: '#000',
+    shadowOpacity: 0.4,
+    shadowRadius: 16,
+    shadowOffset: { width: 0, height: 0 },
+    elevation: 16,
+  },
+  button: {
+    height: 40,
+    minWidth: 44,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: Spacing.two,
+    borderRadius: Spacing.two,
+  },
+  wide: {
+    paddingHorizontal: Spacing.three,
+  },
+  pressed: {
+    opacity: 0.6,
+  },
+  disabled: {
+    opacity: 0.4,
+  },
+  divider: {
+    width: StyleSheet.hairlineWidth,
+    height: 24,
+    marginHorizontal: Spacing.one,
+  },
+});

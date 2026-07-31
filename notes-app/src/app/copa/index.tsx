@@ -16,7 +16,7 @@ import {
 import Animated from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { BottomFade } from '@/components/bottom-fade';
+import { BottomFade } from '@/components/edge-fade';
 import { FavoriteStar } from '@/components/favorite-star';
 import { CopaDropOverlay } from '@/components/copa-drop-overlay';
 import { useCopaOptions } from '@/components/copa-options-modal';

@@ -28,7 +28,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, Query
 from app.db import get_session
 from app.deps import get_current_user
 from app.publisher import collect_publish_actions, deliver
-from app.models import CopaItem, FinanceSheet, Folder, Issue, Note, User
+from app.models import CopaItem, FinanceSheet, Folder, Issue, Note, ResumeVersion, User
 from app.schemas import (
     CopaItemIn,
     FinanceSheetIn,
@@ -38,6 +38,7 @@ from app.schemas import (
     PullResponse,
     PushRequest,
     PushResponse,
+    ResumeVersionIn,
 )
 
 log = logging.getLogger(__name__)
@@ -141,6 +142,9 @@ async def push(
     await _upsert_batch(session, CopaItem, user.id, payload.copa_items)
     await _upsert_batch(session, Issue, user.id, payload.issues)
     await _upsert_batch(session, FinanceSheet, user.id, payload.finance_sheets)
+    # Inside the same advisory lock and per-row savepoints as everything else, so
+    # version rows get the seq-gap protection and poison-row isolation for free.
+    await _upsert_batch(session, ResumeVersion, user.id, payload.resume_versions)
 
     await session.flush()
 
@@ -175,12 +179,19 @@ async def pull(
     copa = await changed(CopaItem)
     issues = await changed(Issue)
     sheets = await changed(FinanceSheet)
+    versions = await changed(ResumeVersion)
 
     # New cursor = the highest server_seq in this batch, or the caller's if empty.
     # Every table must feed this max: a table left out here can hand back a
     # cursor past its own rows, so they are never pulled again.
     high = max(
-        [since, *[r.server_seq for r in (*folders, *notes, *copa, *issues, *sheets)]]
+        [
+            since,
+            *[
+                r.server_seq
+                for r in (*folders, *notes, *copa, *issues, *sheets, *versions)
+            ],
+        ]
     )
     return PullResponse(
         folders=[FolderIn.model_validate(r) for r in folders],
@@ -188,6 +199,7 @@ async def pull(
         copa_items=[CopaItemIn.model_validate(r) for r in copa],
         issues=[IssueIn.model_validate(r) for r in issues],
         finance_sheets=[FinanceSheetIn.model_validate(r) for r in sheets],
+        resume_versions=[ResumeVersionIn.model_validate(r) for r in versions],
         server_seq=high,
     )
 
@@ -195,7 +207,7 @@ async def pull(
 async def _high_water(session: AsyncSession, user_id: str) -> int:
     """The largest server_seq this user has across all tables (0 if none)."""
     high = 0
-    for model in (Folder, Note, CopaItem, Issue, FinanceSheet):
+    for model in (Folder, Note, CopaItem, Issue, FinanceSheet, ResumeVersion):
         value = await session.scalar(
             select(func.max(model.server_seq)).where(model.user_id == user_id)
         )

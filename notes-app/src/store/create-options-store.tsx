@@ -24,6 +24,7 @@ const KEYS = {
   githubEnabled: 'createOptions.githubEnabled',
   taskManagerEnabled: 'createOptions.taskManagerEnabled',
   financeEnabled: 'createOptions.financeEnabled',
+  resumeEnabled: 'createOptions.resumeEnabled',
   sentryToken: 'createOptions.sentryToken',
   githubToken: 'createOptions.githubToken',
   githubRepo: 'createOptions.githubRepo',
@@ -40,7 +41,8 @@ export type CreateToggleKey =
   | 'sentryEnabled'
   | 'githubEnabled'
   | 'taskManagerEnabled'
-  | 'financeEnabled';
+  | 'financeEnabled'
+  | 'resumeEnabled';
 /** Keys of the (inert) stored credential strings. */
 export type CreateCredentialKey = 'sentryToken' | 'githubToken' | 'githubRepo';
 
@@ -49,6 +51,7 @@ type CreateOptionsState = {
   githubEnabled: boolean;
   taskManagerEnabled: boolean;
   financeEnabled: boolean;
+  resumeEnabled: boolean;
   sentryToken: string;
   githubToken: string;
   githubRepo: string;
@@ -64,6 +67,7 @@ const DEFAULTS: CreateOptionsState = {
   githubEnabled: true,
   taskManagerEnabled: true,
   financeEnabled: true,
+  resumeEnabled: true,
   sentryToken: '',
   githubToken: '',
   githubRepo: '',
@@ -74,6 +78,7 @@ const TOGGLE_KEYS: CreateToggleKey[] = [
   'githubEnabled',
   'taskManagerEnabled',
   'financeEnabled',
+  'resumeEnabled',
 ];
 const isToggle = (k: keyof CreateOptionsState): k is CreateToggleKey =>
   (TOGGLE_KEYS as string[]).includes(k);

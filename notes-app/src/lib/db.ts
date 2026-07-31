@@ -3,7 +3,7 @@ import * as SQLite from 'expo-sqlite';
 import { Sentry } from '@/lib/sentry';
 import { removeCopaFiles } from '@/lib/copa-files';
 import { whenDbOwner } from '@/lib/web-db-lock';
-import type { Folder, Issue, Note } from '@/data/notes';
+import type { Folder, Issue, Note, ResumeVersion } from '@/data/notes';
 import type { CopaItem } from '@/data/copa';
 
 /**
@@ -76,6 +76,30 @@ type IssueRow = {
   attrs: string;
   gh_number: number | null;
   position: number;
+  created_at: number;
+  updated_at: number;
+  deleted_at: number | null;
+};
+
+/**
+ * One snapshot of a resume's LaTeX source, as it stood after a change.
+ *
+ * Append-only and immutable: a row is a historical fact, so nothing ever
+ * rewrites `source` or `label` once written. That is what makes this table
+ * safer than the rest of the schema — every other synced row resolves a
+ * conflict by overwriting, and two devices editing offline means one edit is
+ * gone. Here each snapshot carries its own id, so two devices appending offline
+ * both land, and neither loses the other's history.
+ *
+ * `label` is frozen at write time, including for the first row (which carries
+ * the resume's title as it was then). Deriving it live from the note's title
+ * would mean renaming a resume silently rewrote its own history.
+ */
+type ResumeVersionRow = {
+  id: string;
+  note_id: string;
+  label: string;
+  source: string;
   created_at: number;
   updated_at: number;
   deleted_at: number | null;
@@ -203,12 +227,23 @@ export type FinanceSheetSync = {
   deleted_at: number | null;
 };
 
+export type ResumeVersionSync = {
+  id: string;
+  note_id: string;
+  label: string;
+  source: string;
+  created_at: number;
+  updated_at: number;
+  deleted_at: number | null;
+};
+
 export type SyncPayload = {
   folders: FolderSync[];
   notes: NoteSync[];
   copa_items: CopaSync[];
   issues: IssueSync[];
   finance_sheets: FinanceSheetSync[];
+  resume_versions: ResumeVersionSync[];
 };
 
 // ---- Connection (opened + migrated once, lazily) ----
@@ -312,6 +347,20 @@ async function open(): Promise<SQLite.SQLiteDatabase> {
       dirty       INTEGER NOT NULL DEFAULT 1
     );
 
+    -- Version history for resume notes. New enough that every column can be
+    -- NOT NULL from creation — there is no older table to backfill, so this
+    -- needs no ensureSyncColumns-style migration.
+    CREATE TABLE IF NOT EXISTS resume_versions (
+      id          TEXT PRIMARY KEY NOT NULL,
+      note_id     TEXT NOT NULL DEFAULT '',
+      label       TEXT NOT NULL DEFAULT '',
+      source      TEXT NOT NULL DEFAULT '',
+      created_at  INTEGER NOT NULL,
+      updated_at  INTEGER NOT NULL DEFAULT 0,
+      deleted_at  INTEGER,
+      dirty       INTEGER NOT NULL DEFAULT 1
+    );
+
     CREATE TABLE IF NOT EXISTS settings (
       key    TEXT PRIMARY KEY NOT NULL,
       value  TEXT NOT NULL
@@ -334,6 +383,8 @@ async function open(): Promise<SQLite.SQLiteDatabase> {
     CREATE INDEX IF NOT EXISTS idx_issues_note_id ON issues (note_id);
     CREATE INDEX IF NOT EXISTS idx_issues_dirty ON issues (dirty);
     CREATE INDEX IF NOT EXISTS idx_finance_dirty ON finance_sheets (dirty);
+    CREATE INDEX IF NOT EXISTS idx_resume_versions_note_id ON resume_versions (note_id);
+    CREATE INDEX IF NOT EXISTS idx_resume_versions_dirty ON resume_versions (dirty);
   `);
   return database;
 }
@@ -486,6 +537,16 @@ function toIssue(r: IssueRow): Issue {
     position: r.position,
     createdAt: r.created_at,
     updatedAt: ymd(r.updated_at),
+  };
+}
+
+function toResumeVersion(r: ResumeVersionRow): ResumeVersion {
+  return {
+    id: r.id,
+    noteId: r.note_id,
+    label: r.label,
+    source: r.source,
+    createdAt: r.created_at,
   };
 }
 
@@ -1067,12 +1128,101 @@ export const db = {
     );
   },
 
+  // ---- Resume version history ----
+
+  /**
+   * Every snapshot for one resume, newest first.
+   *
+   * `created_at DESC, id DESC` rather than `updated_at`: the version you are on
+   * has its `updated_at` bumped on every keystroke, so ordering by it would make
+   * the list reshuffle under you as you type. `id` breaks ties deterministically
+   * so two snapshots written in the same millisecond don't swap between reads.
+   */
+  async listResumeVersions(noteId: string): Promise<ResumeVersion[]> {
+    const database = await getDb();
+    const rows = await database.getAllAsync<ResumeVersionRow>(
+      `SELECT * FROM resume_versions
+       WHERE note_id = ? AND deleted_at IS NULL
+       ORDER BY created_at DESC, id DESC`,
+      [noteId],
+    );
+    return rows.map(toResumeVersion);
+  },
+
+  /**
+   * Append one snapshot. The only way a *new* version row is written — nothing
+   * reorders the history, and `label` and `created_at` are settled here for good.
+   * `source` is not: see `updateResumeVersion` for the one row that keeps moving.
+   */
+  async createResumeVersion({
+    id,
+    noteId,
+    label,
+    source,
+    createdAt,
+  }: {
+    id: string;
+    noteId: string;
+    label: string;
+    source: string;
+    /** Overridable so a caller can order two snapshots written in one action. */
+    createdAt?: number;
+  }): Promise<void> {
+    dbCrumb('createResumeVersion', { id, noteId });
+    const database = await getDb();
+    const now = createdAt ?? Date.now();
+    await database.runAsync(
+      `INSERT INTO resume_versions (id, note_id, label, source, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [id, noteId, label, source, now, now],
+    );
+  },
+
+  /**
+   * Replace a version's text with what the document says now.
+   *
+   * A version is the document you are currently working *in*, not a photograph of
+   * one — the resume screen keeps whichever version is current in step with the
+   * editor as you type. So switching to an older version and back finds your
+   * typing where you left it, and leaving a version never silently discards what
+   * you had done to it.
+   *
+   * The cost is that this one row is last-writer-wins like a note body: two
+   * devices offline on the same version keep only the later save. Versions
+   * nobody is on are never written again and cannot conflict at all.
+   *
+   * The label is not touched. It says what this version *is* — "Tailored for
+   * Acme" — and that stays true however much you refine it afterwards.
+   */
+  async updateResumeVersion(id: string, source: string): Promise<void> {
+    dbCrumb('updateResumeVersion', { id });
+    const database = await getDb();
+    await database.runAsync(
+      'UPDATE resume_versions SET source = ?, updated_at = ?, dirty = 1 WHERE id = ?',
+      [source, Date.now(), id],
+    );
+  },
+
+  /** Soft-delete a version, so the removal reaches other devices. */
+  async deleteResumeVersion(id: string): Promise<void> {
+    dbCrumb('deleteResumeVersion', { id });
+    const database = await getDb();
+    const now = Date.now();
+    // Soft, and `updated_at` bumped with it: a hard DELETE would be invisible to
+    // the server and the row would come back on the next pull.
+    await database.runAsync(
+      'UPDATE resume_versions SET deleted_at = ?, updated_at = ?, dirty = 1 WHERE id = ?',
+      [now, now, id],
+    );
+  },
+
   // ---- Sync support ----
 
   /** All rows with un-pushed local changes, in the backend's wire shape. */
   async getDirty(): Promise<SyncPayload> {
     const database = await getDb();
-    const [folders, notes, copa_items, issues, finance_sheets] = await Promise.all([
+    const [folders, notes, copa_items, issues, finance_sheets, resume_versions] =
+      await Promise.all([
       database.getAllAsync<FolderSync>(
         `SELECT id, name, parent_id, favorite, created_at, updated_at, deleted_at,
                 trashed_with_folder_id, kind, config
@@ -1097,8 +1247,12 @@ export const db = {
         `SELECT id, data, created_at, updated_at, deleted_at
          FROM finance_sheets WHERE dirty = 1`,
       ),
+      database.getAllAsync<ResumeVersionSync>(
+        `SELECT id, note_id, label, source, created_at, updated_at, deleted_at
+         FROM resume_versions WHERE dirty = 1`,
+      ),
     ]);
-    return { folders, notes, copa_items, issues, finance_sheets };
+    return { folders, notes, copa_items, issues, finance_sheets, resume_versions };
   },
 
   /**
@@ -1137,6 +1291,12 @@ export const db = {
         await database.runAsync(
           'UPDATE finance_sheets SET dirty = 0 WHERE id = ? AND updated_at = ?',
           [s.id, s.updated_at],
+        );
+      }
+      for (const v of payload.resume_versions ?? []) {
+        await database.runAsync(
+          'UPDATE resume_versions SET dirty = 0 WHERE id = ? AND updated_at = ?',
+          [v.id, v.updated_at],
         );
       }
     });
@@ -1299,6 +1459,37 @@ export const db = {
         );
         changed += r.changes;
       }
+      // `?? []` for the same reason as the sheets above, and it matters most on
+      // exactly this table: it is the newest, so it is the one a client can have
+      // while the server it is talking to does not.
+      for (const v of payload.resume_versions ?? []) {
+        // Same last-writer-wins guard as every other table. It is close to
+        // decorative for a finished version — nothing rewrites one, so the only
+        // row that conflicts with an incoming one is a byte-identical copy of
+        // itself, from a re-push after a dropped response, and `>=` rather than
+        // `>` is what makes that resend harmless. It does real work for the
+        // version a device is currently on, whose source moves as the user types.
+        const r = await database.runAsync(
+          `INSERT INTO resume_versions
+             (id, note_id, label, source, created_at, updated_at, deleted_at, dirty)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 0)
+           ON CONFLICT(id) DO UPDATE SET
+             note_id = excluded.note_id, label = excluded.label,
+             source = excluded.source, created_at = excluded.created_at,
+             updated_at = excluded.updated_at, deleted_at = excluded.deleted_at, dirty = 0
+           WHERE excluded.updated_at >= resume_versions.updated_at`,
+          [
+            v.id,
+            v.note_id,
+            v.label,
+            v.source,
+            v.created_at,
+            v.updated_at,
+            v.deleted_at,
+          ],
+        );
+        changed += r.changes;
+      }
     });
     return changed;
   },
@@ -1309,8 +1500,11 @@ export const db = {
    */
   async markAllDirty(): Promise<void> {
     const database = await getDb();
+    // Every synced table has to be listed. A table missing here keeps its rows
+    // clean, so signing in never claims them into the account and they stay
+    // local to this one device for ever, with nothing on screen to say so.
     await database.execAsync(
-      'UPDATE folders SET dirty = 1; UPDATE notes SET dirty = 1; UPDATE copa_items SET dirty = 1; UPDATE issues SET dirty = 1; UPDATE finance_sheets SET dirty = 1;',
+      'UPDATE folders SET dirty = 1; UPDATE notes SET dirty = 1; UPDATE copa_items SET dirty = 1; UPDATE issues SET dirty = 1; UPDATE finance_sheets SET dirty = 1; UPDATE resume_versions SET dirty = 1;',
     );
   },
 
@@ -1321,8 +1515,11 @@ export const db = {
    */
   async clearAllData(): Promise<void> {
     const database = await getDb();
+    // As with `markAllDirty`, a table missing here is a silent leak: the
+    // previous account's rows survive sign-out and show up under whoever signs
+    // in next on this device.
     await database.execAsync(
-      'DELETE FROM folders; DELETE FROM notes; DELETE FROM copa_items; DELETE FROM issues; DELETE FROM finance_sheets;',
+      'DELETE FROM folders; DELETE FROM notes; DELETE FROM copa_items; DELETE FROM issues; DELETE FROM finance_sheets; DELETE FROM resume_versions;',
     );
   },
 
@@ -1421,6 +1618,9 @@ const WRITE_METHODS = [
   'deleteIssue',
   'saveFinanceSheet',
   'deleteFinanceSheet',
+  'createResumeVersion',
+  'updateResumeVersion',
+  'deleteResumeVersion',
   'markSynced',
   'applyServerRows',
   'markAllDirty',

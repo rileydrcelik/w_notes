@@ -79,7 +79,14 @@ if (!files.some((p) => extname(p) === '.ttf')) {
   fail('no .ttf fonts in dist/ — icons will render blank');
 }
 
-// 4. Nothing still points at the directory Cloudflare will drop.
+// 4. The pdf.js worker shipped. It's loaded by URL at runtime rather than
+//    bundled, so a missing copy step is invisible until a user opens a resume
+//    and the preview hangs on a 404 worker.
+if (!existsSync(join(dist, 'pdfjs/pdf.worker.min.mjs'))) {
+  fail('dist/pdfjs/pdf.worker.min.mjs is missing — run scripts/copy-pdfjs-worker.mjs before exporting');
+}
+
+// 5. Nothing still points at the directory Cloudflare will drop.
 for (const p of texts) {
   if (readFileSync(p, 'utf8').includes('/assets/node_modules/')) {
     fail(`${rel(p)} still references /assets/node_modules/ — run fix-web-export.mjs`);

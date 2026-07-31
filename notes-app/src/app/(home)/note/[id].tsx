@@ -19,6 +19,7 @@ import { SwipeBackView } from '@/components/swipe-back-view';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Spacing } from '@/constants/theme';
+import { useEditAction } from '@/hooks/use-edit-action';
 import { useScrollToTop } from '@/hooks/use-scroll-to-top';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
 import { useTheme } from '@/hooks/use-theme';
@@ -71,6 +72,11 @@ export default function NoteScreen() {
   const editorRef = useRef<EnrichedTextInputInstance>(null);
   const [editing, setEditing] = useState(false);
   const [fmtState, setFmtState] = useState<OnChangeStateEvent | null>(null);
+
+  // A note has nothing to create inside it, so the navbar's (+) is a pencil that
+  // puts the caret in the body — the same thing tapping the body does. It turns
+  // into the "done" check as soon as the editor takes focus.
+  useEditAction(() => editorRef.current?.focus());
 
   // Latest edit state, refreshed after each render so the unmount flush below
   // can read it without writing refs during render. The store handlers ride

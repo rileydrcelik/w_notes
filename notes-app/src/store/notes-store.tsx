@@ -116,6 +116,12 @@ type NotesContextValue = {
    */
   createFinanceNote: (folderId: string | null) => string;
   /**
+   * Creates a resume plugin note (null folder = root) and returns its id. Unlike
+   * the other plugin notes it keeps an editable `body` — LaTeX source rather
+   * than rich-text HTML — and carries no config; the source is the note.
+   */
+  createResumeNote: (folderId: string | null) => string;
+  /**
    * Creates a task-manager "project" folder (null parent = root) and returns its
    * id. Created unconfigured — the project screen shows a name/repo setup UI,
    * which writes the folder's `config` in place via `updateFolder`.
@@ -297,6 +303,23 @@ export function NotesProvider({ children }: { children: ReactNode }) {
     return id;
   }, []);
 
+  const createResumeNote = useCallback<NotesContextValue['createResumeNote']>((folderId) => {
+    const id = rid('note');
+    // Starts blank: an empty LaTeX source the user types or pastes into. No
+    // pluginConfig — a resume has nothing to configure.
+    const note: Note = {
+      id,
+      title: '',
+      body: '',
+      folderId,
+      updatedAt: today(),
+      pluginType: 'resume',
+    };
+    setNotes((prev) => [note, ...prev]);
+    persist(db.createNote({ id, folderId, pluginType: 'resume' }));
+    return id;
+  }, []);
+
   const createProject = useCallback<NotesContextValue['createProject']>((parentId) => {
     const id = rid('folder');
     // Created unconfigured (kind marks it a project, but no config yet); the
@@ -464,6 +487,7 @@ export function NotesProvider({ children }: { children: ReactNode }) {
       createSentryNote,
       createGithubNote,
       createFinanceNote,
+      createResumeNote,
       createProject,
       createIssueTypeNote,
       createFolder,
@@ -486,6 +510,7 @@ export function NotesProvider({ children }: { children: ReactNode }) {
       createSentryNote,
       createGithubNote,
       createFinanceNote,
+      createResumeNote,
       createProject,
       createIssueTypeNote,
       createFolder,

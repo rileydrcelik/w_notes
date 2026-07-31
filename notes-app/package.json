@@ -48,6 +48,7 @@
     "expo-video-thumbnails": "~56.0.3",
     "expo-web-browser": "~56.0.5",
     "firebase": "^12.14.0",
+    "pdfjs-dist": "^6.1.200",
     "react": "19.2.3",
     "react-dom": "19.2.3",
     "react-native": "0.85.3",
@@ -80,8 +81,9 @@
     "test:watch": "vitest",
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui",
-    "build:web": "expo export -p web --clear && node scripts/fix-web-export.mjs && node scripts/verify-web-export.mjs",
+    "build:web": "node scripts/copy-pdfjs-worker.mjs && expo export -p web --clear && node scripts/fix-web-export.mjs && node scripts/verify-web-export.mjs",
     "verify:web": "node scripts/verify-web-export.mjs",
+    "postinstall": "node scripts/copy-pdfjs-worker.mjs",
     "test:mobile": "node scripts/test-mobile.mjs",
     "emulator:clean": "node scripts/clean-emulator.mjs"
   },

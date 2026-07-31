@@ -140,6 +140,28 @@ async def test_an_older_client_cannot_null_out_a_column_it_predates(client, devi
     assert pulled["plugin_config"] == '{"org":"acme"}'
 
 
+async def test_a_new_plugin_type_round_trips_without_a_migration(client, device):
+    """`plugin_type` is a plain string column with no enum/CHECK constraint, so
+    the sync layer must be agnostic to which values exist — a brand-new one
+    (`resume`, added without touching the backend) has to round-trip exactly
+    like the already-known `sentry` case above. `body` here is raw LaTeX
+    source rather than the app's usual rich-text HTML; sync must relay it
+    byte-for-byte regardless, since it never interprets note content."""
+    source = "\\documentclass{article}\n\\begin{document}\nHi\n\\end{document}\n"
+    row = note(
+        title="Backend Engineer",
+        body=source,
+        updated_at=1_000,
+        plugin_type="resume",
+    )
+    await push(client, device, notes=[row])
+
+    pulled = (await pull(client, device))["notes"][0]
+    assert pulled["plugin_type"] == "resume"
+    assert pulled["body"] == source
+    assert pulled["plugin_config"] is None
+
+
 async def test_a_deliberate_null_still_propagates(client, device):
     """The flip side of the rule above: `folder_id` is excluded from the
     preserve-on-NULL set because clearing it is a real user action (moving a note

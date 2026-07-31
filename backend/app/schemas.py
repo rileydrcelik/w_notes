@@ -80,6 +80,26 @@ class FinanceSheetIn(_Syncable):
     data: str = "{}"
 
 
+class ResumeVersionIn(_Syncable):
+    """One snapshot of a resume's LaTeX source.
+
+    Settled rather than immutable: the version a device is currently on is the
+    document being edited, so its `source` is rewritten as the user types. See
+    `ResumeVersion` in models.py for what that means for conflicts.
+
+    Nothing here is nullable-for-preservation: the whole table is new, so no
+    client can predate a column. **When a column is added later, it must be
+    added to `_PRESERVE_IF_NULL` in `routers/sync.py`** — an older client that
+    can't send it would otherwise null it out on every device.
+    """
+
+    note_id: str = ""
+    # What changed, frozen when the snapshot was taken.
+    label: str = ""
+    # The full LaTeX source at that moment.
+    source: str = ""
+
+
 class PushRequest(BaseModel):
     """A batch of local changes the client wants the server to absorb.
 
@@ -94,6 +114,7 @@ class PushRequest(BaseModel):
     copa_items: list[CopaItemIn] = []
     issues: list[IssueIn] = []
     finance_sheets: list[FinanceSheetIn] = []
+    resume_versions: list[ResumeVersionIn] = []
 
 
 class PushResponse(BaseModel):
@@ -109,4 +130,5 @@ class PullResponse(BaseModel):
     copa_items: list[CopaItemIn] = []
     issues: list[IssueIn] = []
     finance_sheets: list[FinanceSheetIn] = []
+    resume_versions: list[ResumeVersionIn] = []
     server_seq: int

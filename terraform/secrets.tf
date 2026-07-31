@@ -53,6 +53,15 @@ resource "aws_ssm_parameter" "github_token" {
   value = var.github_token
 }
 
+# ANTHROPIC_API_KEY — Claude API key for the resume adder, which drafts a new
+# resume entry server-side; only created when provided.
+resource "aws_ssm_parameter" "anthropic_api_key" {
+  count = local.anthropic_enabled ? 1 : 0
+  name  = "/${local.name}/anthropic-api-key"
+  type  = "SecureString"
+  value = var.anthropic_api_key
+}
+
 # FIREBASE_CREDENTIALS — the service-account JSON; only created when provided.
 resource "aws_ssm_parameter" "firebase" {
   count = local.firebase_enabled ? 1 : 0

@@ -31,8 +31,13 @@ export type Note = {
    * `pluginConfig` but in its own synced `finance_sheets` row keyed by the note
    * id (see `@/lib/finance/sheet`), because a sheet is far too large and too
    * frequently rewritten to sit in a config column.
+   *
+   * `'resume'` is the one plugin type that still owns `body`: it holds LaTeX
+   * source rather than the app's canonical rich-text HTML, so anything that
+   * parses a body as HTML must skip it (see `@/lib/resume-note`). Its version
+   * history is a separate synced table, like the sheet above.
    */
-  pluginType?: 'sentry' | 'github' | 'issuetype' | 'finance';
+  pluginType?: 'sentry' | 'github' | 'issuetype' | 'finance' | 'resume';
   /**
    * Opaque per-plugin JSON config. For Sentry: `{org, project, projectName?,
    * repo?}` (see `@/lib/sentry-note`). For GitHub: `{repo, repoName?}` (see
@@ -98,6 +103,37 @@ export type Issue = {
   /** Raw creation timestamp (ms) — used to sort issues within a type. */
   createdAt: number;
   updatedAt: string;
+};
+
+/**
+ * One entry in a resume's version history: the LaTeX source as it stood after a
+ * change, and a label saying what that change was.
+ *
+ * Settled once you move off it, not immutable. The version you are *on* is the
+ * document you're working in, so the screen keeps its `source` in step with the
+ * editor as you type (`db.updateResumeVersion`) — that's what makes switching
+ * away and back find your typing where you left it. Every other version is
+ * finished and nothing rewrites it. `label` is never rewritten either: it says
+ * what the version *is*, which stays true however much you refine it.
+ *
+ * So the current version's row conflicts under last-writer-wins exactly like a
+ * note body does, and carries the same caveat — two devices editing the same
+ * current version offline will keep only the later save. Versions you are not
+ * on cannot conflict at all.
+ *
+ * The oldest snapshot for a resume is "the original" and carries the resume's
+ * title as its label; every later one describes what the add/edit/restore did.
+ */
+export type ResumeVersion = {
+  id: string;
+  /** The resume note this belongs to. */
+  noteId: string;
+  /** What this change was, e.g. "Added Backend Engineer, Globex". */
+  label: string;
+  /** The full LaTeX source at this point in the resume's life. */
+  source: string;
+  /** Raw creation timestamp (ms) — the history's sort key. */
+  createdAt: number;
 };
 
 /**

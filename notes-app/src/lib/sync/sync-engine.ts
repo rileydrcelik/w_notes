@@ -132,14 +132,13 @@ async function runSync(): Promise<SyncResult> {
     // 1) Push local changes. The server takes them last-writer-wins; on success
     //    we clear the dirty flags for exactly what we sent.
     const dirty = await db.getDirty();
-    // Every table has to be counted here: this total gates the request below, so
-    // omitting one means a sync that changed only that table pushes nothing.
-    const pushed =
-      dirty.folders.length +
-      dirty.notes.length +
-      dirty.copa_items.length +
-      dirty.issues.length +
-      dirty.finance_sheets.length;
+    // Counted across whatever tables the payload holds, rather than by naming
+    // each one. This used to be a hand-written sum, and a table left out of it
+    // was the worst kind of bug available here: a sync pass carrying *only* rows
+    // from the forgotten table computes zero, skips the push entirely, and
+    // strands those rows dirty for ever with no error anywhere. Every field of
+    // `SyncPayload` is an array of rows, so this cannot fall behind the schema.
+    const pushed = Object.values(dirty).reduce((total, rows) => total + rows.length, 0);
     if (pushed > 0) {
       await apiFetch('/sync/push', { method: 'POST', body: dirty });
       await db.markSynced(dirty);

@@ -5,7 +5,7 @@ import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, { runOnJS } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { BottomFade } from '@/components/bottom-fade';
+import { BottomFade } from '@/components/edge-fade';
 import { FolderCard, NoteCard } from '@/components/notes/cards';
 import { ScrollToTopButton } from '@/components/scroll-to-top';
 import { SearchBar, SEARCH_BAR_HEIGHT } from '@/components/search-bar';

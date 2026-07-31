@@ -287,6 +287,7 @@ function CreateOptionsSection() {
     { key: 'githubEnabled', label: 'GitHub views', description: 'Show “New GitHub view” in the create menu' },
     { key: 'taskManagerEnabled', label: 'Task managers', description: 'Show “New task manager” in the create menu' },
     { key: 'financeEnabled', label: 'Sheets', description: 'Show “New sheet” in the create menu' },
+    { key: 'resumeEnabled', label: 'Resumes', description: 'Show “New resume” in the create menu' },
   ];
 
   return (

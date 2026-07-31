@@ -1,0 +1,28 @@
+% Build-time only, XeLaTeX only: asserts that the system fonts are installed
+% *and* that fontconfig's cache was rebuilt, which is the whole reason XeLaTeX
+% is in this image.
+%
+% fontspec resolves a font by the family name inside the font file, so an
+% fc-cache that never ran, or a font package that didn't land, shows up here as
+% "the font cannot be found" rather than as a mysterious substitution in
+% somebody's resume. Each family below is one a real template asks for.
+\documentclass[letterpaper,11pt]{article}
+
+\usepackage{fontspec}
+
+\newfontfamily\smokecarlito{Carlito}
+\newfontfamily\smokeheros{TeX Gyre Heros}
+\newfontfamily\smokelato{Lato}
+\newfontfamily\smokeroboto{Roboto}
+
+\begin{document}
+
+{\smokecarlito Carlito, the Calibri clone.}
+
+{\smokeheros TeX Gyre Heros, the Helvetica clone.}
+
+{\smokelato Lato.}
+
+{\smokeroboto Roboto.}
+
+\end{document}

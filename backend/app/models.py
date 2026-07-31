@@ -249,3 +249,57 @@ class FinanceSheet(Base):
     )
 
     __table_args__ = (Index("idx_finance_user_seq", "user_id", "server_seq"),)
+
+
+class ResumeVersion(Base):
+    """One snapshot of a resume note's LaTeX source, with a label saying what
+    changed.
+
+    Rows are appended, but one of them is not yet finished. The version a device
+    is currently on is the document being edited, so that row's ``source`` is
+    rewritten as the user types (see ``db.updateResumeVersion``); versions nobody
+    is on are never touched again.
+
+    That distinction is the whole conflict story, and it is **not** the "cannot
+    lose each other's work" guarantee an earlier draft of this docstring claimed.
+    Finished versions genuinely cannot conflict — each carries its own
+    client-generated id, so two devices' snapshots both land and the only row an
+    incoming one ever matches is a byte-identical copy of itself, from a push
+    whose response got dropped. But the *current* version is an ordinary
+    last-writer-wins row: two devices offline on the same version, both typing,
+    keep whichever saved later, exactly as they would for a note body.
+
+    ``note_id`` deliberately carries **no ForeignKey**, matching ``Issue.note_id``
+    and for the same reason: nothing in this schema is ever hard-deleted, so a
+    database-level cascade would never fire anyway, while an FK would impose an
+    ordering dependency between two independently-upserted sync batches whose
+    order is unspecified.
+    """
+
+    __tablename__ = "resume_versions"
+
+    user_id: Mapped[str] = mapped_column(
+        String, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+
+    # The resume note this snapshot belongs to.
+    note_id: Mapped[str] = mapped_column(String, nullable=False, default="")
+    # What the change was, frozen at write time. Not derived from the note's
+    # title, so renaming a resume can't rewrite its own history.
+    label: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    # The full LaTeX source at this point in the resume's life.
+    source: Mapped[str] = mapped_column(Text, nullable=False, default="")
+
+    created_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    updated_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    deleted_at: Mapped[int | None] = mapped_column(BigInteger)
+
+    server_seq: Mapped[int] = mapped_column(
+        BigInteger, server_default=SERVER_SEQ_DEFAULT, nullable=False
+    )
+
+    __table_args__ = (
+        Index("idx_resume_versions_user_seq", "user_id", "server_seq"),
+        Index("idx_resume_versions_user_note", "user_id", "note_id"),
+    )

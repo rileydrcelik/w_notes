@@ -31,6 +31,7 @@ import {
   isVideo,
   openCopaFile,
 } from '@/lib/copa-files';
+import { useEditAction } from '@/hooks/use-edit-action';
 import { useScreenFadeStyle } from '@/hooks/use-screen-fade';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
 import { useTheme } from '@/hooks/use-theme';
@@ -83,6 +84,12 @@ export default function CopaBlockScreen() {
   const editorRef = useRef<EnrichedTextInputInstance>(null);
   const [editing, setEditing] = useState(false);
   const [fmtState, setFmtState] = useState<OnChangeStateEvent | null>(null);
+
+  // A copy block holds no children, so the navbar's (+) is a pencil that puts
+  // the caret in the body. A file block has no editor at all — it keeps the
+  // plain create button. Registration follows *focus*, which matters here more
+  // than anywhere: the copa tab stays mounted while you're on other screens.
+  useEditAction(item?.fileUri ? null : () => editorRef.current?.focus());
 
   // Latest edit state, refreshed after each render so the unmount flush below
   // can read it without writing refs during render.

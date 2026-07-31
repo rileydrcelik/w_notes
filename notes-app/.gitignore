@@ -55,3 +55,8 @@ example
 
 # Maestro
 /maestro-report.xml
+
+# pdf.js worker, copied out of node_modules by scripts/copy-pdfjs-worker.mjs
+# (postinstall + build:web). Generated, not authored — see that script for why
+# it lives in public/ rather than being imported.
+public/pdfjs/
