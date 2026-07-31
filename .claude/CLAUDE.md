@@ -23,6 +23,14 @@
   `hooks/use-edit-action.ts`; the pencil becomes the done check once the editor
   takes focus, so the whole gesture reads pencil → check. Long-press still opens
   the create menu.
+- the pencil assumes there's a read view to start editing *from*. Where a screen
+  is already in edit mode by default, there's nothing for it to offer, and the
+  slot goes to whatever that screen can't otherwise show you. The **resume** is
+  the one such screen today: it opens straight into its source, and side by side
+  the source never leaves the screen, so it offers its **version history**
+  (`hooks/use-version-action.ts`) instead of a pencil. This is a real exception,
+  not an oversight — don't "restore" the pencil there. It is also the whole test:
+  a screen that opens in a read view keeps the pencil, no matter how leaf-like.
 - exporting is a navbar action too, never a button on the screen. While you're
   *reading* a document — a note, a compiled resume — a download icon appears
   inside the navbar's pill, growing it; it's absent while an editor is focused,
