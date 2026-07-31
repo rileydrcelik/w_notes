@@ -287,7 +287,14 @@ async def compile_source(source: str, engine: Engine) -> tuple[bool, str, int | 
     check that what the model wrote actually builds, and that it came out on one
     page. Holds a compile slot, so an internal caller queues behind the same cap
     as a client request rather than around it.
+
+    The readiness check lives here rather than in each caller so that every route
+    into a real compile passes it. `/latex/compile` inlines its own compile and
+    keeps its own copy; the resume endpoints reach TeX only through this function,
+    and used to reach it with no check at all — a deploy missing the engine or the
+    sandbox user answered 503 there and an uncaught 500 here.
     """
+    require_compile_ready()
     async with _compile_slots, _temp_dir() as directory:
         (directory / "main.tex").write_text(source, encoding="utf-8")
         succeeded, log = await _run_latexmk(directory, engine)
@@ -296,12 +303,20 @@ async def compile_source(source: str, engine: Engine) -> tuple[bool, str, int | 
         return True, log, page_count(log)
 
 
-@router.post("/compile", response_model=CompileResponse)
-async def compile_latex(
-    payload: CompileRequest,
-    _user: User = Depends(get_current_user),
-) -> CompileResponse:
-    """Compile a LaTeX document and return the PDF plus the TeX log."""
+def require_compile_ready() -> None:
+    """Refuse the request unless this server can compile safely.
+
+    Both failures here mean a broken deploy rather than a bad document, so they
+    answer 503 and say which. Checked before any work, so a misconfigured deploy
+    is a loud refusal on the first request instead of a silent loss of the
+    sandbox.
+
+    Shared rather than inlined into the handler it started in: `/resume/tailor`
+    and `/resume/edit` compile too, via `compile_source`, which performs neither
+    check on its own. They skipped both while `/latex/compile` had them, so the
+    one deploy fault this is written to catch surfaced as a clean 503 on one
+    endpoint and an uncaught 500 on the others.
+    """
     settings = get_settings()
     if not shutil.which(settings.latexmk_path):
         # The image is built with TeX Live; a 503 here means a deploy problem,
@@ -312,8 +327,7 @@ async def compile_latex(
         )
 
     # Same class of problem, same answer: refuse rather than compile untrusted
-    # input as root. Checked here, before any work, so a misconfigured deploy is
-    # a loud 503 on the first request instead of a silent loss of the sandbox.
+    # input as root.
     try:
         _compile_user()
     except _NoCompileUser:
@@ -321,6 +335,15 @@ async def compile_latex(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="This server is not configured to compile safely.",
         ) from None
+
+
+@router.post("/compile", response_model=CompileResponse)
+async def compile_latex(
+    payload: CompileRequest,
+    _user: User = Depends(get_current_user),
+) -> CompileResponse:
+    """Compile a LaTeX document and return the PDF plus the TeX log."""
+    require_compile_ready()
 
     source = payload.source
     if len(source.encode("utf-8")) > _MAX_SOURCE_BYTES:

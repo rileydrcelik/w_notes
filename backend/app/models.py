@@ -221,12 +221,19 @@ class ResumeVersion(Base):
     """One snapshot of a resume note's LaTeX source, with a label saying what
     changed.
 
-    Append-only and immutable. Nothing rewrites a row once written, which makes
-    this the one synced table where two devices working offline cannot lose each
-    other's work: every snapshot carries its own id, so both land and the LWW
-    comparison never has a real conflict to resolve — the only row that ever
-    conflicts with an incoming one is a byte-identical copy of itself, from a
-    push whose response got dropped.
+    Rows are appended, but one of them is not yet finished. The version a device
+    is currently on is the document being edited, so that row's ``source`` is
+    rewritten as the user types (see ``db.updateResumeVersion``); versions nobody
+    is on are never touched again.
+
+    That distinction is the whole conflict story, and it is **not** the "cannot
+    lose each other's work" guarantee an earlier draft of this docstring claimed.
+    Finished versions genuinely cannot conflict — each carries its own
+    client-generated id, so two devices' snapshots both land and the only row an
+    incoming one ever matches is a byte-identical copy of itself, from a push
+    whose response got dropped. But the *current* version is an ordinary
+    last-writer-wins row: two devices offline on the same version, both typing,
+    keep whichever saved later, exactly as they would for a note body.
 
     ``note_id`` deliberately carries **no ForeignKey**, matching ``Issue.note_id``
     and for the same reason: nothing in this schema is ever hard-deleted, so a

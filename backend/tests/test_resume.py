@@ -26,7 +26,7 @@ import json
 import pytest
 
 from app.config import get_settings
-from app.routers import resume
+from app.routers import latex, resume
 
 ENTRY = "/resume/entry"
 
@@ -1285,3 +1285,40 @@ async def test_edit_asks_for_room_to_return_a_whole_document(
     assert res.status_code == 200
     assert _calls[0]["max_tokens"] == resume._MAX_TAILOR_OUTPUT_TOKENS
     assert _client_kwargs[0]["timeout"] == resume._TAILOR_CALL_TIMEOUT_SECONDS
+
+
+async def test_tailor_reports_a_missing_engine_as_a_server_problem(
+    client, device, anthropic_key, monkeypatch
+):
+    """A deploy without TeX Live has to read the same here as at /latex/compile.
+
+    The tailor compiles what the model returns, so it needs the engine just as
+    much — but it reaches TeX through `compile_source` rather than the handler
+    that carried the check, and for a while that meant a missing engine answered
+    503 on one endpoint and an uncaught 500 on this one. Deliberately does *not*
+    stub the compile: stubbing it is what hid this.
+    """
+    monkeypatch.setattr(latex.shutil, "which", lambda _p: None)
+
+    res = await _tailor(client, device)
+
+    assert res.status_code == 503
+    # That it never reached the model is covered by the autouse
+    # `no_real_anthropic_calls`, which raises rather than answering.
+
+
+async def test_tailor_refuses_when_the_sandbox_user_is_missing(
+    client, device, anthropic_key, monkeypatch
+):
+    """Same for a typo'd `latex_user`: refuse rather than compile as root."""
+
+    def _no_account():
+        raise latex._NoCompileUser("latex")
+
+    monkeypatch.setattr(latex, "_compile_user", _no_account)
+
+    res = await _tailor(client, device)
+
+    assert res.status_code == 503
+    # That it never reached the model is covered by the autouse
+    # `no_real_anthropic_calls`, which raises rather than answering.

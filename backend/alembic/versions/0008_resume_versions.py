@@ -5,10 +5,11 @@ saying what the change was. The screen appends one whenever an entry is added,
 edited, or a version is restored, and the resume's history is the rows for its
 ``note_id`` ordered by ``created_at``.
 
-Append-only by design, which is what makes this the one synced table where two
-devices working offline cannot lose each other's work: every snapshot carries its
-own client-generated id, so both land and the last-writer-wins comparison never
-has a real conflict to resolve.
+Rows are appended, and every one carries a client-generated id, so two devices
+adding versions offline never collide — both land. Note the limit of that: the
+version a device is *currently on* is the document being edited and its ``source``
+is rewritten as the user types, so that one row takes ordinary last-writer-wins
+like a note body does. Finished versions are never rewritten and cannot conflict.
 
 Every column is NOT NULL here, unlike the columns added by 0006/0007, and that is
 safe *only* because the whole table is new — no client can predate a column it has
