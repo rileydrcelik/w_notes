@@ -549,6 +549,20 @@ export default function ResumeScreen() {
   // other document, so the check is meaningful and the button yields to it.
   useVersionAction(
     () => {
+      // The button toggles, because it is the only one of these that is still
+      // on screen while its own sheet is up. The toolbar's buttons are hidden
+      // behind the sheet they opened (`sheetOpen` below), so pressing one again
+      // isn't possible; the navbar sits above everything and stays live, and a
+      // second press that silently re-opened what you were looking at reads as
+      // a dead button. Clicking off the sheet already closes it — this is the
+      // same gesture from the control that opened it.
+      //
+      // Safe to read `versionsOpen` here: `useVersionAction` refreshes the
+      // callback it holds on every render, so this closure is never stale.
+      if (versionsOpen) {
+        closeOverEditor(setVersionsOpen);
+        return;
+      }
       // One sheet at a time, matching the toolbar's own buttons: two stacked
       // sheets would leave the one underneath unreachable. Every sheet the
       // toolbar can raise is listed — the history is reachable from the navbar
