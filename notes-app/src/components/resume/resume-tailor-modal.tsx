@@ -305,14 +305,33 @@ export function ResumeTailorModal({
                         />
                         {/* Said before they try it, not after. Most postings live
                             on sites that cannot be read, and someone who already
-                            knows that should not have to prove it first. */}
+                            knows that should not have to prove it first.
+
+                            The reason and the way out used to be one line of
+                            quiet text doing both jobs, which made the only
+                            alternative to a link look like a footnote. The
+                            sentence is information and stays text; the action is
+                            an action and gets the same squircle the sheet's own
+                            Discard button uses. */}
+                        <ThemedText
+                          type="small"
+                          themeColor="textSecondary"
+                          style={styles.linkOut}>
+                          LinkedIn and Workday links can&rsquo;t be read.
+                        </ThemedText>
                         <Pressable
                           accessibilityRole="button"
+                          accessibilityLabel="Enter the job posting manually"
                           onPress={() => setPasting(true)}
-                          style={({ pressed }) => [styles.linkOut, pressed && styles.pressed]}>
+                          style={({ pressed }) => [
+                            styles.secondaryButton,
+                            styles.manualButton,
+                            { backgroundColor: theme.backgroundElement },
+                            pressed && styles.pressed,
+                          ]}>
+                          <Feather name="edit-3" size={15} color={theme.textSecondary} />
                           <ThemedText type="small" themeColor="textSecondary">
-                            LinkedIn and Workday links can&rsquo;t be read — paste the posting
-                            instead
+                            Enter it manually
                           </ThemedText>
                         </Pressable>
                       </>
@@ -525,11 +544,18 @@ const styles = StyleSheet.create({
   blurb: {
     paddingBottom: Spacing.two,
   },
-  // A quiet way out of the link field rather than a button: it is a note about
-  // what will not work, and what it offers is the form you would otherwise have
-  // been given anyway.
+  // The note above the manual-entry button. Text, not a control — it says why
+  // you would want the button, and the button says what it does.
   linkOut: {
-    paddingBottom: Spacing.two,
+    paddingBottom: Spacing.one,
+  },
+  // Borrows `secondaryButton` wholesale so the two read as one control repeated,
+  // rather than sizing a new one by hand. Only the placement differs: this sits
+  // in the form flow and hugs its label, where the sheet's own pair sits in the
+  // actions row.
+  manualButton: {
+    alignSelf: 'flex-start',
+    marginBottom: Spacing.two,
   },
   diffContent: {
     paddingBottom: SCROLL_FADE_HEIGHT,
