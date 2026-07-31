@@ -66,6 +66,59 @@ export function resumeConfigWithEngine(
   return JSON.stringify(config);
 }
 
+/**
+ * Which version of its history this resume is currently being edited as.
+ *
+ * Stored on the note rather than in the versions table because it is a property
+ * of *this resume*, not of any one snapshot — and because it has to survive a
+ * version being deleted, which a foreign key pointing the other way would not.
+ * Absent means the resume has no history yet, or is on whatever its history calls
+ * the original.
+ *
+ * Unrecognised values read as `null` for the same reason the engine does: a note
+ * written by a newer build should fall back to sane behaviour, not break the
+ * screen.
+ */
+export function resumeCurrentVersionId(
+  note: Pick<Note, 'pluginType' | 'pluginConfig'>,
+): string | null {
+  if (note.pluginType !== 'resume' || !note.pluginConfig) return null;
+  try {
+    const parsed = JSON.parse(note.pluginConfig) as { versionId?: unknown };
+    if (typeof parsed?.versionId === 'string' && parsed.versionId) return parsed.versionId;
+  } catch {
+    // A corrupt config reads as "no current version".
+  }
+  return null;
+}
+
+/**
+ * `pluginConfig` with the current version set (or cleared, for `null`).
+ *
+ * Every other key is copied through untouched — the engine lives in here too, and
+ * a config object that drops what it didn't recognise is how a future field gets
+ * deleted by an old screen.
+ */
+export function resumeConfigWithVersion(
+  note: Pick<Note, 'pluginConfig'>,
+  versionId: string | null,
+): string {
+  let config: Record<string, unknown> = {};
+  if (note.pluginConfig) {
+    try {
+      const parsed = JSON.parse(note.pluginConfig) as unknown;
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        config = parsed as Record<string, unknown>;
+      }
+    } catch {
+      // A corrupt config is replaced rather than propagated.
+    }
+  }
+  if (versionId === null) delete config.versionId;
+  else config.versionId = versionId;
+  return JSON.stringify(config);
+}
+
 /** Display title for an untitled resume, used in headers and filenames. */
 export function resumeTitle(note: Pick<Note, 'title'>): string {
   return note.title.trim() || 'Untitled resume';

@@ -5,6 +5,7 @@ import { Pressable, StyleSheet, View } from 'react-native';
 import { EnrichedText, type EnrichedTextHtmlStyle } from 'react-native-enriched';
 
 import { FavoriteStar } from '@/components/favorite-star';
+import { ACCENT as RESUME_ACCENT } from '@/components/resume/accent';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Fonts, hexToRgba, Spacing, type Palette } from '@/constants/theme';
@@ -23,7 +24,8 @@ const LINK_COLOR = '#3c87f7';
 const SENTRY_ACCENT = '#7553FF';
 const GITHUB_ACCENT = '#8250df';
 const PROJECT_ACCENT = '#16a394';
-const RESUME_ACCENT = '#c2703c';
+// The resume's is imported rather than repeated: that hex lives in
+// `components/resume/accent.ts` because copies of it drifted once already.
 /** Accent for a long-pressed/right-clicked (selected) card. */
 const SELECT_ACCENT = '#7a89b8';
 const PREVIEW_TEXT = { fontSize: 14, lineHeight: 20, fontWeight: '500' } as const;

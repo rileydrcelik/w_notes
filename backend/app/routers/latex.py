@@ -51,6 +51,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import os
+import re
 import shutil
 import tempfile
 from collections.abc import AsyncIterator
@@ -261,6 +262,38 @@ async def _run_latexmk(directory: Path, engine: Engine) -> tuple[bool, str]:
         log = f"{log}\n{tex_log.read_text(encoding='utf-8', errors='replace')}"
 
     return process.returncode == 0, log[-_MAX_LOG_CHARS:]
+
+
+def page_count(log: str) -> int | None:
+    """How many pages the compile produced, read out of the TeX log.
+
+    TeX writes ``Output written on main.pdf (2 pages, 41234 bytes).`` — one page
+    is ``(1 page,``. Reading the log rather than shelling out to ``pdfinfo``
+    keeps this to a string match on output we already have, and adds no
+    dependency to the image.
+
+    Returns ``None`` when the log doesn't say, which a failed compile won't.
+    Callers must treat that as "unknown", never as zero.
+    """
+    match = re.search(r"Output written on .*?\((\d+) pages?,", log)
+    return int(match.group(1)) if match else None
+
+
+async def compile_source(source: str, engine: Engine) -> tuple[bool, str, int | None]:
+    """Compile a document in a throwaway sandbox: (succeeded, log, pages).
+
+    The same path `POST /latex/compile` takes, factored out so other endpoints can
+    compile without going back out over HTTP — `POST /resume/tailor` uses it to
+    check that what the model wrote actually builds, and that it came out on one
+    page. Holds a compile slot, so an internal caller queues behind the same cap
+    as a client request rather than around it.
+    """
+    async with _compile_slots, _temp_dir() as directory:
+        (directory / "main.tex").write_text(source, encoding="utf-8")
+        succeeded, log = await _run_latexmk(directory, engine)
+        if not succeeded or not (directory / "main.pdf").exists():
+            return False, log, None
+        return True, log, page_count(log)
 
 
 @router.post("/compile", response_model=CompileResponse)

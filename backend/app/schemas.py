@@ -73,6 +73,22 @@ class IssueIn(_Syncable):
     position: int = 0
 
 
+class ResumeVersionIn(_Syncable):
+    """One immutable snapshot of a resume's LaTeX source.
+
+    Nothing here is nullable-for-preservation: the whole table is new, so no
+    client can predate a column. **When a column is added later, it must be
+    added to `_PRESERVE_IF_NULL` in `routers/sync.py`** — an older client that
+    can't send it would otherwise null it out on every device.
+    """
+
+    note_id: str = ""
+    # What changed, frozen when the snapshot was taken.
+    label: str = ""
+    # The full LaTeX source at that moment.
+    source: str = ""
+
+
 class PushRequest(BaseModel):
     """A batch of local changes the client wants the server to absorb."""
 
@@ -80,6 +96,7 @@ class PushRequest(BaseModel):
     notes: list[NoteIn] = []
     copa_items: list[CopaItemIn] = []
     issues: list[IssueIn] = []
+    resume_versions: list[ResumeVersionIn] = []
 
 
 class PushResponse(BaseModel):
@@ -94,4 +111,5 @@ class PullResponse(BaseModel):
     notes: list[NoteIn] = []
     copa_items: list[CopaItemIn] = []
     issues: list[IssueIn] = []
+    resume_versions: list[ResumeVersionIn] = []
     server_seq: int

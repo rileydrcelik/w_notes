@@ -25,6 +25,24 @@ type CompileApiResponse = {
 const B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
 
 /**
+ * How long to wait for a compile before giving up on it.
+ *
+ * Deliberately *longer* than the server's own 60s cap (`_TIMEOUT_SECONDS` in
+ * `backend/app/routers/latex.py`). When a document really is a runaway loop the
+ * server kills it and hands back a log saying so, which is a far better answer
+ * than "the client stopped waiting" — so the client must not fire first and
+ * throw that away.
+ *
+ * This is for the other case: no answer is coming at all. Nothing listening on
+ * `EXPO_PUBLIC_API_URL`, a connection that opens and then stalls, an auth token
+ * refresh that never resolves. There was no limit here, so that case left the
+ * preview spinning for ever with nothing on the way and no way out — the retry
+ * button only exists once a compile has *failed*. A timeout is what turns a hang
+ * into a failure you can act on.
+ */
+const COMPILE_TIMEOUT_MS = 75_000;
+
+/**
  * Decode base64 to bytes without `atob` or `Buffer`. Hand-rolled deliberately:
  * `atob` is a browser global that Hermes has only recently shipped, and a
  * platform-dependent global is exactly the kind of thing that works in every
@@ -73,6 +91,11 @@ export async function compileLatex(
 
   onProgress?.('starting');
 
+  // Cleared in `finally`, so a compile that answers normally doesn't leave a
+  // 75-second timer alive behind it.
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), COMPILE_TIMEOUT_MS);
+
   try {
     onProgress?.('compiling');
     const response = await apiFetch<CompileApiResponse>('/latex/compile', {
@@ -80,6 +103,7 @@ export async function compileLatex(
       // Omitted rather than defaulted here: the server owns which engine is the
       // default, and one place deciding that is one place to change it.
       body: engine ? { source, engine } : { source },
+      signal: controller.signal,
     });
 
     const log = response.log ?? '';
@@ -97,10 +121,29 @@ export async function compileLatex(
     }
     return { ok: false, log, diagnostics };
   } catch (e) {
+    // Our own timeout, not the document's fault and not the network's either —
+    // say so plainly, because "failed to fetch" after 75 silent seconds tells
+    // nobody anything. Checked off the controller rather than off the error:
+    // what a cancelled request throws differs between fetch implementations.
+    if (controller.signal.aborted) {
+      return {
+        ok: false,
+        log: '',
+        diagnostics: [
+          {
+            message: `The server didn't answer within ${Math.round(
+              COMPILE_TIMEOUT_MS / 1000,
+            )} seconds. It may be unreachable — check the connection and try again.`,
+          },
+        ],
+      };
+    }
     // A transport failure — offline, a 429 from the compile queue, a 503 when
     // the server has no TeX installed. Say which, rather than blaming the LaTeX.
     const message = e instanceof Error ? e.message : String(e);
     return { ok: false, log: '', diagnostics: [{ message: describeFailure(message) }] };
+  } finally {
+    clearTimeout(timer);
   }
 }
 

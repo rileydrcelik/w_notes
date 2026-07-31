@@ -100,6 +100,27 @@ export type Issue = {
 };
 
 /**
+ * One entry in a resume's version history: the LaTeX source as it stood after a
+ * change, and a label saying what that change was.
+ *
+ * Immutable once written — a snapshot is a historical fact, not a record that
+ * gets kept up to date. The oldest snapshot for a resume is "the original" and
+ * carries the resume's title as its label; every later one describes what the
+ * add/edit/restore did.
+ */
+export type ResumeVersion = {
+  id: string;
+  /** The resume note this belongs to. */
+  noteId: string;
+  /** What this change was, e.g. "Added Backend Engineer, Globex". */
+  label: string;
+  /** The full LaTeX source at this point in the resume's life. */
+  source: string;
+  /** Raw creation timestamp (ms) — the history's sort key. */
+  createdAt: number;
+};
+
+/**
  * The issue-type note ids an issue effectively belongs to. Uses `typeIds` when
  * present, else falls back to `[noteId]` so pre-multi-type issues (empty
  * `typeIds`) still show under their single home type.

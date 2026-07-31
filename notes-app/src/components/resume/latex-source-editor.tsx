@@ -17,7 +17,7 @@ import { Fonts, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import { setActiveEditorDismiss } from '@/lib/active-editor';
 import type { ScrollOffsetEvent } from '@/hooks/use-scrolled';
-import { noFocusOutline } from '@/lib/web-style';
+import { hideScrollbar, noFocusOutline } from '@/lib/web-style';
 
 export function LatexSourceEditor({
   value,
@@ -25,6 +25,7 @@ export function LatexSourceEditor({
   inputRef,
   onFocusChange,
   onScroll,
+  bottomInset = 0,
 }: {
   value: string;
   onChangeText: (text: string) => void;
@@ -44,6 +45,19 @@ export function LatexSourceEditor({
    * react-native-web forwards it to the textarea.
    */
   onScroll?: (event: ScrollOffsetEvent) => void;
+  /**
+   * Room below the last line for the floating navbar and toolbar.
+   *
+   * Padding *inside* the field, not around it. The field itself runs to the
+   * bottom of the window and the glass bars float over it — the arrangement
+   * every other scrolling surface in the app uses to meet the navbar. Insetting
+   * the container instead ends the editor in mid-air above the bars, which is
+   * what this replaced.
+   *
+   * A textarea's scroll height includes its padding, so the last line still
+   * scrolls up clear of the bars rather than being stranded underneath them.
+   */
+  bottomInset?: number;
 }) {
   const theme = useTheme();
 
@@ -66,7 +80,16 @@ export function LatexSourceEditor({
       }}
       placeholder={'Paste your LaTeX resume here…'}
       placeholderTextColor={theme.textSecondary}
-      style={[styles.input, noFocusOutline, { color: theme.text }]}
+      style={[
+        styles.input,
+        noFocusOutline,
+        // The source scrolls, but a bar down its edge would cut into the glass
+        // toolbar floating over it and there is nothing here worth a scroll
+        // position indicator — it's one field, not a feed.
+        hideScrollbar,
+        { color: theme.text },
+        bottomInset > 0 && { paddingBottom: Spacing.three + bottomInset },
+      ]}
       // No `scrollEventThrottle`: it isn't a TextInput prop. A source file is
       // short enough that the default rate costs nothing.
       onScroll={onScroll}

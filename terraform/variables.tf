@@ -130,6 +130,13 @@ variable "github_token" {
   description = "Fine-grained GitHub PAT for the /sentry/autofix endpoints (fires repository_dispatch at autofix_repo and reads back the PR). Needs Contents R/W + Pull requests R + Actions R/W on the target repo. Empty => autofix returns 503."
 }
 
+variable "anthropic_api_key" {
+  type        = string
+  default     = ""
+  sensitive   = true
+  description = "Anthropic API key for the resume adder, which asks Claude to draft a new resume entry in the document's own LaTeX style. Empty => POST /resume/entry returns 503 and the rest of the API is unaffected."
+}
+
 variable "autofix_repo" {
   type        = string
   default     = ""

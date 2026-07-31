@@ -215,3 +215,50 @@ class Issue(Base):
         Index("idx_issues_user_seq", "user_id", "server_seq"),
         Index("idx_issues_user_note", "user_id", "note_id"),
     )
+
+
+class ResumeVersion(Base):
+    """One snapshot of a resume note's LaTeX source, with a label saying what
+    changed.
+
+    Append-only and immutable. Nothing rewrites a row once written, which makes
+    this the one synced table where two devices working offline cannot lose each
+    other's work: every snapshot carries its own id, so both land and the LWW
+    comparison never has a real conflict to resolve — the only row that ever
+    conflicts with an incoming one is a byte-identical copy of itself, from a
+    push whose response got dropped.
+
+    ``note_id`` deliberately carries **no ForeignKey**, matching ``Issue.note_id``
+    and for the same reason: nothing in this schema is ever hard-deleted, so a
+    database-level cascade would never fire anyway, while an FK would impose an
+    ordering dependency between two independently-upserted sync batches whose
+    order is unspecified.
+    """
+
+    __tablename__ = "resume_versions"
+
+    user_id: Mapped[str] = mapped_column(
+        String, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+
+    # The resume note this snapshot belongs to.
+    note_id: Mapped[str] = mapped_column(String, nullable=False, default="")
+    # What the change was, frozen at write time. Not derived from the note's
+    # title, so renaming a resume can't rewrite its own history.
+    label: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    # The full LaTeX source at this point in the resume's life.
+    source: Mapped[str] = mapped_column(Text, nullable=False, default="")
+
+    created_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    updated_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    deleted_at: Mapped[int | None] = mapped_column(BigInteger)
+
+    server_seq: Mapped[int] = mapped_column(
+        BigInteger, server_default=SERVER_SEQ_DEFAULT, nullable=False
+    )
+
+    __table_args__ = (
+        Index("idx_resume_versions_user_seq", "user_id", "server_seq"),
+        Index("idx_resume_versions_user_note", "user_id", "note_id"),
+    )

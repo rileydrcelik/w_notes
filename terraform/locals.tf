@@ -17,6 +17,10 @@ locals {
   # Autofix needs both a GitHub token (to dispatch/read PRs) and a target repo.
   autofix_enabled = var.github_token != "" && var.autofix_repo != ""
 
+  # The resume adder writes a new entry into a resume's LaTeX by asking Claude.
+  # No key means that one endpoint 503s; everything else is unaffected.
+  anthropic_enabled = var.anthropic_api_key != ""
+
   # Publishing needs a destination, a credential, and at least one authorized
   # publisher. Missing any of the three disables it, matching the app's own
   # `publishing_enabled` check so the infra and the code fail closed together.

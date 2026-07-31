@@ -27,6 +27,10 @@ cloudflare_account_id = "your-account-id"     # same Overview page, right sideba
 # autofix_repo = "owner/name"
 # github_token = "github_pat_..."
 
+# Anthropic API key for the resume adder (POST /resume/entry drafts a new resume
+# entry in the document's own style). Empty => that one endpoint returns 503.
+# anthropic_api_key = "sk-ant-..."
+
 # Firebase service-account JSON. Easiest is to load it from the file at apply time
 # rather than pasting it here:
 #   terraform apply -var "firebase_credentials_json=$(Get-Content ..\backend\firebase-service-account.json -Raw)"

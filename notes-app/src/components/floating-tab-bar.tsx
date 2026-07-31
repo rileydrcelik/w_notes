@@ -38,6 +38,12 @@ import {
   subscribeActiveEditor,
 } from '@/lib/active-editor';
 import { getEditAction, runEditAction, subscribeEditAction } from '@/lib/edit-action';
+import {
+  getVersionAction,
+  getVersionKeepsWhileEditing,
+  runVersionAction,
+  subscribeVersionAction,
+} from '@/lib/version-action';
 import { getSaveAction, subscribeSaveAction } from '@/lib/save-action';
 import { Spacing, TabBar } from '@/constants/theme';
 import { useContextMenu } from '@/hooks/use-context-menu';
@@ -78,11 +84,33 @@ function useEditorActive() {
 
 /**
  * Tracks whether the focused screen offers an "edit" action — true on screens
- * showing a leaf object (note, copy block, resume), which have no children to
- * create. See `lib/edit-action.ts`.
+ * showing a leaf object with an editor to open (a note, a copy block), which have
+ * no children to create. See `lib/edit-action.ts`.
+ *
+ * A resume is a leaf object too but does *not* register here: its trailing button
+ * is its version history instead, since tapping the preview already opens the
+ * source. See `useVersionsActive` below and `lib/version-action.ts`.
  */
 function useEditActive() {
   return useSyncExternalStore(subscribeEditAction, getEditAction, () => null) !== null;
+}
+
+/**
+ * Tracks whether the focused screen offers a "version history" action — true on
+ * the resume screen. See `lib/version-action.ts`.
+ */
+function useVersionsActive() {
+  return useSyncExternalStore(subscribeVersionAction, getVersionAction, () => null) !== null;
+}
+
+/**
+ * Whether that screen also asked to keep the button through editing, rather than
+ * yielding it to the "done" check. True only where the screen has no read view
+ * for the check to return to — the resume laid out side by side. See
+ * `lib/version-action.ts`.
+ */
+function useVersionsHeld() {
+  return useSyncExternalStore(subscribeVersionAction, getVersionKeepsWhileEditing, () => false);
 }
 
 /**
@@ -95,6 +123,30 @@ function useScreenSaveAction() {
 }
 
 type FeatherName = ComponentProps<typeof Feather>['name'];
+
+/**
+ * What the trailing button does on a screen showing a leaf object — one with no
+ * children, so nothing to create. The screen registers the action (see
+ * `lib/edit-action.ts`, `lib/version-action.ts`) and the button borrows its icon
+ * and label; `run` reports whether there was anything registered to run, so the
+ * button can fall through to "create" if the slot emptied mid-press.
+ */
+type LeafAction = {
+  icon: FeatherName;
+  label: string;
+  run: () => boolean;
+  /**
+   * This action survives its screen's editor taking focus, rather than giving
+   * the slot up to the "done" check.
+   *
+   * Only true where the check has no job — the resume screen side by side, where
+   * there is no read view to return to. It also changes what a press does: the
+   * usual path treats "an editor was focused" as "this press was the done
+   * gesture" and stops there, which for a button that is deliberately still
+   * showing would mean it silently did nothing.
+   */
+  whileEditing?: boolean;
+};
 
 /** On-screen rect of the create button, so the menu can anchor above it. */
 type Anchor = { x: number; y: number; width: number; height: number };
@@ -204,11 +256,45 @@ export function FloatingTabBar({ blurTarget }: FloatingTabBarProps) {
   // driven by the keyboard; web has no on-screen keyboard, so an active editor
   // surfaces the same check (tapping it returns to the read view).
   const editorActive = useEditorActive();
-  const doneMode = vertical || (Platform.OS === 'web' && editorActive);
-  // On a leaf object (note, copy block, resume) the create button becomes an
-  // edit pencil — there's nothing to create inside one. The "done" check still
-  // wins while an editor is actually focused: pencil in, check out.
+  // A screen offering version history can ask to keep that button while its
+  // editor is focused, instead of flipping to the check.
+  //
+  // The check means "finish editing and go back to the read view", and on the
+  // resume screen laid out side by side there is no read view to go back to —
+  // the source and the compiled page are both permanently on screen. So the
+  // check had nothing to do there but appear and disappear as focus moved
+  // between the panes, and the one button that *does* have a job on that screen
+  // kept being replaced by it. Stacked, that screen has an ordinary read view
+  // and asks for no such thing, so the check behaves as it does everywhere else
+  // — which is why this reads the screen's request and not merely the presence
+  // of a history button. On native the keyboard still wins (`vertical`), because
+  // there the check is what puts the keyboard away.
+  const versionsActive = useVersionsActive();
+  const versionsHeld = useVersionsHeld();
+  const doneMode = vertical || (Platform.OS === 'web' && editorActive && !versionsHeld);
+  // On a leaf object (note, copy block, resume) the create button becomes
+  // something the screen chose — there's nothing to create inside one. A note
+  // offers an edit pencil; a resume offers its version history.
   const editMode = useEditActive() && !doneMode;
+  const versionsMode = versionsActive && !doneMode;
+  // The two are mutually exclusive by construction — only note/copa register an
+  // edit action, only the resume screen registers a version action — so the order
+  // here is cosmetic rather than load-bearing. `leaf` slots into exactly the tier
+  // `editMode` already occupied, below every selection and compose mode, so the
+  // trailing-slot chain below needs no reordering.
+  const leaf: LeafAction | null = editMode
+    ? { icon: 'edit-2', label: 'Edit', run: runEditAction }
+    : versionsMode
+      ? {
+          icon: 'clock',
+          label: 'Version history',
+          run: runVersionAction,
+          // Where it stays put through editing, a press has to *run* rather than
+          // just blur. See `CreateButton`. Elsewhere it has already given way to
+          // the check by now, so this is false and the ordinary blur applies.
+          whileEditing: versionsHeld,
+        }
+      : null;
   // Show back on every page except the home screen (which lives at "/").
   const showBack = pathname !== '/';
   // The current note being viewed, if any. When one is open and we're in *view*
@@ -443,7 +529,7 @@ export function FloatingTabBar({ blurTarget }: FloatingTabBarProps) {
                 <CreateButton
                   iconColor={colors.textSecondary}
                   keyboardVisible={doneMode}
-                  editMode={editMode}
+                  leaf={leaf}
                   blurTarget={blurTarget}
                   onOpenMenu={(anchor) => setCreateMenu({ anchor })}
                 />
@@ -741,26 +827,32 @@ function currentFolderId(pathname: string, getNote: (id: string) => Note | undef
  *
  * With the keyboard up (or an editor focused on web) it's a "done" check that
  * dismisses the editor. On a leaf object — a note, a copy block, a resume, none
- * of which can contain anything — it's an edit pencil that opens that screen's
- * editor. Otherwise it's the create (+) button: on the copa tab a tap opens the
- * create menu anchored above it (copy block vs file); elsewhere a tap adds a
- * note in the current location.
+ * of which can contain anything — it's whatever that screen registered in place
+ * of create: an edit pencil that opens the editor on a note or copy block, and a
+ * clock that opens the version history on a resume, where tapping the preview
+ * already starts an edit. Otherwise it's the create (+) button: on the copa tab a
+ * tap opens the create menu anchored above it (copy block vs file); elsewhere a
+ * tap adds a note in the current location.
  *
- * A long-press always opens the create menu, including in edit mode, so a leaf
+ * A long-press always opens the create menu, whatever the tap does, so a leaf
  * screen still has a way to make something new. The button reports its on-screen
  * rect so the menu can anchor to it.
  */
 function CreateButton({
   iconColor,
   keyboardVisible,
-  editMode,
+  leaf,
   blurTarget,
   onOpenMenu,
 }: {
   iconColor: string;
   keyboardVisible: boolean;
-  /** The focused screen offers an edit action (see `lib/edit-action.ts`). */
-  editMode: boolean;
+  /**
+   * The leaf-object action this screen offers instead of "create" — an edit
+   * pencil on a note, version history on a resume — or null where the button
+   * really does create something. See `LeafAction`.
+   */
+  leaf: LeafAction | null;
   blurTarget?: RefObject<View | null> | null;
   onOpenMenu: (anchor: Anchor | null) => void;
 }) {
@@ -781,6 +873,13 @@ function CreateButton({
   };
 
   const onPress = () => {
+    // A leaf action that stays put while editing is not a "done" button, so it
+    // runs before any of the done handling below — which would otherwise read the
+    // focused editor as "this press was the done gesture", blur it, and return,
+    // leaving a visible button that does nothing. The keyboard still takes
+    // precedence: while it's up, this button is the way to put it away.
+    if (leaf?.whileEditing && !keyboardVisible && leaf.run()) return;
+
     // Blur the native rich editor (Keyboard.dismiss can't) before dismissing.
     const dismissed = dismissActiveEditor();
     Keyboard.dismiss();
@@ -789,8 +888,11 @@ function CreateButton({
     // blurs the editor first, so `dismissActiveEditor` is already a no-op by now;
     // `editorJustDismissed` catches that so we don't fall through to "create".
     if (keyboardVisible || dismissed || editorJustDismissed()) return;
-    // A leaf object has nothing to create inside it — edit it instead.
-    if (editMode && runEditAction()) return;
+    // A leaf object has nothing to create inside it — do its own thing instead.
+    // This must stay *below* the "done" checks above: a press landing at the
+    // moment focus is lost would otherwise open a sheet instead of registering
+    // as the end of an edit.
+    if (leaf && leaf.run()) return;
     // On the copa tab a tap opens the anchored menu; elsewhere it creates a note.
     if (onCopa) {
       openAnchoredMenu();
@@ -830,7 +932,7 @@ function CreateButton({
       <Pressable
         ref={setButtonRef}
         accessibilityRole="button"
-        accessibilityLabel={keyboardVisible ? 'Done' : editMode ? 'Edit' : 'Create'}
+        accessibilityLabel={keyboardVisible ? 'Done' : (leaf?.label ?? 'Create')}
         onPressIn={() => {
           scale.value = withTiming(0.92, { duration: 80 });
         }}
@@ -845,11 +947,12 @@ function CreateButton({
           blurTarget={blurTarget}
           style={[styles.createButton, { width: TabBar.height, height: TabBar.height }]}>
           <Feather
-            name={keyboardVisible ? 'check' : editMode ? 'edit-2' : 'plus'}
+            name={keyboardVisible ? 'check' : (leaf?.icon ?? 'plus')}
             color={iconColor}
-            // The pencil reads heavier than the check/plus at the same size, so
-            // it sits a touch smaller to keep the three states optically equal.
-            size={editMode ? 22 : 26}
+            // The pencil and the clock both read heavier than the check/plus at
+            // the same size, so a leaf icon sits a touch smaller to keep the
+            // states optically equal.
+            size={leaf ? 22 : 26}
           />
         </GlassSurface>
       </Pressable>

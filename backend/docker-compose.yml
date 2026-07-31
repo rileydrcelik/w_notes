@@ -38,6 +38,10 @@ services:
       # Read from backend/.env; empty => the autofix endpoints return 503.
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
       AUTOFIX_REPO: ${AUTOFIX_REPO:-}
+      # The resume adder (/resume/entry). Read from backend/.env; empty => the
+      # endpoint returns 503 and the app says the server can't write entries.
+      # In production this comes from SSM, not from here.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       ENV: ${ENV:-development}
       # Path (inside the container) to the Firebase service-account JSON. Drop the
       # file at backend/firebase-service-account.json and it appears here via the

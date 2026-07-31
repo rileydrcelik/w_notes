@@ -50,6 +50,28 @@ class Settings(BaseSettings):
     # Base URL of the GitHub REST API. Overridable for GitHub Enterprise.
     github_api_base: str = "https://api.github.com"
 
+    # Anthropic API key used by POST /resume/entry, which asks Claude to draft a
+    # new resume entry in the document's own LaTeX style. Kept server-side (SSM)
+    # and never shipped in the app bundle — a key in the client bundle is a key
+    # anyone can read. Empty => that endpoint returns 503 and nothing else in the
+    # API changes.
+    anthropic_api_key: str = ""
+
+    # Which model drafts and edits entries, and how long to wait for it.
+    #
+    # Sonnet, not Opus. The job is narrow and the context does most of the work:
+    # the document to imitate is right there, the form is filled in, and the
+    # answer is a few lines of LaTeX in a schema the API enforces. Opus's headroom
+    # went unused on a task that specified this tightly, and someone is watching a
+    # spinner while it runs.
+    #
+    # Everything the endpoints rely on is available here — structured outputs,
+    # `effort`, and the `web_fetch_20260209` tool that reads context links — so
+    # this is a straight swap. Overridable per-environment, so a deployment can
+    # move it without a code change.
+    anthropic_model: str = "claude-sonnet-5"
+    anthropic_timeout_seconds: float = 60.0
+
     # Firebase service-account credential used to verify ID tokens: either a path
     # to the JSON file (local dev) or the JSON content itself (deployed — injected
     # from a secrets manager). Empty => Firebase auth is disabled and only
