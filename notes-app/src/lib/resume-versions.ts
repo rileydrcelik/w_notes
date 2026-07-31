@@ -22,6 +22,7 @@
  */
 import type { Note, ResumeVersion } from '@/data/notes';
 import type { ResumeEditDraft, ResumeEntryDraft } from '@/lib/latex/entry';
+import type { HardenDraft } from '@/lib/latex/harden';
 import type { TailorDraft } from '@/lib/latex/tailor';
 import { resumeTitle } from '@/lib/resume-note';
 
@@ -88,6 +89,20 @@ export function describeTailorTarget(draft: Pick<TailorDraft, 'company' | 'role'
   // when there is something on both sides of it.
   const target = [company, role].filter(Boolean).join(' — ');
   return truncateLabel(target || 'Tailored resume');
+}
+
+/**
+ * What a hardened version is called: the job title it was built against.
+ *
+ * "Hardened — Data Engineer". The prefix earns its place here where it doesn't on
+ * a tailored version, because a bare job title in the list would be ambiguous
+ * with one: a tailored row is "Acme — Senior Backend Engineer" and a hardened one
+ * has no company to put in front of the title, so without the word the two kinds
+ * of row would be told apart only by whether they happen to have a dash in them.
+ */
+export function describeHardenTarget(draft: Pick<HardenDraft, 'role'>): string {
+  const role = draft.role.trim();
+  return truncateLabel(role ? `Hardened — ${role}` : 'Hardened resume');
 }
 
 /**

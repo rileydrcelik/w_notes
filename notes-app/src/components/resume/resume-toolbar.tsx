@@ -8,13 +8,16 @@
  * showing, so it doesn't step on the app-wide pencil→check gesture
  * (`lib/active-editor.ts`).
  *
- * Three things live here. **Add entry** opens the form that drafts a new resume
- * entry, which is a writing action on the document. **Recompile** runs TeX over
- * the source as it stands. **The compiler** is the choice of TeX engine, which
- * used to be an icon in the screen header; it moved because it is a property of
- * the document you only ever want while you're working on it, and a permanent
- * header button for it made the header about the compiler rather than about the
- * resume.
+ * What lives here. **Add entry** opens the form that drafts a new resume entry,
+ * and **Edit resume** reaches into what is already there — both writing actions
+ * on the document. **Harden** and **Tailor** are the two whole-document actions
+ * and sit next to each other because the pair is the point: hardening aims at a
+ * job *title* and produces the resume you send by default, tailoring aims at one
+ * posting and produces a single application. **Recompile** runs TeX over the
+ * source as it stands. **The compiler** is the choice of TeX engine, which used
+ * to be an icon in the screen header; it moved because it is a property of the
+ * document you only ever want while you're working on it, and a permanent header
+ * button for it made the header about the compiler rather than about the resume.
  *
  * Recompile is a manual button rather than something that fires as you type
  * because a TeX run is a round trip to a server that takes seconds and reads the
@@ -58,6 +61,7 @@ export function ResumeToolbar({
   visible,
   onAddEntry,
   onEditEntry,
+  onHarden,
   onTailor,
   canEdit,
   onRecompile,
@@ -73,6 +77,8 @@ export function ResumeToolbar({
   visible: boolean;
   onAddEntry: () => void;
   onEditEntry: () => void;
+  /** Build the default one-page resume for a job title (the title is the only input). */
+  onHarden: () => void;
   /** Aim the whole resume at one job (company, role, job description). */
   onTailor: () => void;
   /** False for an empty document — there is nothing there to rewrite. */
@@ -102,16 +108,27 @@ export function ResumeToolbar({
   if (!visible) return null;
 
   // On a narrow bar the labels cost more than they earn; the icons and their
-  // accessibility labels still say what each button does. Five buttons is the
-  // most this bar holds, and every label showing at once needs roughly 630px, so
-  // they drop in order of how much the icon already tells you: the crosshair,
+  // accessibility labels still say what each button does. Six buttons is the most
+  // this bar holds, and every label showing at once needs roughly 900px, so they
+  // drop in order of how much the icon already tells you: the shield, crosshair,
   // pencil and file-plus are ambiguous enough to want words first, the refresh
   // arrow reads on its own, and the compiler is the one label that has to stay
-  // because "pdfLaTeX" is information rather than a name for a button. At a phone
-  // width only that one survives, which is what keeps the row inside its glass.
-  const showCompilerLabel = width >= 380;
-  const showEntryLabels = width >= 680;
-  const showRecompileLabel = width >= 820;
+  // because "pdfLaTeX" is information rather than a name for a button.
+  //
+  // All three thresholds moved up when Harden arrived: a sixth icon costs ~53px
+  // of bar at every width, and its label another ~90 on top of that.
+  const showCompilerLabel = width >= 445;
+  const showEntryLabels = width >= 780;
+  const showRecompileLabel = width >= 920;
+
+  // Below this the dividers come out, and that is a fit requirement rather than
+  // a taste one. Stripped to icons the row still costs a hard 6 x 44 of button
+  // (`minWidth`, which is the 44pt touch target and not negotiable) + 5 x 9 of
+  // divider + 8 of bar padding = 317, inside a bar already inset 16 each side —
+  // so it needs a 349px window, where five buttons needed 296. On a 320pt phone
+  // that overflowed its glass. The dividers are the only part of that sum that
+  // is decoration, so they are what goes; 6 x 44 + 8 = 272 fits with room over.
+  const showDividers = width >= 360;
 
   return (
     <Animated.View
@@ -133,7 +150,9 @@ export function ResumeToolbar({
           {showEntryLabels && <ThemedText type="small">Add entry</ThemedText>}
         </Pressable>
 
-        <View style={[styles.divider, { backgroundColor: hexToRgba(theme.textSecondary, 0.3) }]} />
+        {showDividers && (
+          <View style={[styles.divider, { backgroundColor: hexToRgba(theme.textSecondary, 0.3) }]} />
+        )}
 
         {/* Dimmed rather than removed when there's nothing to edit: the bar is
             permanent furniture in the split layout, and a button that vanishes
@@ -155,7 +174,34 @@ export function ResumeToolbar({
           {showEntryLabels && <ThemedText type="small">Edit resume</ThemedText>}
         </Pressable>
 
-        <View style={[styles.divider, { backgroundColor: hexToRgba(theme.textSecondary, 0.3) }]} />
+        {showDividers && (
+          <View style={[styles.divider, { backgroundColor: hexToRgba(theme.textSecondary, 0.3) }]} />
+        )}
+
+        {/* Hardening reads the whole document too, and sits immediately before
+            Tailor because the two are a pair: this one builds the resume you
+            send by default, that one aims a copy of it at one posting. Dimmed on
+            the same terms as both — an empty resume has nothing to choose from. */}
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Harden this resume for a job title"
+          accessibilityState={{ disabled: !canEdit }}
+          onPress={() => {
+            if (canEdit) onHarden();
+          }}
+          style={({ pressed }) => [
+            styles.button,
+            showEntryLabels && styles.wide,
+            pressed && canEdit && styles.pressed,
+            !canEdit && styles.disabled,
+          ]}>
+          <Feather name="shield" size={18} color={theme.text} />
+          {showEntryLabels && <ThemedText type="small">Harden</ThemedText>}
+        </Pressable>
+
+        {showDividers && (
+          <View style={[styles.divider, { backgroundColor: hexToRgba(theme.textSecondary, 0.3) }]} />
+        )}
 
         {/* Tailoring reads the whole document rather than one entry, so it is
             dimmed on the same terms as Edit: an empty resume has nothing to
@@ -177,7 +223,9 @@ export function ResumeToolbar({
           {showEntryLabels && <ThemedText type="small">Tailor</ThemedText>}
         </Pressable>
 
-        <View style={[styles.divider, { backgroundColor: hexToRgba(theme.textSecondary, 0.3) }]} />
+        {showDividers && (
+          <View style={[styles.divider, { backgroundColor: hexToRgba(theme.textSecondary, 0.3) }]} />
+        )}
 
         <RecompileButton
           onPress={onRecompile}
@@ -186,7 +234,9 @@ export function ResumeToolbar({
           showLabel={showRecompileLabel}
         />
 
-        <View style={[styles.divider, { backgroundColor: hexToRgba(theme.textSecondary, 0.3) }]} />
+        {showDividers && (
+          <View style={[styles.divider, { backgroundColor: hexToRgba(theme.textSecondary, 0.3) }]} />
+        )}
 
         <Pressable
           accessibilityRole="button"

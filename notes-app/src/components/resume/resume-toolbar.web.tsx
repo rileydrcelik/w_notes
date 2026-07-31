@@ -39,6 +39,7 @@ export function ResumeToolbar({
   visible,
   onAddEntry,
   onEditEntry,
+  onHarden,
   onTailor,
   canEdit,
   onRecompile,
@@ -54,6 +55,8 @@ export function ResumeToolbar({
   visible: boolean;
   onAddEntry: () => void;
   onEditEntry: () => void;
+  /** Build the default one-page resume for a job title (the title is the only input). */
+  onHarden: () => void;
   /** Aim the whole resume at one job (company, role, job description). */
   onTailor: () => void;
   /** False for an empty document — there is nothing there to rewrite. */
@@ -73,10 +76,13 @@ export function ResumeToolbar({
 
   if (!visible) return null;
 
-  // See `resume-toolbar.tsx` — five buttons, and every label at once needs ~630px.
-  const showCompilerLabel = width >= 380;
-  const showEntryLabels = width >= 680;
-  const showRecompileLabel = width >= 820;
+  // See `resume-toolbar.tsx` — six buttons, and every label at once needs ~900px.
+  const showCompilerLabel = width >= 445;
+  const showEntryLabels = width >= 780;
+  const showRecompileLabel = width >= 920;
+  // See `resume-toolbar.tsx`: below this the six icons alone overflow the bar,
+  // and the dividers are the only part of its width that isn't a touch target.
+  const showDividers = width >= 360;
 
   return (
     <Animated.View
@@ -98,7 +104,9 @@ export function ResumeToolbar({
           {showEntryLabels && <ThemedText type="small">Add entry</ThemedText>}
         </Pressable>
 
-        <View style={[styles.divider, { backgroundColor: hexToRgba(theme.textSecondary, 0.3) }]} />
+        {showDividers && (
+          <View style={[styles.divider, { backgroundColor: hexToRgba(theme.textSecondary, 0.3) }]} />
+        )}
 
         {/* Dimmed rather than removed when there's nothing to edit: the bar is
             permanent furniture in the split layout, and a button that vanishes
@@ -120,7 +128,34 @@ export function ResumeToolbar({
           {showEntryLabels && <ThemedText type="small">Edit resume</ThemedText>}
         </Pressable>
 
-        <View style={[styles.divider, { backgroundColor: hexToRgba(theme.textSecondary, 0.3) }]} />
+        {showDividers && (
+          <View style={[styles.divider, { backgroundColor: hexToRgba(theme.textSecondary, 0.3) }]} />
+        )}
+
+        {/* Hardening reads the whole document too, and sits immediately before
+            Tailor because the two are a pair: this one builds the resume you
+            send by default, that one aims a copy of it at one posting. Dimmed on
+            the same terms as both — an empty resume has nothing to choose from. */}
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Harden this resume for a job title"
+          accessibilityState={{ disabled: !canEdit }}
+          onPress={() => {
+            if (canEdit) onHarden();
+          }}
+          style={({ pressed }) => [
+            styles.button,
+            showEntryLabels && styles.wide,
+            pressed && canEdit && styles.pressed,
+            !canEdit && styles.disabled,
+          ]}>
+          <Feather name="shield" size={18} color={theme.text} />
+          {showEntryLabels && <ThemedText type="small">Harden</ThemedText>}
+        </Pressable>
+
+        {showDividers && (
+          <View style={[styles.divider, { backgroundColor: hexToRgba(theme.textSecondary, 0.3) }]} />
+        )}
 
         {/* Tailoring reads the whole document rather than one entry, so it is
             dimmed on the same terms as Edit: an empty resume has nothing to
@@ -142,7 +177,9 @@ export function ResumeToolbar({
           {showEntryLabels && <ThemedText type="small">Tailor</ThemedText>}
         </Pressable>
 
-        <View style={[styles.divider, { backgroundColor: hexToRgba(theme.textSecondary, 0.3) }]} />
+        {showDividers && (
+          <View style={[styles.divider, { backgroundColor: hexToRgba(theme.textSecondary, 0.3) }]} />
+        )}
 
         <RecompileButton
           onPress={onRecompile}
@@ -151,7 +188,9 @@ export function ResumeToolbar({
           showLabel={showRecompileLabel}
         />
 
-        <View style={[styles.divider, { backgroundColor: hexToRgba(theme.textSecondary, 0.3) }]} />
+        {showDividers && (
+          <View style={[styles.divider, { backgroundColor: hexToRgba(theme.textSecondary, 0.3) }]} />
+        )}
 
         <Pressable
           accessibilityRole="button"

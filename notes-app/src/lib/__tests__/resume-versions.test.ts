@@ -4,6 +4,7 @@ import type { ResumeVersion } from '@/data/notes';
 import {
   MAX_LABEL_CHARS,
   describeAge,
+  describeHardenTarget,
   describeTailorTarget,
   isOriginal,
   originalLabel,
@@ -132,6 +133,29 @@ describe('describeTailorTarget', () => {
 
   it('truncates a company that pasted the whole posting header', () => {
     const label = describeTailorTarget({ company: 'A'.repeat(200), role: 'Engineer' });
+    expect(label.length).toBeLessThanOrEqual(MAX_LABEL_CHARS + 1);
+  });
+});
+
+describe('describeHardenTarget', () => {
+  it('names the job title it was built against, and says what kind of version it is', () => {
+    // The prefix earns its place here where it doesn't on a tailored version: a
+    // hardened row has no company to put in front of the title, so without the
+    // word the two kinds of row would be told apart only by whether they happen
+    // to contain a dash.
+    expect(describeHardenTarget({ role: 'Data Engineer' })).toBe('Hardened — Data Engineer');
+  });
+
+  it('trims the title rather than carrying the whitespace into the row', () => {
+    expect(describeHardenTarget({ role: '  Data Engineer  ' })).toBe('Hardened — Data Engineer');
+  });
+
+  it('still names itself when no title is given', () => {
+    expect(describeHardenTarget({ role: '   ' })).toBe('Hardened resume');
+  });
+
+  it('truncates a title that pasted the whole posting', () => {
+    const label = describeHardenTarget({ role: 'A'.repeat(200) });
     expect(label.length).toBeLessThanOrEqual(MAX_LABEL_CHARS + 1);
   });
 });

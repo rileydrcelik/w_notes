@@ -1322,3 +1322,201 @@ async def test_tailor_refuses_when_the_sandbox_user_is_missing(
     assert res.status_code == 503
     # That it never reached the model is covered by the autouse
     # `no_real_anthropic_calls`, which raises rather than answering.
+
+
+# --------------------------------------------------------------------------
+# Hardening — `POST /resume/harden`.
+#
+# Structurally the tailor with the posting taken away and a recruiter's
+# reference list put in its place, so the compile-and-retry behaviour is
+# already covered above and is not re-tested here. What is specific to this
+# endpoint is what it *sends*: whether the reference for a job title reaches
+# the prompt, and whether the response tells the truth about which one it was.
+# Getting that backwards would be invisible — a resume built against a model's
+# guess, reported as one built against a compiled list.
+# --------------------------------------------------------------------------
+
+HARDEN = "/resume/harden"
+
+
+async def _harden(client, device, **overrides):
+    body = {"source": _RESUME, "role": "Data Engineer"}
+    body.update(overrides)
+    return await client.post(HARDEN, json=body, headers=device)
+
+
+async def test_harden_returns_503_without_an_api_key(client, device, monkeypatch):
+    settings = get_settings()
+    monkeypatch.setattr(settings, "anthropic_api_key", "", raising=False)
+    try:
+        res = await _harden(client, device)
+    finally:
+        get_settings.cache_clear()
+    assert res.status_code == 503
+
+
+async def test_harden_needs_a_role(client, device, anthropic_key):
+    res = await _harden(client, device, role="   ")
+    assert res.status_code == 400
+
+
+async def test_harden_needs_a_resume(client, device, anthropic_key):
+    res = await _harden(client, device, source="   ")
+    assert res.status_code == 400
+
+
+async def test_harden_rejects_a_pasted_posting_in_the_title_field(
+    client, device, anthropic_key
+):
+    """The title is the *whole* instruction here — there is no job description
+    beside it to make a pasted essay obvious — so an essay is refused as one."""
+    res = await _harden(client, device, role="We are looking for a " + "x" * 200)
+    assert res.status_code == 400
+    assert "job title" in res.json()["detail"]
+
+
+async def test_harden_rejects_an_oversized_resume(client, device, anthropic_key):
+    res = await _harden(client, device, source="x" * 1_000_001)
+    assert res.status_code == 413
+
+
+async def test_harden_rejects_an_unknown_engine(client, device, anthropic_key):
+    res = await _harden(client, device, engine="; rm -rf /")
+    assert res.status_code == 422
+
+
+async def test_harden_returns_a_one_page_document(
+    client, device, anthropic_key, fake_anthropic, monkeypatch
+):
+    _stub_compile(monkeypatch, _ONE_PAGE)
+    fake_anthropic(json.dumps({"latex": "\\documentclass{article}", "emphasis": "Led with pipelines"}))
+
+    res = await _harden(client, device)
+
+    assert res.status_code == 200
+    body = res.json()
+    assert body["latex"] == "\\documentclass{article}"
+    assert body["emphasis"] == "Led with pipelines"
+    assert body["pages"] == 1
+
+
+async def test_harden_sends_the_compiled_reference_for_a_known_title(
+    client, device, anthropic_key, fake_anthropic, monkeypatch
+):
+    """The whole reason this endpoint can take one input: the server already
+    knows what the title is screened for."""
+    _stub_compile(monkeypatch, _ONE_PAGE)
+    fake_anthropic(json.dumps({"latex": "x", "emphasis": ""}))
+
+    res = await _harden(client, device, role="Data Engineer")
+
+    assert res.status_code == 200
+    assert res.json()["matched_role"] == "Data Engineer"
+    prompt = _calls[-1]["messages"][0]["content"]
+    assert "<role_reference" in prompt
+    # A qualification only the Data Engineer row carries, so this cannot pass
+    # against some other row's text.
+    assert "ETL/ELT" in prompt
+
+
+async def test_harden_says_so_when_the_title_has_no_reference(
+    client, device, anthropic_key, fake_anthropic, monkeypatch
+):
+    """An empty `matched_role` is what the sheet reads to tell someone their
+    resume was built against general knowledge rather than a compiled list —
+    and the prompt must admit it too, rather than pointing at a block that
+    never arrived."""
+    _stub_compile(monkeypatch, _ONE_PAGE)
+    fake_anthropic(json.dumps({"latex": "x", "emphasis": ""}))
+
+    res = await _harden(client, device, role="Underwater Basket Weaver")
+
+    assert res.status_code == 200
+    assert res.json()["matched_role"] == ""
+    prompt = _calls[-1]["messages"][0]["content"]
+    assert "<role_reference" not in prompt
+    assert "no compiled reference" in prompt.lower()
+
+
+async def test_harden_condenses_first_when_the_document_is_over_a_page(
+    client, device, anthropic_key, fake_anthropic, monkeypatch
+):
+    """Selection and writing are separate passes for the reason the tailor's
+    are: when one turn has to do both, length wins and nothing is ever promoted
+    off the bench."""
+    seen = _stub_compile(monkeypatch, _ONE_PAGE, incoming=_TWO_PAGES)
+    fake_anthropic(json.dumps({"latex": "\\documentclass{article}", "emphasis": ""}))
+
+    res = await _harden(client, device)
+
+    assert res.status_code == 200
+    # Two model calls: the selection pass, then the writing pass.
+    assert len(_calls) == 2
+    assert len(seen) == 2
+    assert "You do not\nwrite anything" in _calls[0]["system"]
+
+
+async def test_harden_skips_the_selection_pass_when_it_already_fits(
+    client, device, anthropic_key, fake_anthropic, monkeypatch
+):
+    """A resume that already fits has nothing to choose between, and a selection
+    pass over it is only a chance to lose something."""
+    _stub_compile(monkeypatch, _ONE_PAGE, incoming=_ONE_PAGE)
+    fake_anthropic(json.dumps({"latex": "x", "emphasis": ""}))
+
+    res = await _harden(client, device)
+
+    assert res.status_code == 200
+    assert len(_calls) == 1
+
+
+async def test_harden_refuses_a_document_that_does_not_compile(
+    client, device, anthropic_key, fake_anthropic, monkeypatch
+):
+    _stub_compile(monkeypatch, (False, "! Undefined control sequence.", None))
+    fake_anthropic(json.dumps({"latex": "\bad", "emphasis": ""}))
+
+    res = await _harden(client, device)
+
+    assert res.status_code == 422
+    assert "unchanged" in res.json()["detail"]
+
+
+async def test_harden_carries_the_benched_material_into_the_prompt(
+    client, device, anthropic_key, fake_anthropic, monkeypatch
+):
+    """Promoting a commented-out entry that evidences the role is most of what
+    hardening does, so the bench has to be in the context."""
+    _stub_compile(monkeypatch, _ONE_PAGE)
+    fake_anthropic(json.dumps({"latex": "x", "emphasis": ""}))
+
+    res = await _harden(client, device)
+
+    assert res.status_code == 200
+    assert "% A project not currently on the page." in _calls[-1]["messages"][0]["content"]
+
+
+async def test_harden_attaches_no_fetch_tool(
+    client, device, anthropic_key, fake_anthropic, monkeypatch
+):
+    """No links anywhere in this request, so no server tool and no fetch loop."""
+    _stub_compile(monkeypatch, _ONE_PAGE)
+    fake_anthropic(json.dumps({"latex": "x", "emphasis": ""}))
+
+    await _harden(client, device)
+
+    assert _calls[-1]["tools"] == []
+
+
+async def test_tailor_cross_checks_the_role_reference(
+    client, device, anthropic_key, fake_anthropic, monkeypatch
+):
+    """The posting is the requirement list; the reference is there to catch what
+    one advert happens to under-mention."""
+    _stub_compile(monkeypatch, _ONE_PAGE)
+    fake_anthropic(json.dumps({"latex": "x", "emphasis": ""}))
+
+    res = await _tailor(client, device, role="Data Engineer")
+
+    assert res.status_code == 200
+    assert "<role_reference" in _calls[-1]["messages"][0]["content"]

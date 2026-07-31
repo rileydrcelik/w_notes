@@ -78,6 +78,7 @@ import {
   ResumeToolbar,
 } from '@/components/resume/resume-toolbar';
 import { SwipeBackView } from '@/components/swipe-back-view';
+import { ResumeHardenModal } from '@/components/resume/resume-harden-modal';
 import { ResumeTailorModal } from '@/components/resume/resume-tailor-modal';
 import { VersionList } from '@/components/resume/version-list';
 import { ThemedText } from '@/components/themed-text';
@@ -118,7 +119,8 @@ import {
   resumePdfFileName,
   STARTER_RESUME,
 } from '@/lib/resume-note';
-import { describeTailorTarget, originalLabel } from '@/lib/resume-versions';
+import { describeHardenTarget, describeTailorTarget, originalLabel } from '@/lib/resume-versions';
+import { hardenResume, type HardenDraft } from '@/lib/latex/harden';
 import { tailorResume, type TailorDraft } from '@/lib/latex/tailor';
 import type { ResumeVersion } from '@/data/notes';
 import { savePdfToDevice } from '@/lib/save-pdf';
@@ -184,6 +186,7 @@ export default function ResumeScreen() {
   const [entryOpen, setEntryOpen] = useState(false);
   const [versionsOpen, setVersionsOpen] = useState(false);
   const [tailorOpen, setTailorOpen] = useState(false);
+  const [hardenOpen, setHardenOpen] = useState(false);
   // Something the screen needs to say that isn't an error state of the preview:
   // a restore that couldn't protect the document it was replacing, or a tailored
   // resume that came out longer than the one page it was asked for. Shown rather
@@ -507,9 +510,14 @@ export default function ResumeScreen() {
   useVersionAction(
     () => {
       // One sheet at a time, matching the toolbar's own buttons: two stacked
-      // sheets would leave the one underneath unreachable.
+      // sheets would leave the one underneath unreachable. Every sheet the
+      // toolbar can raise is listed — the history is reachable from the navbar
+      // while any of them is up, so this is the one place where "some other
+      // sheet is already open" is the normal case rather than the odd one.
       setEntryOpen(false);
       setEnginePickerOpen(false);
+      setTailorOpen(false);
+      setHardenOpen(false);
       openOverEditor(setVersionsOpen);
     },
     { keepWhileEditing: split },
@@ -641,6 +649,38 @@ export default function ResumeScreen() {
   };
 
   /**
+   * Build the default one-page resume for a job title.
+   *
+   * The tailor's shape exactly — returns the document rather than applying it, so
+   * the sheet can show a diff of what changed and applying is a separate decision
+   * made against that. What differs is only what it was aimed at: a job title and
+   * the qualifications that title is screened for, rather than one posting.
+   */
+  const runHarden = async (draft: HardenDraft) => {
+    const result = await hardenResume(source, draft, engine);
+    if (!result.ok) return { ok: false as const, message: result.message };
+    return {
+      ok: true as const,
+      latex: result.resume.latex,
+      // The document as it stood when Harden was pressed, so the diff describes
+      // *this* run rather than accumulated drift.
+      before: source,
+      pages: result.resume.pages,
+      label: describeHardenTarget(draft),
+      matchedRole: result.resume.matchedRole,
+    };
+  };
+
+  /** Apply a hardened resume the person has just looked at. */
+  const applyHardened = async (latex: string, label: string): Promise<string | null> => {
+    if (!(await recordChange(source, latex, label))) {
+      return "The hardened resume couldn't be saved to your version history, so it hasn't been applied. Nothing has changed.";
+    }
+    onChangeSource(latex);
+    return null;
+  };
+
+  /**
    * Go back to an earlier version.
    *
    * A switch, not a copy. Nothing new is written and nothing is snapshotted on
@@ -707,7 +747,7 @@ export default function ResumeScreen() {
   // a bar for a document you can't currently reach, showing through the thing
   // covering it. Its own buttons are what opened the sheet, and they're no use
   // until the sheet is answered.
-  const sheetOpen = entryOpen || enginePickerOpen || versionsOpen || tailorOpen;
+  const sheetOpen = entryOpen || enginePickerOpen || versionsOpen || tailorOpen || hardenOpen;
 
   // Bottom padding both panes reserve. Split keeps the toolbar up permanently,
   // so it has to be cleared like a piece of furniture rather than left to float
@@ -880,7 +920,17 @@ export default function ResumeScreen() {
             setEntryMode('edit');
             openOverEditor(setEntryOpen);
           }}
+          onHarden={() => {
+            // One sheet at a time, matching the other toolbar buttons: two
+            // stacked sheets leave the one underneath unreachable.
+            setEntryOpen(false);
+            setTailorOpen(false);
+            setEnginePickerOpen(false);
+            setVersionsOpen(false);
+            openOverEditor(setHardenOpen);
+          }}
           onTailor={() => {
+            setHardenOpen(false);
             setEntryOpen(false);
             setEnginePickerOpen(false);
             setVersionsOpen(false);
@@ -924,6 +974,13 @@ export default function ResumeScreen() {
             </GlassSurface>
           </AnimatedPressable>
         )}
+
+        <ResumeHardenModal
+          open={hardenOpen}
+          onClose={() => closeOverEditor(setHardenOpen)}
+          onHarden={runHarden}
+          onApply={applyHardened}
+        />
 
         <ResumeTailorModal
           open={tailorOpen}
