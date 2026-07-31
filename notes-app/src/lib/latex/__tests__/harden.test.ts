@@ -88,6 +88,33 @@ describe('hardenResume', () => {
     expect(result.resume.matchedRole).toBe('');
   });
 
+  it('reads a failure out of the body, since a streamed one cannot be a status code', async () => {
+    // The endpoint holds the connection open with whitespace to survive
+    // Cloudflare's ~100s origin timeout, which means the status is chosen before
+    // the answer is known and is always 200. A refusal has to travel as data.
+    behaviour = () =>
+      Promise.resolve({
+        error: {
+          status: 422,
+          detail:
+            "The hardened resume didn't compile, so it hasn't been applied. Your resume is unchanged.",
+        },
+      });
+    const result = await hardenResume('\\source', draft, 'pdflatex');
+    if (result.ok) throw new Error('expected failure');
+    expect(result.message).toContain('unchanged');
+  });
+
+  it('prefers the streamed failure over "empty resume"', async () => {
+    // Ordering matters: a body carrying only an error has no `latex`, so a
+    // client that checked `latex` first would blame the server for an empty
+    // resume instead of repeating the reason it gave.
+    behaviour = () => Promise.resolve({ error: { status: 429, detail: 'The server is busy.' } });
+    const result = await hardenResume('\\source', draft, 'pdflatex');
+    if (result.ok) throw new Error('expected failure');
+    expect(result.message).toBe('The server is busy.');
+  });
+
   it('treats an empty document as a failure rather than applying nothing', async () => {
     behaviour = () => Promise.resolve({ latex: '   ' });
     const result = await hardenResume('\\source', draft, 'pdflatex');

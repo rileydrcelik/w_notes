@@ -380,6 +380,32 @@ export default function ResumeScreen() {
 
   // Runs TeX, unconditionally. A success is cached against the source *and the
   // engine* that produced it, so this is the only place a resume costs a compile.
+  // Guards the "first compile" snapshot below against being written twice.
+  //
+  // `isEmpty()` reads the loaded version list, which does not update until the
+  // insert has landed — so two compiles finishing close together (switching
+  // engine, or a recompile pressed while one was in flight) would both see an
+  // empty history and both write an original. A ref settles it synchronously,
+  // before either `await` starts.
+  const firstCompileRef = useRef(false);
+
+  const recordFirstCompile = useCallback(
+    async (text: string) => {
+      if (firstCompileRef.current || !isEmpty() || !text.trim()) return;
+      firstCompileRef.current = true;
+      const created = await appendVersion(originalLabel({ title }), text);
+      // Put the screen *on* that version, so the editing that follows updates it
+      // rather than orphaning it — the debounced commit writes to whichever
+      // version is current, and leaving it null would keep the snapshot frozen
+      // at the text that happened to compile first.
+      if (created) setCurrentVersion(created);
+      // A failed write is not worth a notice: nothing was lost, the resume is
+      // exactly as it was, and the next compile will try again.
+      else firstCompileRef.current = false;
+    },
+    [appendVersion, isEmpty, setCurrentVersion, title],
+  );
+
   const runCompile = useCallback(
     // `shouldApply` drops a result the screen has moved on from — another
     // resume, another source, another engine. It must be about *what was
@@ -427,8 +453,22 @@ export default function ResumeScreen() {
               engine,
             },
       );
+
+      // The first compile that works is where a resume's history starts.
+      //
+      // It used to start at the first *change* — the adder, an edit, tailoring —
+      // because that is the last moment the pre-change text still exists, and
+      // that is still true and still handled in `recordChange`. But it left the
+      // commonest path with nothing to go back to: paste a resume in, get it
+      // compiling, spend an hour hand-editing it, and until you asked the model
+      // for something there was no restore point at all.
+      //
+      // A compile that succeeded is the right marker for that. It says this
+      // version of the document *worked*, which is exactly what someone wants to
+      // return to, and it costs one row rather than one per keystroke.
+      if (result.ok) void recordFirstCompile(text);
     },
-    [id, engine],
+    [id, engine, recordFirstCompile],
   );
 
   // The one path from "the read view has no result" to "here is the PDF", and

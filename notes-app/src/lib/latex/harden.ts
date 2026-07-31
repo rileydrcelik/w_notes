@@ -55,7 +55,24 @@ const HARDEN_TIMEOUT_MS = 300_000;
  */
 export const MAX_ROLE_CHARS = 120;
 
-type HardenApiResponse = {
+/**
+ * A failure that arrived *after* the response started.
+ *
+ * `/resume/harden` streams (see `hold_open` in `backend/app/routers/resume.py`):
+ * it sends headers immediately and holds the connection open with whitespace,
+ * because this API is published through a Cloudflare Tunnel that gives the
+ * origin ~100 seconds to start answering and a real resume takes longer than
+ * that. Measured against production: a one-page resume answered in 18s, a longer
+ * one — the normal case — was cut off at 125s with a 524, every time.
+ *
+ * The cost is that the status code is chosen before the answer is known, so it
+ * is always 200 and a refusal has to travel in the body. Guard-clause failures
+ * (no role, resume too large) still arrive as ordinary 4xx, so both paths below
+ * are live and neither is dead code.
+ */
+type StreamedError = { error?: { status: number; detail: string } };
+
+type HardenApiResponse = StreamedError & {
   latex: string;
   emphasis?: string;
   pages?: number | null;
@@ -116,6 +133,11 @@ export async function hardenResume(
       body: { source, role: draft.role, engine },
     });
 
+    // Checked before anything else: this arrives with a 200, so reading `latex`
+    // first would report "empty resume" for a server that explained itself.
+    if (response?.error?.detail) {
+      return { ok: false, message: response.error.detail };
+    }
     if (!response?.latex?.trim()) {
       return { ok: false, message: 'The server came back with an empty resume. Try again.' };
     }

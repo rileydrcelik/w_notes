@@ -21,6 +21,7 @@ to be sitting in the environment.
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 import pytest
@@ -684,6 +685,87 @@ async def _tailor(client, device, **overrides):
     return await client.post("/resume/tailor", json=body, headers=device)
 
 
+# --------------------------------------------------------------------------
+# Streamed endpoints.
+#
+# `/resume/tailor` and `/resume/harden` hold the connection open with whitespace
+# while they work, because Cloudflare gives the origin ~100s to start answering
+# and these take minutes (see `hold_open` in the router). The status code is
+# therefore chosen before the answer is known — it is always 200 — and a failure
+# travels in the body instead.
+#
+# `outcome()` reads whichever of the two a response actually used, so a test can
+# go on asserting "422, and the detail says the resume is unchanged" without
+# caring which side of that line the refusal came from. Guard clauses still
+# answer with a real status and their tests are unchanged — as is `/resume/edit`,
+# which is fast enough not to need any of this.
+# --------------------------------------------------------------------------
+
+
+def outcome(res) -> tuple[int, dict]:
+    """`(status, payload)` for a response that may have streamed its failure."""
+    # `json.loads` rather than `res.json()`: the body is legitimately prefixed
+    # with keep-alive spaces, and this is the parse the real client does.
+    body = json.loads(res.text)
+    error = body.get("error") if isinstance(body, dict) else None
+    if error:
+        return error["status"], error
+    return res.status_code, body
+
+
+def test_keepalive_whitespace_is_ignored_by_a_json_parser():
+    """The whole trick, stated once: the prefix is not a body format the client
+    has to learn, it is whitespace, and JSON has always allowed it."""
+    prefix = " " * 40 + "\n" + " " * 40
+    assert json.loads(prefix + json.dumps({"latex": "x"})) == {"latex": "x"}
+
+
+async def test_a_slow_endpoint_sends_keepalive_bytes_before_its_body(
+    client, device, anthropic_key, fake_anthropic, monkeypatch
+):
+    """The 524 fix, and the reason this endpoint streams at all.
+
+    Measured against production: a one-page resume answered in 18s, and a
+    longer one — the normal case, since a resume here is a superset with a
+    bench — was cut off by Cloudflare at 125s with a 524, every time. What
+    trips that is time to the *first byte*, so the first byte now leaves
+    immediately and the connection is fed while the work runs.
+    """
+    monkeypatch.setattr(resume, "_KEEPALIVE_SECONDS", 0.01)
+    fake_anthropic(json.dumps({"latex": "x", "emphasis": "Led with X"}))
+
+    async def slow_compile(source: str, engine: str):
+        await asyncio.sleep(0.08)
+        return _ONE_PAGE
+
+    monkeypatch.setattr(resume, "compile_source", slow_compile)
+
+    res = await _tailor(client, device)
+
+    assert res.status_code == 200
+    # Something was on the wire before the answer existed.
+    assert res.text.startswith(" "), repr(res.text[:20])
+    # And it is still one JSON document, because that is all whitespace is.
+    assert json.loads(res.text)["latex"] == "x"
+
+
+async def test_a_streamed_failure_still_carries_its_status_and_sentence(
+    client, device, anthropic_key, fake_anthropic, monkeypatch
+):
+    """A refusal that happens after the headers are gone cannot be a status
+    code, so it has to be data — and the client turns it back into the sentence
+    that says whether the resume survived."""
+    _stub_compile(monkeypatch, (False, "! Undefined control sequence.", None))
+    fake_anthropic(json.dumps({"latex": "\\bad", "emphasis": ""}))
+
+    res = await _tailor(client, device)
+
+    assert res.status_code == 200
+    status, error = outcome(res)
+    assert status == 422
+    assert "unchanged" in error["detail"]
+
+
 async def test_tailor_returns_503_without_an_api_key(client, device, monkeypatch):
     settings = get_settings()
     monkeypatch.setattr(settings, "anthropic_api_key", "", raising=False)
@@ -771,8 +853,9 @@ async def test_tailor_refuses_a_document_that_does_not_compile(
     _stub_compile(monkeypatch, (False, "! Undefined control sequence.", None))
     fake_anthropic(json.dumps({"latex": "\\bogus", "emphasis": "nope"}))
     res = await _tailor(client, device)
-    assert res.status_code == 422
-    detail = res.json()["detail"]
+    status, error = outcome(res)
+    assert status == 422
+    detail = error["detail"]
     assert "compile" in detail
     # And it says the resume survived, which is what the user actually needs.
     assert "unchanged" in detail
@@ -826,7 +909,7 @@ async def test_tailor_refuses_an_empty_document(
     _stub_compile(monkeypatch, _ONE_PAGE)
     fake_anthropic(json.dumps({"latex": "   ", "emphasis": ""}))
     res = await _tailor(client, device)
-    assert res.status_code == 502
+    assert outcome(res)[0] == 502
 
 
 async def test_tailor_prompt_carries_the_commented_out_material(
@@ -1052,8 +1135,9 @@ async def test_tailor_condense_pass_refuses_rather_than_returning_a_broken_docum
                   incoming=_TWO_PAGES)
     fake_anthropic(json.dumps({"latex": "\\bogus"}))
     res = await _tailor(client, device)
-    assert res.status_code == 422
-    assert "unchanged" in res.json()["detail"]
+    status, error = outcome(res)
+    assert status == 422
+    assert "unchanged" in error["detail"]
 
 
 def test_repair_unicode_escapes_restores_mangled_characters():
@@ -1302,7 +1386,7 @@ async def test_tailor_reports_a_missing_engine_as_a_server_problem(
 
     res = await _tailor(client, device)
 
-    assert res.status_code == 503
+    assert outcome(res)[0] == 503
     # That it never reached the model is covered by the autouse
     # `no_real_anthropic_calls`, which raises rather than answering.
 
@@ -1319,7 +1403,7 @@ async def test_tailor_refuses_when_the_sandbox_user_is_missing(
 
     res = await _tailor(client, device)
 
-    assert res.status_code == 503
+    assert outcome(res)[0] == 503
     # That it never reached the model is covered by the autouse
     # `no_real_anthropic_calls`, which raises rather than answering.
 
@@ -1478,8 +1562,9 @@ async def test_harden_refuses_a_document_that_does_not_compile(
 
     res = await _harden(client, device)
 
-    assert res.status_code == 422
-    assert "unchanged" in res.json()["detail"]
+    status, error = outcome(res)
+    assert status == 422
+    assert "unchanged" in error["detail"]
 
 
 async def test_harden_carries_the_benched_material_into_the_prompt(

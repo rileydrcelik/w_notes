@@ -47,7 +47,23 @@ export function emptyTailorDraft(): TailorDraft {
  */
 const TAILOR_TIMEOUT_MS = 300_000;
 
-type TailorApiResponse = {
+/**
+ * A failure that arrived *after* the response started.
+ *
+ * `/resume/tailor` streams (see `hold_open` in `backend/app/routers/resume.py`):
+ * it sends headers immediately and holds the connection open with whitespace,
+ * because this API is published through a Cloudflare Tunnel that gives the
+ * origin ~100 seconds to start answering and tailoring takes longer. Measured
+ * against production, the two-pass path was cut off at 125s with a 524 every
+ * time — which is why the logs show tailoring never once completing there.
+ *
+ * The cost is that the status code is chosen before the answer is known, so it
+ * is always 200 and a refusal travels in the body. Guard-clause failures (no
+ * role, no job description) still arrive as ordinary 4xx.
+ */
+type StreamedError = { error?: { status: number; detail: string } };
+
+type TailorApiResponse = StreamedError & {
   latex: string;
   emphasis?: string;
   /** How many pages it actually came out at, per the TeX log. */
@@ -108,6 +124,11 @@ export async function tailorResume(
       },
     });
 
+    // Checked before anything else: this arrives with a 200, so reading `latex`
+    // first would report "empty resume" for a server that explained itself.
+    if (response?.error?.detail) {
+      return { ok: false, message: response.error.detail };
+    }
     if (!response?.latex?.trim()) {
       return { ok: false, message: 'The server came back with an empty resume. Try again.' };
     }

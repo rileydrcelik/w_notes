@@ -49,11 +49,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
+from collections.abc import AsyncIterator, Coroutine
+from typing import Any
 from urllib.parse import urlsplit
 
 import anthropic
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.config import get_settings
@@ -71,6 +75,8 @@ from app.resume_roles import qualifications_for
 from app.routers.latex import Engine, compile_source
 
 router = APIRouter(prefix="/resume", tags=["resume"])
+
+logger = logging.getLogger(__name__)
 
 # Same cap as /latex/compile: real resumes are a few KB, and a megabyte is
 # already absurd. Here it also bounds what we pay per request — the source is
@@ -1436,6 +1442,102 @@ async def _ask_model(
     return parsed
 
 
+"""Surviving the ~100 second ceiling in front of this service.
+
+This API is published through a **Cloudflare Tunnel with no load balancer**
+(see `terraform/`), and Cloudflare gives an origin about 100 seconds to start
+answering before it gives up and returns a **524** to the browser. That is not a
+setting we can raise: `proxy_read_timeout` is Enterprise-only, and the no-ALB
+topology is a deliberate ~$26/month choice.
+
+Measured against production on 2026-07-31, driving `/resume/harden` directly:
+
+- a resume that already fits one page — one model call and one TeX run —
+  answered **200 in 18s**;
+- a resume longer than one page — the selection pass *and* the writing pass, so
+  two model calls and several TeX runs — died at **524 in 125s**.
+
+The second is the normal case. The whole design assumes a resume is a superset
+with a bench of commented-out entries, so "longer than one page" is what these
+endpoints exist for, and every one of those requests was failing in the browser
+while the server carried on working on an answer nobody would ever receive. The
+CloudWatch logs show it plainly: an `OPTIONS` preflight, no `POST` access line at
+all, and cloudflared reporting "Incoming request ended abruptly: context
+canceled" from a Cloudflare edge IP two minutes later.
+
+What actually trips the 524 is **time to the first byte**, so the fix is to send
+one immediately and keep sending. `StreamingResponse` puts the headers on the
+wire before the work starts, and a space every few seconds keeps the connection
+from going idle. JSON ignores leading whitespace, so the body is still a single
+JSON document to anything that parses it — `apiFetch` does
+`JSON.parse(await res.text())` and needs no streaming logic of its own.
+
+The cost is that **the status code is chosen before the answer is known**, so it
+is always 200 and a failure has to travel in the body instead. Guard clauses are
+deliberately left *outside* this wrapper — a bad request is rejected the ordinary
+way with a real 4xx, because nothing has been sent yet at that point. Only the
+slow part, where the status is genuinely not knowable in time, streams.
+"""
+
+# How often to nudge the connection while the model and TeX are working. Well
+# inside Cloudflare's window, and small enough that a stalled upstream still
+# looks alive to the browser.
+_KEEPALIVE_SECONDS = 5.0
+
+# The shape a streamed failure takes. Checked by `harden.ts` and `tailor.ts`
+# before they read anything else, because it arrives with a 200.
+_ERROR_KEY = "error"
+
+
+def hold_open(work: Coroutine[Any, Any, BaseModel]) -> StreamingResponse:
+    """Run `work`, holding the HTTP connection open until it finishes.
+
+    Emits whitespace every `_KEEPALIVE_SECONDS` and then the real JSON body, so
+    a request that takes minutes still looks like a normal JSON response to the
+    client — and never looks idle to Cloudflare.
+    """
+
+    async def stream() -> AsyncIterator[bytes]:
+        task = asyncio.ensure_future(work)
+        while True:
+            try:
+                # `shield`, so the timeout cancels only this wait and never the
+                # work itself — without it every keep-alive tick would kill the
+                # generation it is waiting for.
+                result = await asyncio.wait_for(
+                    asyncio.shield(task), timeout=_KEEPALIVE_SECONDS
+                )
+            except asyncio.TimeoutError:
+                yield b" "
+                continue
+            except HTTPException as exc:
+                # The endpoint's own refusal, with the sentence it wrote. It
+                # cannot be a status code any more, so it travels as data and the
+                # client turns it back into a message.
+                yield json.dumps(
+                    {_ERROR_KEY: {"status": exc.status_code, "detail": exc.detail}}
+                ).encode()
+                return
+            except Exception:  # noqa: BLE001 - must not leak a traceback mid-body
+                # Once bytes are on the wire there is no 500 to fall back on, so
+                # an unexpected failure has to be said in the body too. Sentry
+                # still sees it via the app's exception hooks.
+                logger.exception("resume: streamed work failed")
+                yield json.dumps(
+                    {
+                        _ERROR_KEY: {
+                            "status": 500,
+                            "detail": "Something went wrong on the server. Your resume is unchanged.",
+                        }
+                    }
+                ).encode()
+                return
+            yield result.model_dump_json().encode()
+            return
+
+    return StreamingResponse(stream(), media_type="application/json")
+
+
 class _Written(BaseModel):
     """A document a pass produced, plus whatever else that pass was asked for."""
 
@@ -1542,7 +1644,7 @@ async def _write_until_it_fits(
     return written, pages
 
 
-@router.post("/tailor", response_model=TailorResponse)
+@router.post("/tailor")
 async def tailor_resume(
     payload: TailorRequest,
     _user: User = Depends(get_current_user),
@@ -1601,6 +1703,13 @@ async def tailor_resume(
             detail="The server is writing as much as it can right now. Try again in a moment.",
         )
 
+    # Everything above could still be a real status code, because nothing has
+    # been sent. Everything below takes minutes, so it streams — see `hold_open`.
+    return hold_open(_tailor(settings, payload))
+
+
+async def _tailor(settings, payload: TailorRequest) -> TailorResponse:
+    """The slow half of tailoring: two model passes, each verified by a TeX run."""
     company = payload.company.strip()
     # The title's general screen, where the table has it. The posting is the real
     # requirement list and the prompt says so; this is here to catch what one
@@ -1682,7 +1791,7 @@ async def tailor_resume(
     return TailorResponse(latex=written.text, emphasis=_label(written.extra), pages=pages)
 
 
-@router.post("/harden", response_model=HardenResponse)
+@router.post("/harden")
 async def harden_resume(
     payload: HardenRequest,
     _user: User = Depends(get_current_user),
@@ -1733,6 +1842,12 @@ async def harden_resume(
             detail="The server is writing as much as it can right now. Try again in a moment.",
         )
 
+    # Same split as the tailor: guards answer with a status, the work streams.
+    return hold_open(_harden(settings, payload))
+
+
+async def _harden(settings, payload: HardenRequest) -> HardenResponse:
+    """The slow half of hardening: select what fits, then write it for the role."""
     role = payload.role.strip()
     matched, reference = _role_reference(role)
     job = (
