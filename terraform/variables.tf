@@ -120,7 +120,7 @@ variable "sentry_api_token" {
   type        = string
   default     = ""
   sensitive   = true
-  description = "Sentry REST API token (internal integration) for the /sentry issue proxy. Empty => the /sentry endpoints return 503."
+  description = "Sentry REST API token (internal integration). No longer read by any route — the /sentry proxy acts as the caller's own token now — but kept wired so rolling the container back to a pre-per-user-credentials image still works. Safe to drop once that rollback is off the table."
 }
 
 variable "github_token" {
@@ -128,6 +128,13 @@ variable "github_token" {
   default     = ""
   sensitive   = true
   description = "Fine-grained GitHub PAT for the /sentry/autofix endpoints (fires repository_dispatch at autofix_repo and reads back the PR). Needs Contents R/W + Pull requests R + Actions R/W on the target repo. Empty => autofix returns 503."
+}
+
+variable "credential_encryption_key_old" {
+  type        = string
+  default     = ""
+  sensitive   = true
+  description = "Previous Fernet key, set only while rotating the per-user credential encryption key. Reads try the current key then this one, so rows encrypted under the old key keep working until they are next written. Unset it once the rotation is complete. The current key is generated in secrets.tf and is never passed in."
 }
 
 variable "anthropic_api_key" {

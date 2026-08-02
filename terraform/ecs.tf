@@ -27,7 +27,13 @@ resource "aws_cloudwatch_log_group" "api" {
 # ones that weren't configured.
 locals {
   container_secrets = concat(
-    [{ name = "DATABASE_URL", valueFrom = aws_ssm_parameter.database_url.arn }],
+    [
+      { name = "DATABASE_URL", valueFrom = aws_ssm_parameter.database_url.arn },
+      # Required: without it the /credentials routes 503 and the GitHub and
+      # Sentry plugins are dead for everyone (they fail closed by design).
+      { name = "CREDENTIAL_ENCRYPTION_KEY", valueFrom = aws_ssm_parameter.credential_encryption_key.arn },
+    ],
+    local.credential_rotation_in_progress ? [{ name = "CREDENTIAL_ENCRYPTION_KEY_OLD", valueFrom = aws_ssm_parameter.credential_encryption_key_old[0].arn }] : [],
     local.sentry_enabled ? [{ name = "SENTRY_DSN", valueFrom = aws_ssm_parameter.sentry_dsn[0].arn }] : [],
     local.sentry_api_enabled ? [{ name = "SENTRY_API_TOKEN", valueFrom = aws_ssm_parameter.sentry_api_token[0].arn }] : [],
     local.autofix_enabled ? [{ name = "GITHUB_TOKEN", valueFrom = aws_ssm_parameter.github_token[0].arn }] : [],

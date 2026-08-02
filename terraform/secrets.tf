@@ -35,7 +35,9 @@ resource "aws_ssm_parameter" "sentry_dsn" {
   value = var.sentry_dsn
 }
 
-# SENTRY_API_TOKEN — REST-API token for the /sentry issue proxy; only created
+# SENTRY_API_TOKEN — formerly the server-wide token behind the /sentry issue
+# proxy. Nothing reads it since the proxy started acting as the caller's own
+# token; retained so a rollback to an older image still finds it. Only created
 # when provided.
 resource "aws_ssm_parameter" "sentry_api_token" {
   count = local.sentry_api_enabled ? 1 : 0
@@ -60,6 +62,40 @@ resource "aws_ssm_parameter" "anthropic_api_key" {
   name  = "/${local.name}/anthropic-api-key"
   type  = "SecureString"
   value = var.anthropic_api_key
+}
+
+# CREDENTIAL_ENCRYPTION_KEY — the Fernet key that app/crypto.py encrypts each
+# user's GitHub/Sentry token with.
+#
+# Generated here rather than passed in, for the same reason as the DB password:
+# no human picks it, and it never sits in a tfvars file on someone's laptop.
+# Unconditional — the app fails closed without it, so a stack missing this key
+# has working sync and dead GitHub/Sentry plugins.
+#
+# Fernet wants 32 bytes as *URL-safe* base64; `random_bytes` emits the standard
+# alphabet, so translate the two characters that differ.
+#
+# ⚠ Replacing this resource makes every stored credential undecryptable and
+# every user has to re-enter their token. To rotate deliberately, copy the
+# current value into `credential_encryption_key_old` (reads fall back to it),
+# apply, then taint this resource — rows re-encrypt as they are next written.
+resource "random_bytes" "credential_encryption_key" {
+  length = 32
+}
+
+resource "aws_ssm_parameter" "credential_encryption_key" {
+  name  = "/${local.name}/credential-encryption-key"
+  type  = "SecureString"
+  value = replace(replace(random_bytes.credential_encryption_key.base64, "+", "-"), "/", "_")
+}
+
+# CREDENTIAL_ENCRYPTION_KEY_OLD — the previous key during a rotation; only
+# created while one is in flight.
+resource "aws_ssm_parameter" "credential_encryption_key_old" {
+  count = local.credential_rotation_in_progress ? 1 : 0
+  name  = "/${local.name}/credential-encryption-key-old"
+  type  = "SecureString"
+  value = var.credential_encryption_key_old
 }
 
 # FIREBASE_CREDENTIALS — the service-account JSON; only created when provided.
