@@ -61,6 +61,12 @@ export default defineConfig({
       EXPO_PUBLIC_API_URL: '',
       // No error reporting from a test run.
       EXPO_PUBLIC_SENTRY_DSN: '',
+      // No dev sample content either. These tests drive Metro, so `__DEV__` is
+      // true and the seed in `lib/dev-seed.ts` would otherwise put two dozen
+      // notes, four folders, a sheet and a resume in front of every test — a
+      // fixture nobody wrote and every future assertion would have to account
+      // for. A smoke suite for a local-first app should start empty.
+      EXPO_PUBLIC_DEV_SEED: '0',
     },
   },
 });

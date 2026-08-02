@@ -2,6 +2,12 @@ import * as SQLite from 'expo-sqlite';
 
 import { Sentry } from '@/lib/sentry';
 import { removeCopaFiles } from '@/lib/copa-files';
+import {
+  clearDevSeed,
+  runDevSeed,
+  DEV_SEED_CLEARED_FLAG,
+  DEV_SEED_PREFIX,
+} from '@/lib/dev-seed';
 import { worthKeepingInTrash } from '@/lib/trash-visibility';
 import { migrateThemeKey, THEME_RENAME_FLAG, THEME_SETTING_KEY } from '@/lib/theme-migrate';
 import { whenDbOwner } from '@/lib/web-db-lock';
@@ -463,7 +469,43 @@ async function open(): Promise<SQLite.SQLiteDatabase> {
   // makes the first paint honest — a file-type icon, then the real thumbnail
   // when it lands. No-op on native, where paths are durable `file://` URIs.
   await clearEphemeralFilePaths(database);
+  // Dev-only sample content, after every migration above so the columns it names
+  // exist, and before `getDb()` hands the connection out so it is already there
+  // for the stores' first read. `__DEV__` is false in release builds.
+  //
+  // The env opt-out is for the Playwright suite, which is the one thing that
+  // runs a dev bundle and *doesn't* want content: it drives Metro, so `__DEV__`
+  // is true there, and every test would start against two dozen notes it never
+  // created. `playwright.config.ts` sets it; nothing else should need to.
+  if (__DEV__ && process.env.EXPO_PUBLIC_DEV_SEED !== '0') {
+    await seedDevContentIfWanted(database);
+  }
   return database;
+}
+
+/**
+ * Seeds the `__DEV__` sample content unless it has been explicitly cleared.
+ *
+ * The flag lives in the device-local `settings` table, which `clearAllData`
+ * leaves alone — so "Clear" in Settings → Developer survives a sign-out, and
+ * survives the relaunch that would otherwise seed straight back over it and make
+ * the button look broken.
+ *
+ * Failures are swallowed. This is a convenience for local runs; letting it throw
+ * would take the database open down with it and leave the app dead on launch
+ * over sample data nobody needs.
+ */
+async function seedDevContentIfWanted(database: SQLite.SQLiteDatabase): Promise<void> {
+  try {
+    const cleared = await database.getFirstAsync<{ value: string }>(
+      'SELECT value FROM settings WHERE key = ?',
+      [DEV_SEED_CLEARED_FLAG],
+    );
+    if (cleared) return;
+    await runDevSeed(database);
+  } catch (e) {
+    console.warn('[db] dev seed skipped:', e);
+  }
 }
 
 /**
@@ -1124,12 +1166,25 @@ export const db = {
 
   // ---- File attachment sync (bytes live in S3; see lib/sync/files.ts) ----
 
-  /** Live file blocks whose bytes haven't been uploaded yet (no remote_key). */
+  /**
+   * Live file blocks whose bytes haven't been uploaded yet (no remote_key).
+   *
+   * The dev-seed exclusion is here too, and this is the second of exactly two
+   * ways anything leaves the device — bytes go straight to S3 (see
+   * `lib/sync/files.ts`) rather than through the delta payload, so `getDirty`'s
+   * guard doesn't reach them and `dirty` isn't even consulted. The seed writes
+   * no copa blocks today, so this excludes nothing yet; it is here so that
+   * "seeded rows never leave the device" is true of the codebase rather than
+   * true of one table, and so adding a demo attachment later stays a content
+   * change instead of quietly becoming an upload to the real bucket.
+   */
   async getCopaUploads(): Promise<{ id: string; fileUri: string; mimeType: string | null }[]> {
     const database = await getDb();
     const rows = await database.getAllAsync<{ id: string; file_uri: string; mime_type: string | null }>(
       `SELECT id, file_uri, mime_type FROM copa_items
-       WHERE file_uri IS NOT NULL AND remote_key IS NULL AND deleted_at IS NULL`,
+       WHERE file_uri IS NOT NULL AND remote_key IS NULL AND deleted_at IS NULL
+         AND id NOT LIKE ?`,
+      [`${DEV_SEED_PREFIX}%`],
     );
     return rows.map((r) => ({ id: r.id, fileUri: r.file_uri, mimeType: r.mime_type }));
   },
@@ -1417,42 +1472,80 @@ export const db = {
 
   // ---- Sync support ----
 
-  /** All rows with un-pushed local changes, in the backend's wire shape. */
+  /**
+   * All rows with un-pushed local changes, in the backend's wire shape.
+   *
+   * Every query also excludes the dev-seed id prefix, and this is the one place
+   * that keeps `__DEV__` sample content off the network. It is deliberately here
+   * rather than at the places that *set* `dirty`, because there are many of
+   * those and they are all reachable: the column defaults to 1, every per-row
+   * mutator sets it, `markAllDirty` sets it in bulk on first sign-in, and sync
+   * fires on app foreground whether or not anyone has signed in. This query is
+   * the only thing that turns a dirty row into a request body, so a row filtered
+   * out here cannot leave the device by any route — including one added later by
+   * someone who has never heard of the seed.
+   *
+   * The predicate is not compiled out of release builds. It costs an index-free
+   * `NOT LIKE` on an already-tiny result set, and a prefix that can never occur
+   * in real data (ids are `<kind>-<timestamp>-<random>`) is a cheaper thing to
+   * carry than a branch that makes the two builds push different rows.
+   */
   async getDirty(): Promise<SyncPayload> {
     const database = await getDb();
+    const skipSeed = `${DEV_SEED_PREFIX}%`;
     const [folders, notes, copa_items, issues, finance_sheets, resume_versions, user_settings] =
       await Promise.all([
       database.getAllAsync<FolderSync>(
         `SELECT id, name, parent_id, favorite, created_at, updated_at, deleted_at,
                 trashed_with_folder_id, kind, config
-         FROM folders WHERE dirty = 1`,
+         FROM folders WHERE dirty = 1 AND id NOT LIKE ?`,
+        [skipSeed],
       ),
       database.getAllAsync<NoteSync>(
         `SELECT id, title, body, folder_id, favorite, shared, published, created_at, updated_at,
                 deleted_at, trashed_with_folder_id, plugin_type, plugin_config
-         FROM notes WHERE dirty = 1`,
+         FROM notes WHERE dirty = 1 AND id NOT LIKE ?`,
+        [skipSeed],
       ),
       database.getAllAsync<CopaSync>(
         `SELECT id, label, content, favorite, created_at, updated_at, deleted_at,
                 file_name, mime_type, file_size, remote_key
-         FROM copa_items WHERE dirty = 1`,
+         FROM copa_items WHERE dirty = 1 AND id NOT LIKE ?`,
+        [skipSeed],
       ),
       database.getAllAsync<IssueSync>(
         `SELECT id, note_id, type_ids, title, description, done, attrs, gh_number, position,
                 created_at, updated_at, deleted_at
-         FROM issues WHERE dirty = 1`,
+         FROM issues WHERE dirty = 1 AND id NOT LIKE ?`,
+        [skipSeed],
       ),
       database.getAllAsync<FinanceSheetSync>(
+        // A sheet's row id *is* its note's id, so the note's prefix covers it.
         `SELECT id, data, created_at, updated_at, deleted_at
-         FROM finance_sheets WHERE dirty = 1`,
+         FROM finance_sheets WHERE dirty = 1 AND id NOT LIKE ?`,
+        [skipSeed],
       ),
       database.getAllAsync<ResumeVersionSync>(
+        // Filtered on `note_id`, not on the version's own id — the one query
+        // here that can't use the row's own key. A version is never seeded: it
+        // is written by the app, by `vid()`, as `ver-<timestamp>-<random>`, so
+        // it never carries the prefix no matter which resume it belongs to.
+        // Matching on `id` therefore excluded nothing at all, while looking
+        // exactly like a guard. And this is not hypothetical: opening the
+        // seeded resume compiles it, and the first successful compile snapshots
+        // the source as its original version (`recordFirstCompile` in
+        // `app/(home)/resume/[id].tsx`). That row is dirty by schema default, so
+        // it would have pushed the sample LaTeX to the account — an orphan, its
+        // parent note correctly held back, and unreachable by "Clear" afterwards
+        // since a hard delete sends no tombstone.
         `SELECT id, note_id, label, source, created_at, updated_at, deleted_at
-         FROM resume_versions WHERE dirty = 1`,
+         FROM resume_versions WHERE dirty = 1 AND note_id NOT LIKE ?`,
+        [skipSeed],
       ),
       database.getAllAsync<UserSettingSync>(
         `SELECT id, value, created_at, updated_at, deleted_at
-         FROM user_settings WHERE dirty = 1`,
+         FROM user_settings WHERE dirty = 1 AND id NOT LIKE ?`,
+        [skipSeed],
       ),
     ]);
     return { folders, notes, copa_items, issues, finance_sheets, resume_versions, user_settings };
@@ -1839,6 +1932,33 @@ export const db = {
       [key, value, now, now],
     );
   },
+
+  // ---- Dev sample content ----
+  //
+  // Exposed on `db` (rather than called straight from the screen) so the writes
+  // go through the same serialization chain as everything else — unlike the
+  // launch seed, these run with the app up and a sync possibly mid-flight.
+
+  /**
+   * Inserts the sample content now, and re-arms the launch seed if it had been
+   * cleared. Existing rows are left as they are, so this restores what's missing
+   * rather than resetting what you've been editing.
+   */
+  async seedDevContent(): Promise<void> {
+    const database = await getDb();
+    await database.runAsync('DELETE FROM settings WHERE key = ?', [DEV_SEED_CLEARED_FLAG]);
+    await runDevSeed(database);
+  },
+
+  /** Removes the sample content and stops the next launch from seeding it back. */
+  async clearDevContent(): Promise<void> {
+    const database = await getDb();
+    await clearDevSeed(database);
+    await database.runAsync(
+      'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+      [DEV_SEED_CLEARED_FLAG, '1'],
+    );
+  },
 };
 
 // ---- Write serialization ----
@@ -1907,6 +2027,8 @@ const WRITE_METHODS = [
   'setCursor',
   'setSetting',
   'setUserSetting',
+  'seedDevContent',
+  'clearDevContent',
 ] as const;
 
 for (const name of WRITE_METHODS) {
