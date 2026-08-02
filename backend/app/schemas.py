@@ -132,3 +132,7 @@ class PullResponse(BaseModel):
     finance_sheets: list[FinanceSheetIn] = []
     resume_versions: list[ResumeVersionIn] = []
     server_seq: int
+    # True when this page stopped short of the server's high-water mark and the
+    # client should pull again from `server_seq`. Defaults False so a client that
+    # predates paging still reads a truthful "that's everything".
+    has_more: bool = False

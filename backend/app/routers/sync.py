@@ -48,6 +48,14 @@ router = APIRouter(prefix="/sync", tags=["sync"])
 # Key columns never overwritten by an upsert's UPDATE branch.
 _IMMUTABLE = {"user_id", "id", "created_at", "server_seq"}
 
+# Rows per table per pull page. Sized so a typical account still syncs in one
+# round trip (nothing changes for them) while an account large enough to time
+# out the edge is broken into pages it can actually finish. Rows vary enormously
+# in size — a copa item is bytes, a resume version is a whole LaTeX document — so
+# this is deliberately conservative rather than tuned to the average.
+_PULL_PAGE = 200
+_PULL_PAGE_MAX = 1000
+
 # Per-model columns that a NULL in an incoming push must NOT overwrite. These are
 # schema-extension fields added in later app versions (folder kind/config, note
 # plugin config, copa file metadata). An older client that predates a column
@@ -165,14 +173,36 @@ async def push(
 @router.get("/pull", response_model=PullResponse)
 async def pull(
     since: int = Query(0, ge=0, description="Last server_seq the client holds"),
+    limit: int = Query(
+        _PULL_PAGE, ge=1, le=_PULL_PAGE_MAX, description="Max rows per table per page"
+    ),
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> PullResponse:
+    """One page of the delta, oldest change first.
+
+    The pull used to be unbounded: every row above the cursor, in one response.
+    That is fine until an account is big enough that building the page costs more
+    wall clock than the edge will wait for, and then it fails *permanently* —
+    the cursor never advances, so every retry asks for the same oversized page
+    and times out again. A first sync of an account with large notes, resume
+    versions (full LaTeX per version) or finance sheets (a whole JSON doc per
+    row) is exactly that shape, and this endpoint is single-worker, so the
+    serialization also blocks every other request while it runs.
+
+    So each call now returns a bounded window and says whether more remains.
+    """
+
     async def changed(model):
+        # Oldest first, capped: with the (user_id, server_seq) index this reads
+        # only the window, never the whole history.
         result = await session.execute(
-            select(model).where(model.user_id == user.id, model.server_seq > since)
+            select(model)
+            .where(model.user_id == user.id, model.server_seq > since)
+            .order_by(model.server_seq)
+            .limit(limit)
         )
-        return result.scalars().all()
+        return list(result.scalars().all())
 
     folders = await changed(Folder)
     notes = await changed(Note)
@@ -181,18 +211,28 @@ async def pull(
     sheets = await changed(FinanceSheet)
     versions = await changed(ResumeVersion)
 
-    # New cursor = the highest server_seq in this batch, or the caller's if empty.
+    tables = (folders, notes, copa, issues, sheets, versions)
+
+    # A table that came back full is truncated — it has rows above its window we
+    # haven't sent. The cursor may only advance to a point below which *every*
+    # table is complete, so take the lowest such boundary. Rows above it are
+    # dropped from this page and arrive on the next one.
+    #
+    # Getting this wrong is the classic delta-sync data-loss bug: hand back a
+    # cursor past rows you didn't send and those rows are never pulled again.
+    truncated = [rows[-1].server_seq for rows in tables if len(rows) == limit]
+    has_more = bool(truncated)
+    if has_more:
+        cutoff = min(truncated)
+        tables = tuple([r for r in rows if r.server_seq <= cutoff] for rows in tables)
+    else:
+        cutoff = since
+    folders, notes, copa, issues, sheets, versions = tables
+
+    # New cursor = the highest server_seq in this page, or the caller's if empty.
     # Every table must feed this max: a table left out here can hand back a
     # cursor past its own rows, so they are never pulled again.
-    high = max(
-        [
-            since,
-            *[
-                r.server_seq
-                for r in (*folders, *notes, *copa, *issues, *sheets, *versions)
-            ],
-        ]
-    )
+    high = max([since, cutoff, *[r.server_seq for rows in tables for r in rows]])
     return PullResponse(
         folders=[FolderIn.model_validate(r) for r in folders],
         notes=[NoteIn.model_validate(r) for r in notes],
@@ -201,6 +241,7 @@ async def pull(
         finance_sheets=[FinanceSheetIn.model_validate(r) for r in sheets],
         resume_versions=[ResumeVersionIn.model_validate(r) for r in versions],
         server_seq=high,
+        has_more=has_more,
     )
 
 
