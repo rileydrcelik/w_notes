@@ -14,7 +14,7 @@ import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { hexToRgba, Italic, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
-import { apiFetch } from '@/lib/sync/api';
+import { apiErrorMessage, apiFetch } from '@/lib/sync/api';
 
 const ACCENT = '#16a394';
 const ERROR = '#f85149';
@@ -47,8 +47,8 @@ export function ProjectConfig({
     try {
       const res = await apiFetch<RepoListResponse>('/github/repos');
       setRepos(res.repos ?? []);
-    } catch {
-      setError('Could not load your GitHub repos. Check the backend is reachable.');
+    } catch (e) {
+      setError(apiErrorMessage(e) ?? 'Could not load your GitHub repos.');
     } finally {
       setLoading(false);
     }

@@ -25,7 +25,7 @@ import { useContextMenu } from '@/hooks/use-context-menu';
 import { useScrollToTop } from '@/hooks/use-scroll-to-top';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
 import { useTheme } from '@/hooks/use-theme';
-import { apiFetch } from '@/lib/sync/api';
+import { apiErrorMessage, apiFetch } from '@/lib/sync/api';
 import { githubTarget, type GithubTarget, type CreatedIssue } from '@/lib/github-note';
 import { GithubConfig } from '@/components/notes/github-config';
 import { useGithubSelection, type CloseReason } from '@/store/github-selection-store';
@@ -399,8 +399,8 @@ export default function GithubIssuesScreen() {
           `/github/issues?repo=${encodeURIComponent(target.repo)}&state=${filter}&limit=25`,
         );
         setIssues(res.issues ?? []);
-      } catch {
-        setError('Could not load issues. Check the backend is reachable and the repo exists.');
+      } catch (e) {
+        setError(apiErrorMessage(e) ?? 'Could not load issues. Check the repo exists.');
       } finally {
         setLoading(false);
         setRefreshing(false);
@@ -452,8 +452,8 @@ export default function GithubIssuesScreen() {
             body: { state: 'closed', state_reason: reason },
           }),
         ),
-      ).catch(() => {
-        setError('Could not close one or more issues on GitHub.');
+      ).catch((e) => {
+        setError(apiErrorMessage(e) ?? 'Could not close one or more issues on GitHub.');
         void load('refresh');
       });
     },
@@ -478,8 +478,8 @@ export default function GithubIssuesScreen() {
             body: { state: 'open', state_reason: 'reopened' },
           }),
         ),
-      ).catch(() => {
-        setError('Could not reopen one or more issues on GitHub.');
+      ).catch((e) => {
+        setError(apiErrorMessage(e) ?? 'Could not reopen one or more issues on GitHub.');
         void load('refresh');
       });
     },

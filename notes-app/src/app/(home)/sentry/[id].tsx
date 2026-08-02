@@ -34,7 +34,7 @@ import {
   type FixState,
 } from '@/lib/autofix-progress';
 import { db } from '@/lib/db';
-import { apiFetch } from '@/lib/sync/api';
+import { apiErrorMessage, apiFetch } from '@/lib/sync/api';
 import { sentryTarget, type SentryTarget } from '@/lib/sentry-note';
 import { SentryConfig } from '@/components/notes/sentry-config';
 import { useAutofixSelection } from '@/store/autofix-selection-store';
@@ -766,8 +766,8 @@ export default function SentryIssuesScreen() {
           )}&limit=25`,
         );
         setIssues(res.issues ?? []);
-      } catch {
-        setError('Could not load issues. Check the backend is reachable and the project exists.');
+      } catch (e) {
+        setError(apiErrorMessage(e) ?? 'Could not load issues. Check the project exists.');
       } finally {
         setLoading(false);
         setRefreshing(false);

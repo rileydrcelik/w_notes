@@ -8,15 +8,26 @@
  */
 import { Sentry } from '@/lib/sentry';
 import { AuthUnavailableError, getAuthToken } from '@/lib/auth/token';
+import { apiErrorMessage, detailFromBody } from './api-detail';
 import { fingerprintPath } from './fingerprint';
 
-export { fingerprintPath };
+export { apiErrorMessage, fingerprintPath };
 
 const BASE_URL = process.env.EXPO_PUBLIC_API_URL?.replace(/\/$/, '') ?? '';
 
 export const syncConfigured = !!BASE_URL;
 
 export class ApiError extends Error {
+  /**
+   * The backend's own explanation, pulled out of `{"detail": ...}`.
+   *
+   * Kept as a field rather than parsed at each call site so there is one answer
+   * to "what did the server actually say", and so a screen can show it without
+   * knowing FastAPI's error shape. Use `apiErrorMessage` to decide whether it is
+   * worth showing — not every status carries advice.
+   */
+  readonly detail?: string;
+
   constructor(
     message: string,
     readonly status: number,
@@ -24,6 +35,7 @@ export class ApiError extends Error {
   ) {
     super(message);
     this.name = 'ApiError';
+    this.detail = detailFromBody(body);
   }
 }
 

@@ -15,7 +15,7 @@ import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { hexToRgba, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
-import { apiFetch } from '@/lib/sync/api';
+import { apiErrorMessage, apiFetch } from '@/lib/sync/api';
 import type { GithubTarget } from '@/lib/github-note';
 
 const ACCENT = '#8250df';
@@ -60,8 +60,11 @@ export function GithubConfig({
     try {
       const res = await apiFetch<RepoListResponse>('/github/repos');
       setRepos(res.repos ?? []);
-    } catch {
-      setError('Could not load your GitHub repos. Check the backend is reachable.');
+    } catch (e) {
+      // The backend's own words when it has useful ones — most often "no token
+      // saved for this account, add one in Settings". Falling back to a
+      // connectivity message there would send you to debug the wrong thing.
+      setError(apiErrorMessage(e) ?? 'Could not load your GitHub repos.');
     } finally {
       setLoading(false);
     }
