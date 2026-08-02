@@ -20,7 +20,7 @@ import { SwipeBackView } from '@/components/swipe-back-view';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { hexToRgba, Spacing } from '@/constants/theme';
-import { GRID_COLUMNS, gridEdgePadding, trailingSpacers, useGridColumnWidth, useTileHeight } from '@/lib/grid';
+import { trailingSpacers, useGridColumns, useGridColumnWidth, useGridEdgePadding, useTileHeight } from '@/lib/grid';
 import { useContextMenu } from '@/hooks/use-context-menu';
 import { useScrollToTop } from '@/hooks/use-scroll-to-top';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
@@ -347,7 +347,9 @@ export default function GithubIssuesScreen() {
   const theme = useTheme();
   const insets = useSafeAreaInsets();
   const tabBarInset = useTabBarInset();
+  const columns = useGridColumns();
   const columnWidth = useGridColumnWidth();
+  const edgePadding = useGridEdgePadding();
   const {
     active: selectionActive,
     selectedIds,
@@ -375,9 +377,12 @@ export default function GithubIssuesScreen() {
   type GridRow = Issue | { spacer: true; key: string };
   const gridData = useMemo<GridRow[]>(() => {
     const rows: GridRow[] = [...issues];
-    for (let i = 0; i < trailingSpacers(issues.length); i++) rows.push({ spacer: true, key: `spacer-${i}` });
+    for (let i = 0; i < trailingSpacers(issues.length, columns); i++) rows.push({ spacer: true, key: `spacer-${i}` });
     return rows;
-  }, [issues]);
+    // `columns` belongs here: it changes when the window is resized across a
+    // breakpoint, and spacers computed for the old count leave the last row
+    // short or pad it into an empty extra row.
+  }, [issues, columns]);
   const { scrollProps, scrolled, scrollToTop } = useScrollToTop<FlatList<GridRow>>();
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -565,12 +570,16 @@ export default function GithubIssuesScreen() {
               {...scrollProps}
               data={gridData}
               keyExtractor={(item) => ('spacer' in item ? item.key : String(item.number))}
-              numColumns={GRID_COLUMNS}
+              numColumns={columns}
+              // The column count changes with the window on web, and React
+              // Native refuses to change numColumns in place — the list must
+              // remount.
+              key={columns}
               columnWrapperStyle={styles.row}
               extraData={{ selectionActive, selectedIds, filter }}
               contentContainerStyle={[
                 styles.content,
-                gridEdgePadding,
+                edgePadding,
                 { paddingTop: headerTop, paddingBottom: tabBarInset },
               ]}
               ListHeaderComponent={

@@ -11,7 +11,7 @@ import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Spacing } from '@/constants/theme';
 import type { Folder, Note } from '@/data/notes';
-import { GRID_COLUMNS, gridEdgePadding, trailingSpacers, useGridColumnWidth } from '@/lib/grid';
+import { trailingSpacers, useGridColumns, useGridColumnWidth, useGridEdgePadding } from '@/lib/grid';
 import { pinnedFirst } from '@/lib/pinned';
 import { useScrollToTop } from '@/hooks/use-scroll-to-top';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
@@ -37,7 +37,9 @@ export default function FolderScreen() {
   const notes = folder ? getNotesInFolder(folder.id) : [];
   const tabBarInset = useTabBarInset();
   const insets = useSafeAreaInsets();
+  const columns = useGridColumns();
   const columnWidth = useGridColumnWidth();
+  const edgePadding = useGridEdgePadding();
   const { scrollProps, scrolled, scrollToTop } = useScrollToTop<FlatList<GridItem>>();
 
   // Subfolders sit above the notes, mirroring the home screen's ordering — and
@@ -47,7 +49,7 @@ export default function FolderScreen() {
     ...notes.map((note) => ({ kind: 'note' as const, note, favorite: note.favorite })),
   ]);
   // Keep a partial last row at single-card width instead of stretching it.
-  for (let i = 0; i < trailingSpacers(items.length); i++) items.push({ kind: 'spacer' });
+  for (let i = 0; i < trailingSpacers(items.length, columns); i++) items.push({ kind: 'spacer' });
 
   // Read by the unmount effect so it can keep empty deps — otherwise its cleanup
   // would fire on every folder change rather than on a real unmount.
@@ -109,11 +111,14 @@ export default function FolderScreen() {
                 ? item.folder.id
                 : `spacer-${index}`
           }
-          numColumns={GRID_COLUMNS}
+          numColumns={columns}
+          // The column count changes with the window on web, and React Native
+          // refuses to change numColumns in place — the list must remount.
+          key={columns}
           columnWrapperStyle={styles.row}
           contentContainerStyle={[
             styles.content,
-            gridEdgePadding,
+            edgePadding,
             { paddingTop: insets.top + Spacing.two, paddingBottom: tabBarInset },
           ]}
           ListHeaderComponent={header}

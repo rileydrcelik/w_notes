@@ -11,7 +11,7 @@ import { SwipeBackView } from '@/components/swipe-back-view';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Spacing } from '@/constants/theme';
-import { GRID_COLUMNS, gridEdgePadding, trailingSpacers, useGridColumnWidth, useTileHeight } from '@/lib/grid';
+import { trailingSpacers, useGridColumns, useGridColumnWidth, useGridEdgePadding, useTileHeight } from '@/lib/grid';
 import { useScrollToTop } from '@/hooks/use-scroll-to-top';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
 import { useTheme } from '@/hooks/use-theme';
@@ -37,12 +37,14 @@ export default function TrashScreen() {
   const tabBarInset = useTabBarInset();
   const insets = useSafeAreaInsets();
   const tileHeight = useTileHeight();
+  const columns = useGridColumns();
   const columnWidth = useGridColumnWidth();
+  const edgePadding = useGridEdgePadding();
   const { scrollProps, scrolled, scrollToTop } = useScrollToTop<FlatList<GridItem>>();
   const [restoreTarget, setRestoreTarget] = useState<TrashEntry | null>(null);
 
   const items: GridItem[] = trash.map((entry) => ({ kind: 'entry' as const, entry }));
-  for (let i = 0; i < trailingSpacers(items.length); i++) items.push({ kind: 'spacer' });
+  for (let i = 0; i < trailingSpacers(items.length, columns); i++) items.push({ kind: 'spacer' });
 
   const restoreName =
     restoreTarget?.kind === 'note' ? restoreTarget.note.title : restoreTarget?.folder.name;
@@ -60,11 +62,14 @@ export default function TrashScreen() {
           {...scrollProps}
           data={items}
           keyExtractor={(it, index) => (it.kind === 'entry' ? it.entry.id : `spacer-${index}`)}
-          numColumns={GRID_COLUMNS}
+          numColumns={columns}
+          // The column count changes with the window on web, and React Native
+          // refuses to change numColumns in place — the list must remount.
+          key={columns}
           columnWrapperStyle={styles.row}
           contentContainerStyle={[
             styles.content,
-            gridEdgePadding,
+            edgePadding,
             { paddingTop: insets.top + Spacing.two, paddingBottom: tabBarInset },
           ]}
           ListHeaderComponent={<ThemedText type="subtitle" style={styles.title}>Trash</ThemedText>}

@@ -27,7 +27,7 @@ import { useScrollToTop } from '@/hooks/use-scroll-to-top';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
 import { useTheme } from '@/hooks/use-theme';
 import { effectiveTypeIds, normalizeTypeIds, type Issue, type IssueAttrValue } from '@/data/notes';
-import { GRID_COLUMNS, gridEdgePadding, trailingSpacers, useGridColumnWidth, useTileHeight } from '@/lib/grid';
+import { trailingSpacers, useGridColumns, useGridColumnWidth, useGridEdgePadding, useTileHeight } from '@/lib/grid';
 import { parseTypeConfig, projectConfig, type AttrDef } from '@/lib/project';
 import {
   getGithubIssueDetail,
@@ -260,7 +260,9 @@ export default function IssueTypeScreen() {
   const { id, typeId } = useLocalSearchParams<{ id: string; typeId: string }>();
   const insets = useSafeAreaInsets();
   const tabBarInset = useTabBarInset();
+  const columns = useGridColumns();
   const columnWidth = useGridColumnWidth();
+  const edgePadding = useGridEdgePadding();
   const { getFolder, getNote, getNotesInFolder } = useNotes();
   const { issues, getIssuesForNote, setDone, updateIssue, deleteIssue } = useIssues();
   const {
@@ -291,9 +293,11 @@ export default function IssueTypeScreen() {
   type GridRow = Issue | { spacer: true; id: string };
   const gridData = useMemo<GridRow[]>(() => {
     const rows: GridRow[] = [...data];
-    for (let i = 0; i < trailingSpacers(data.length); i++) rows.push({ spacer: true, id: `spacer-${i}` });
+    for (let i = 0; i < trailingSpacers(data.length, columns); i++) rows.push({ spacer: true, id: `spacer-${i}` });
     return rows;
-  }, [data]);
+    // See the note in github/[id].tsx: spacers must be recomputed when the
+    // column count changes with the window.
+  }, [data, columns]);
   const { scrollProps, scrolled, scrollToTop } = useScrollToTop<FlatList<GridRow>>();
   // The project's issue-type notes (id + title), ordered — powers both the Types
   // picker in the edit sheet and the "other types" chips on each card.
@@ -476,12 +480,15 @@ export default function IssueTypeScreen() {
           {...scrollProps}
           data={gridData}
           keyExtractor={(item) => item.id}
-          numColumns={GRID_COLUMNS}
+          numColumns={columns}
+          // The column count changes with the window on web, and React Native
+          // refuses to change numColumns in place — the list must remount.
+          key={columns}
           columnWrapperStyle={styles.row}
           extraData={{ selectionActive, selectedIds }}
           contentContainerStyle={[
             styles.content,
-            gridEdgePadding,
+            edgePadding,
             { paddingTop: headerTop, paddingBottom: tabBarInset },
           ]}
           ListHeaderComponent={

@@ -14,7 +14,7 @@ import type { Folder, Note } from '@/data/notes';
 import { sentryTarget } from '@/lib/sentry-note';
 import { githubTarget } from '@/lib/github-note';
 import { isResumeNote, resumeSourceExcerpt, resumeTitle } from '@/lib/resume-note';
-import { useTileHeight } from '@/lib/grid';
+import { useCardPreviewLines, useTileHeight } from '@/lib/grid';
 import { projectConfig } from '@/lib/project';
 import { useDoubleTap } from '@/hooks/use-double-tap';
 import { useTheme } from '@/hooks/use-theme';
@@ -31,6 +31,15 @@ const FINANCE_ACCENT = '#2f9e6e';
 /** Accent for a long-pressed/right-clicked (selected) card. */
 const SELECT_ACCENT = '#7a89b8';
 const PREVIEW_TEXT = { fontSize: 14, lineHeight: 20, fontWeight: '500' } as const;
+/**
+ * Most lines of preview a card will show once the tile is tall enough for them.
+ * The actual count is derived from the tile height (see `useCardPreviewLines`),
+ * because the tile shrinks with the window and a fixed count clips inside it.
+ */
+const PREVIEW_MAX_LINES = 4;
+/** Type metrics of the resume card's monospace source excerpt (see `sourcePreview`). */
+const SOURCE_PREVIEW = { fontSize: 11, lineHeight: 16 } as const;
+const SOURCE_PREVIEW_MAX_LINES = 3;
 
 /** Compact rich-text styling for the card preview — small headings, tight lists. */
 function previewHtmlStyle(theme: Palette): EnrichedTextHtmlStyle {
@@ -218,6 +227,11 @@ function TextNoteCard({ note }: { note: Note }) {
   const html = useMemo(() => previewHtmlStyle(theme), [theme]);
   const textStyle = useMemo(() => ({ ...PREVIEW_TEXT, color: theme.textSecondary }), [theme]);
   const tileHeight = useTileHeight();
+  const previewLines = useCardPreviewLines(
+    PREVIEW_TEXT.fontSize,
+    PREVIEW_TEXT.lineHeight,
+    PREVIEW_MAX_LINES,
+  );
 
   return (
     <Pressable
@@ -231,9 +245,9 @@ function TextNoteCard({ note }: { note: Note }) {
           </ThemedText>
           {note.favorite && <FavoriteStar size={13} />}
         </View>
-        {note.body.trim().length > 0 && (
+        {note.body.trim().length > 0 && previewLines > 0 && (
           <EnrichedText
-            numberOfLines={4}
+            numberOfLines={previewLines}
             ellipsizeMode="tail"
             style={textStyle}
             htmlStyle={html}>
@@ -327,6 +341,11 @@ function ResumeNoteCard({ note }: { note: Note }) {
   const theme = useTheme();
   const selected = isSelected('note', note.id);
   const tileHeight = useTileHeight();
+  const previewLines = useCardPreviewLines(
+    SOURCE_PREVIEW.fontSize,
+    SOURCE_PREVIEW.lineHeight,
+    SOURCE_PREVIEW_MAX_LINES,
+  );
 
   // The body is LaTeX, so the preview is a plain source excerpt in monospace —
   // never the rich-text renderer.
@@ -351,19 +370,20 @@ function ResumeNoteCard({ note }: { note: Note }) {
           </ThemedText>
           {note.favorite && <FavoriteStar size={13} />}
         </View>
-        {excerpt.length > 0 ? (
-          <ThemedText
-            type="small"
-            themeColor="textSecondary"
-            numberOfLines={3}
-            style={[styles.sourcePreview, { color: theme.textSecondary }]}>
-            {excerpt}
-          </ThemedText>
-        ) : (
-          <ThemedText type="small" themeColor="textSecondary" numberOfLines={1}>
-            LaTeX resume
-          </ThemedText>
-        )}
+        {previewLines > 0 &&
+          (excerpt.length > 0 ? (
+            <ThemedText
+              type="small"
+              themeColor="textSecondary"
+              numberOfLines={previewLines}
+              style={[styles.sourcePreview, { color: theme.textSecondary }]}>
+              {excerpt}
+            </ThemedText>
+          ) : (
+            <ThemedText type="small" themeColor="textSecondary" numberOfLines={1}>
+              LaTeX resume
+            </ThemedText>
+          ))}
       </ThemedView>
     </Pressable>
   );
@@ -442,7 +462,6 @@ const styles = StyleSheet.create({
   // LaTeX source excerpt on a resume card — monospace, so it reads as code.
   sourcePreview: {
     fontFamily: Fonts.mono,
-    fontSize: 11,
-    lineHeight: 16,
+    ...SOURCE_PREVIEW,
   },
 });

@@ -12,7 +12,7 @@ import { SearchBar, SEARCH_BAR_HEIGHT } from '@/components/search-bar';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Spacing } from '@/constants/theme';
-import { GRID_COLUMNS, gridEdgePadding, trailingSpacers, useGridColumnWidth } from '@/lib/grid';
+import { trailingSpacers, useGridColumns, useGridColumnWidth, useGridEdgePadding } from '@/lib/grid';
 import { pinnedFirst } from '@/lib/pinned';
 import { useScreenFadeStyle } from '@/hooks/use-screen-fade';
 import { useScrollToTop } from '@/hooks/use-scroll-to-top';
@@ -38,7 +38,9 @@ export default function HomeScreen() {
   const theme = useTheme();
   const { openSidebar } = useSidebar();
   const { refreshing, onRefresh } = useSyncRefresh();
+  const columns = useGridColumns();
   const columnWidth = useGridColumnWidth();
+  const edgePadding = useGridEdgePadding();
   const { scrollProps, scrolled, scrollToTop } = useScrollToTop<FlatList<GridItem>>();
   const [query, setQuery] = useState('');
   // Web has no native stack transition; fade/slide the screen in when it gains
@@ -79,7 +81,7 @@ export default function HomeScreen() {
   ]);
   // A partial last row would stretch its cards to fill the width; transparent
   // spacers keep them at single-column width instead.
-  for (let i = 0; i < trailingSpacers(items.length); i++) {
+  for (let i = 0; i < trailingSpacers(items.length, columns); i++) {
     items.push({ type: 'spacer', id: `spacer-${i}` });
   }
 
@@ -102,11 +104,14 @@ export default function HomeScreen() {
           {...scrollProps}
           data={items}
           keyExtractor={(item) => `${item.type}-${item.id}`}
-          numColumns={GRID_COLUMNS}
+          numColumns={columns}
+          // The column count changes with the window on web, and React Native
+          // refuses to change numColumns in place — the list must remount.
+          key={columns}
           columnWrapperStyle={styles.row}
           contentContainerStyle={[
             styles.content,
-            gridEdgePadding,
+            edgePadding,
             { paddingTop: contentTop, paddingBottom: tabBarInset },
           ]}
           keyboardShouldPersistTaps="handled"

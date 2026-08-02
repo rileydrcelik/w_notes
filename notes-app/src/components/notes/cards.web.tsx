@@ -12,7 +12,7 @@ import type { Folder, Note } from '@/data/notes';
 import { sentryTarget } from '@/lib/sentry-note';
 import { githubTarget } from '@/lib/github-note';
 import { isResumeNote, resumeSourceExcerpt, resumeTitle } from '@/lib/resume-note';
-import { useTileHeight } from '@/lib/grid';
+import { useCardPreviewLines, useTileHeight } from '@/lib/grid';
 import { projectConfig } from '@/lib/project';
 import { useContextMenu } from '@/hooks/use-context-menu';
 import { useDoubleTap } from '@/hooks/use-double-tap';
@@ -30,6 +30,15 @@ const FINANCE_ACCENT = '#2f9e6e';
 /** Accent for a long-pressed/right-clicked (selected) card. */
 const SELECT_ACCENT = '#7a89b8';
 const PREVIEW_TEXT = { fontSize: 14, lineHeight: 20, fontWeight: '500' } as const;
+/**
+ * Most lines of preview a card will show once the tile is tall enough for them.
+ * The actual count is derived from the tile height (see `useCardPreviewLines`),
+ * because the tile shrinks with the window and a fixed count clips inside it.
+ */
+const PREVIEW_MAX_LINES = 4;
+/** Type metrics of the resume card's monospace source excerpt (see `sourcePreview`). */
+const SOURCE_PREVIEW = { fontSize: 11, lineHeight: 16 } as const;
+const SOURCE_PREVIEW_MAX_LINES = 3;
 
 export function FolderCard({ folder }: { folder: Folder }) {
   if (folder.kind === 'project') return <ProjectFolderCard folder={folder} />;
@@ -206,6 +215,11 @@ function TextNoteCard({ note }: { note: Note }) {
   // Right-click mirrors the mobile long-press (toggles selection).
   const contextMenuRef = useContextMenu(onSelectToggle);
   const tileHeight = useTileHeight();
+  const previewLines = useCardPreviewLines(
+    PREVIEW_TEXT.fontSize,
+    PREVIEW_TEXT.lineHeight,
+    PREVIEW_MAX_LINES,
+  );
 
   // No native rich-text renderer on web — flatten the HTML body to plain text
   // for the preview (same helper the copa list uses).
@@ -224,9 +238,9 @@ function TextNoteCard({ note }: { note: Note }) {
           </ThemedText>
           {note.favorite && <FavoriteStar size={13} />}
         </View>
-        {preview.length > 0 && (
+        {preview.length > 0 && previewLines > 0 && (
           <ThemedText
-            numberOfLines={4}
+            numberOfLines={previewLines}
             ellipsizeMode="tail"
             themeColor="textSecondary"
             style={PREVIEW_TEXT}>
@@ -297,6 +311,11 @@ function ResumeNoteCard({ note }: { note: Note }) {
 
   const contextMenuRef = useContextMenu(onSelectToggle);
   const tileHeight = useTileHeight();
+  const previewLines = useCardPreviewLines(
+    SOURCE_PREVIEW.fontSize,
+    SOURCE_PREVIEW.lineHeight,
+    SOURCE_PREVIEW_MAX_LINES,
+  );
 
   return (
     <Pressable
@@ -312,19 +331,20 @@ function ResumeNoteCard({ note }: { note: Note }) {
           </ThemedText>
           {note.favorite && <FavoriteStar size={13} />}
         </View>
-        {excerpt.length > 0 ? (
-          <ThemedText
-            themeColor="textSecondary"
-            numberOfLines={3}
-            ellipsizeMode="tail"
-            style={styles.sourcePreview}>
-            {excerpt}
-          </ThemedText>
-        ) : (
-          <ThemedText type="small" themeColor="textSecondary" numberOfLines={1}>
-            LaTeX resume
-          </ThemedText>
-        )}
+        {previewLines > 0 &&
+          (excerpt.length > 0 ? (
+            <ThemedText
+              themeColor="textSecondary"
+              numberOfLines={previewLines}
+              ellipsizeMode="tail"
+              style={styles.sourcePreview}>
+              {excerpt}
+            </ThemedText>
+          ) : (
+            <ThemedText type="small" themeColor="textSecondary" numberOfLines={1}>
+              LaTeX resume
+            </ThemedText>
+          ))}
       </ThemedView>
     </Pressable>
   );
@@ -442,8 +462,7 @@ const styles = StyleSheet.create({
   // LaTeX source excerpt on a resume card — monospace, so it reads as code.
   sourcePreview: {
     fontFamily: Fonts.mono,
-    fontSize: 11,
-    lineHeight: 16,
+    ...SOURCE_PREVIEW,
     minWidth: 0,
   },
   titleText: {

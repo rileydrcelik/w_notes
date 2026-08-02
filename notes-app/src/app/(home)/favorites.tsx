@@ -9,7 +9,7 @@ import { SwipeBackView } from '@/components/swipe-back-view';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Spacing } from '@/constants/theme';
-import { GRID_COLUMNS, gridEdgePadding, trailingSpacers, useGridColumnWidth } from '@/lib/grid';
+import { trailingSpacers, useGridColumns, useGridColumnWidth, useGridEdgePadding } from '@/lib/grid';
 import { useScrollToTop } from '@/hooks/use-scroll-to-top';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
 import { useNotes } from '@/store/notes-store';
@@ -20,7 +20,9 @@ export default function FavoritesScreen() {
   const { folders, notes } = useNotes();
   const tabBarInset = useTabBarInset();
   const insets = useSafeAreaInsets();
+  const columns = useGridColumns();
   const columnWidth = useGridColumnWidth();
+  const edgePadding = useGridEdgePadding();
   const { scrollProps, scrolled, scrollToTop } = useScrollToTop<FlatList<Item>>();
 
   const favoriteFolders = folders.filter((folder) => folder.favorite);
@@ -30,7 +32,7 @@ export default function FavoritesScreen() {
     ...favoriteNotes.map((note) => ({ type: 'note' as const, id: note.id })),
   ];
   // Keep a partial last row at single-card width instead of stretching it.
-  for (let i = 0; i < trailingSpacers(items.length); i++) {
+  for (let i = 0; i < trailingSpacers(items.length, columns); i++) {
     items.push({ type: 'spacer', id: `spacer-${i}` });
   }
 
@@ -42,9 +44,12 @@ export default function FavoritesScreen() {
           {...scrollProps}
           data={items}
           keyExtractor={(item) => `${item.type}-${item.id}`}
-          numColumns={GRID_COLUMNS}
+          numColumns={columns}
+          // The column count changes with the window on web, and React Native
+          // refuses to change numColumns in place — the list must remount.
+          key={columns}
           columnWrapperStyle={styles.row}
-          contentContainerStyle={[styles.content, gridEdgePadding, { paddingBottom: tabBarInset }]}
+          contentContainerStyle={[styles.content, edgePadding, { paddingBottom: tabBarInset }]}
           ListHeaderComponent={
             <ThemedText type="subtitle" style={[styles.title, { paddingTop: insets.top + Spacing.two }]}>
               Favorites

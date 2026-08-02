@@ -10,7 +10,7 @@ import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Spacing } from '@/constants/theme';
 import type { Note } from '@/data/notes';
-import { GRID_COLUMNS, gridEdgePadding, trailingSpacers, useGridColumnWidth, useTileHeight } from '@/lib/grid';
+import { trailingSpacers, useGridColumns, useGridColumnWidth, useGridEdgePadding, useTileHeight } from '@/lib/grid';
 import { pinnedFirst } from '@/lib/pinned';
 import { useScrollToTop } from '@/hooks/use-scroll-to-top';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
@@ -26,14 +26,16 @@ export default function SharedScreen() {
   const tabBarInset = useTabBarInset();
   const insets = useSafeAreaInsets();
   const tileHeight = useTileHeight();
+  const columns = useGridColumns();
   const columnWidth = useGridColumnWidth();
+  const edgePadding = useGridEdgePadding();
   const { scrollProps, scrolled, scrollToTop } = useScrollToTop<FlatList<GridItem>>();
 
   const items: GridItem[] = pinnedFirst(notes.filter((note) => note.shared)).map((note) => ({
     kind: 'note' as const,
     note,
   }));
-  for (let i = 0; i < trailingSpacers(items.length); i++) items.push({ kind: 'spacer' });
+  for (let i = 0; i < trailingSpacers(items.length, columns); i++) items.push({ kind: 'spacer' });
 
   return (
     <SwipeBackView>
@@ -43,11 +45,14 @@ export default function SharedScreen() {
           {...scrollProps}
           data={items}
           keyExtractor={(item, index) => (item.kind === 'note' ? item.note.id : `spacer-${index}`)}
-          numColumns={GRID_COLUMNS}
+          numColumns={columns}
+          // The column count changes with the window on web, and React Native
+          // refuses to change numColumns in place — the list must remount.
+          key={columns}
           columnWrapperStyle={styles.row}
           contentContainerStyle={[
             styles.content,
-            gridEdgePadding,
+            edgePadding,
             { paddingTop: insets.top + Spacing.two, paddingBottom: tabBarInset },
           ]}
           ListHeaderComponent={<ThemedText type="subtitle" style={styles.title}>Shared</ThemedText>}
