@@ -21,6 +21,7 @@ import { Colors, hexToRgba, Spacing, type Palette } from '@/constants/theme';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
 import { useTheme } from '@/hooks/use-theme';
 import { useAuth } from '@/lib/auth/auth-context';
+import type { CredentialProvider } from '@/lib/credentials';
 import {
   useCreateOptions,
   type CreateCredentialKey,
@@ -334,22 +335,18 @@ function CreateOptionsSection() {
               </Pressable>
 
               {t.key === 'sentryEnabled' && on && (
-                <CredentialField
+                <TokenField
+                  provider="sentry"
                   label="Sentry API token"
-                  value={opts.sentryToken}
-                  credKey="sentryToken"
-                  placeholder="Stored on device — not yet used"
-                  secure
+                  help="Reads your own Sentry projects. Needs project:read."
                 />
               )}
               {t.key === 'githubEnabled' && on && (
                 <>
-                  <CredentialField
+                  <TokenField
+                    provider="github"
                     label="GitHub token"
-                    value={opts.githubToken}
-                    credKey="githubToken"
-                    placeholder="Stored on device — not yet used"
-                    secure
+                    help="Browses your own repos. Needs Issues: read and write."
                   />
                   <CredentialField
                     label="Default repo"
@@ -367,7 +364,158 @@ function CreateOptionsSection() {
   );
 }
 
-/** A labelled text field for a stored (inert) create-option credential. */
+/**
+ * One provider token, held by the server rather than this device.
+ *
+ * Write-only, because the API is: a token goes up and only its last four
+ * characters come back. So there are two states rather than one editable value
+ * — *saved* (shows `····ab12`, offers Replace and Remove) and *empty* (an input
+ * plus Save). There is deliberately no way to read a stored token back; a
+ * stolen session should not yield a reusable GitHub credential.
+ */
+function TokenField({
+  provider,
+  label,
+  help,
+}: {
+  provider: CredentialProvider;
+  label: string;
+  help: string;
+}) {
+  const theme = useTheme();
+  const { credentials, credentialsLoading, setToken, clearToken } = useCreateOptions();
+  const status = credentials[provider];
+  const [entry, setEntry] = useState('');
+  const [editing, setEditing] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const showInput = editing || !status.saved;
+
+  const save = async () => {
+    const token = entry.trim();
+    if (!token) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await setToken(provider, token);
+      setEntry('');
+      setEditing(false);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not save token');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const remove = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      await clearToken(provider);
+      setEntry('');
+      setEditing(false);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not remove token');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <View style={styles.credField}>
+      <ThemedText type="small" themeColor="textSecondary" style={styles.credLabel}>
+        {label}
+      </ThemedText>
+
+      {credentialsLoading ? (
+        <ActivityIndicator size="small" color={theme.textSecondary} />
+      ) : showInput ? (
+        <>
+          <TextInput
+            value={entry}
+            onChangeText={setEntry}
+            placeholder="Paste your token"
+            placeholderTextColor={theme.textSecondary}
+            autoCapitalize="none"
+            autoCorrect={false}
+            secureTextEntry
+            editable={!busy}
+            onSubmitEditing={() => void save()}
+            style={[
+              styles.credInput,
+              { color: theme.text, borderColor: hexToRgba(theme.text, 0.12) },
+            ]}
+          />
+          <View style={styles.tokenActions}>
+            <Pressable
+              onPress={() => void save()}
+              disabled={busy || !entry.trim()}
+              accessibilityRole="button"
+              accessibilityLabel={`Save ${label}`}
+              style={({ pressed }) => [pressed && styles.pressed]}>
+              <ThemedText
+                type="small"
+                style={{ color: entry.trim() && !busy ? ACCENT : theme.textSecondary }}>
+                {busy ? 'Saving…' : 'Save'}
+              </ThemedText>
+            </Pressable>
+            {status.saved && (
+              <Pressable
+                onPress={() => {
+                  setEditing(false);
+                  setEntry('');
+                  setError(null);
+                }}
+                disabled={busy}
+                accessibilityRole="button"
+                accessibilityLabel="Cancel"
+                style={({ pressed }) => [pressed && styles.pressed]}>
+                <ThemedText type="small" themeColor="textSecondary">
+                  Cancel
+                </ThemedText>
+              </Pressable>
+            )}
+          </View>
+        </>
+      ) : (
+        <View style={styles.tokenSaved}>
+          <ThemedText type="small" themeColor="textSecondary">
+            {`Saved ····${status.hint}`}
+          </ThemedText>
+          <View style={styles.tokenActions}>
+            <Pressable
+              onPress={() => setEditing(true)}
+              disabled={busy}
+              accessibilityRole="button"
+              accessibilityLabel={`Replace ${label}`}
+              style={({ pressed }) => [pressed && styles.pressed]}>
+              <ThemedText type="small" style={{ color: ACCENT }}>
+                Replace
+              </ThemedText>
+            </Pressable>
+            <Pressable
+              onPress={() => void remove()}
+              disabled={busy}
+              accessibilityRole="button"
+              accessibilityLabel={`Remove ${label}`}
+              style={({ pressed }) => [pressed && styles.pressed]}>
+              <ThemedText type="small" themeColor="textSecondary">
+                {busy ? 'Removing…' : 'Remove'}
+              </ThemedText>
+            </Pressable>
+          </View>
+        </View>
+      )}
+
+      <ThemedText type="small" themeColor="textSecondary" style={styles.credHelp}>
+        {error ?? help}
+      </ThemedText>
+    </View>
+  );
+}
+
+/** A labelled text field for a stored (non-secret) create-option string. */
 function CredentialField({
   label,
   value,
@@ -472,6 +620,24 @@ const styles = StyleSheet.create({
     paddingHorizontal: Spacing.three,
     paddingVertical: Spacing.two,
     fontSize: 15,
+  },
+  credHelp: {
+    marginLeft: Spacing.one,
+  },
+  // Saved state reads as one line: what's stored on the left, what you can do
+  // about it on the right.
+  tokenSaved: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    minHeight: 32,
+    paddingLeft: Spacing.one,
+  },
+  tokenActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.three,
+    paddingLeft: Spacing.one,
   },
   row: {
     flexDirection: 'row',
