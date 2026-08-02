@@ -49,6 +49,10 @@ const LEVEL_COLORS: Record<string, string> = {
   debug: '#8d8f9c',
 };
 
+// Footprint of the per-card copy button. One number so the header row's spacer
+// and the overlaid button can't drift apart.
+const COPY_ICON = 18;
+
 type Issue = {
   id: string;
   shortId?: string | null;
@@ -369,6 +373,22 @@ function IssueCard({
   // Guards against re-fetching on every render once a load has started. A ref
   // (not the loading flag) so it can't retrigger the effect and cancel itself.
   const startedRef = useRef(false);
+  // Corner copy button: `copying` covers the detail fetch, `copied` flashes the
+  // checkmark afterwards. The timer is a ref so a second tap restarts it rather
+  // than letting the first one cut the flash short.
+  const [copying, setCopying] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const copiedTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  // The copy's fetch outlives the card if the list is left mid-flight, so the
+  // state it sets afterwards has to be dropped rather than applied to a corpse.
+  const aliveRef = useRef(true);
+  useEffect(() => {
+    aliveRef.current = true;
+    return () => {
+      aliveRef.current = false;
+      clearTimeout(copiedTimer.current);
+    };
+  }, []);
 
   const meta = [
     issue.count ? `${issue.count} events` : null,
@@ -410,6 +430,37 @@ function IssueCard({
     ? [event.exception_type, event.exception_value ?? event.message].filter(Boolean).join(': ')
     : '';
 
+  // Copy this one issue, matching what the navbar's selection menu produces: the
+  // full error including the stack trace, whether or not the card is open. A
+  // collapsed card hasn't fetched its event yet, so fetch it here and keep it —
+  // the copy warms the card, and expanding afterwards costs nothing.
+  const handleCopy = useCallback(() => {
+    if (copying) return;
+    setCopying(true);
+    void (async () => {
+      let detail = event;
+      if (!detail) {
+        try {
+          detail = await apiFetch<LatestEvent>(
+            `/sentry/issues/${encodeURIComponent(issue.id)}/latest-event`,
+          );
+          if (aliveRef.current) {
+            setEvent(detail);
+            startedRef.current = true;
+          }
+        } catch {
+          detail = null; // fall back to the list fields
+        }
+      }
+      await Clipboard.setStringAsync(issueToClipboardText(issue, detail));
+      if (!aliveRef.current) return;
+      setCopying(false);
+      setCopied(true);
+      clearTimeout(copiedTimer.current);
+      copiedTimer.current = setTimeout(() => setCopied(false), 1200);
+    })();
+  }, [copying, event, issue]);
+
   // In selection mode a tap toggles the selection; otherwise it expands. A
   // long-press (or right-click on web) always toggles — that's what turns
   // selection mode on in the first place.
@@ -420,189 +471,213 @@ function IssueCard({
   const contextMenuRef = useContextMenu(onToggleSelect);
 
   return (
-    <Pressable
-      ref={contextMenuRef}
-      accessibilityRole="button"
-      accessibilityState={{ expanded, selected }}
-      accessibilityLabel={
-        selectionActive
-          ? `${selected ? 'Deselect' : 'Select'} ${issue.shortId ?? issue.title}`
-          : `${expanded ? 'Collapse' : 'Expand'} ${issue.shortId ?? issue.title}`
-      }
-      onPress={onPress}
-      onLongPress={onToggleSelect}
-      style={({ pressed }) => pressed && styles.pressed}>
-      <ThemedView
-        type="backgroundElementAlt"
-        style={[styles.card, selected && styles.cardSelected]}>
-        <View style={styles.cardHeader}>
-          <View style={[styles.levelDot, { backgroundColor: dot }]} />
-          <ThemedText
-            type="smallBold"
-            numberOfLines={expanded ? undefined : 1}
-            style={styles.cardTitle}>
-            {issue.title || issue.shortId || 'Issue'}
-          </ThemedText>
-          {selectionActive ? (
-            <Feather
-              name={selected ? 'check-circle' : 'circle'}
-              size={18}
-              color={selected ? '#7553FF' : theme.textSecondary}
-            />
-          ) : (
-            <Feather
-              name="chevron-down"
-              size={16}
-              color={theme.textSecondary}
-              style={expanded && styles.chevronOpen}
-            />
-          )}
-        </View>
-        {!!issue.culprit && (
-          <ThemedText
-            type="small"
-            themeColor="textSecondary"
-            numberOfLines={expanded ? undefined : 1}>
-            {issue.culprit}
-          </ThemedText>
-        )}
-        {!!meta && (
-          <ThemedText type="small" themeColor="textSecondary" numberOfLines={1}>
-            {meta}
-          </ThemedText>
-        )}
-
-        {fix && <FixChip fix={fix} />}
-
-        {expanded && (
-          <Animated.View entering={FadeIn.duration(180)} style={styles.details}>
-            {/* Headline error message (type: value), when we have it. */}
-            {!!(headline || issue.metadataValue) && (
-              <ThemedText type="code" style={styles.headline}>
-                {headline || issue.metadataValue}
-              </ThemedText>
-            )}
-
-            <View style={styles.detailGrid}>
-              {!!issue.level && <DetailItem label="Level" value={issue.level.toUpperCase()} />}
-              <DetailItem
-                label="Handling"
-                value={issue.isUnhandled ? 'Unhandled' : 'Handled'}
+    // The copy button is a sibling of the card Pressable, not a child, so its
+    // tap can't bubble into expanding the card (and it isn't a nested button on
+    // web). The header row keeps a matching gap free for it.
+    <View>
+      <Pressable
+        ref={contextMenuRef}
+        accessibilityRole="button"
+        accessibilityState={{ expanded, selected }}
+        accessibilityLabel={
+          selectionActive
+            ? `${selected ? 'Deselect' : 'Select'} ${issue.shortId ?? issue.title}`
+            : `${expanded ? 'Collapse' : 'Expand'} ${issue.shortId ?? issue.title}`
+        }
+        onPress={onPress}
+        onLongPress={onToggleSelect}
+        style={({ pressed }) => pressed && styles.pressed}>
+        <ThemedView
+          type="backgroundElementAlt"
+          style={[styles.card, selected && styles.cardSelected]}>
+          <View style={styles.cardHeader}>
+            <View style={[styles.levelDot, { backgroundColor: dot }]} />
+            <ThemedText
+              type="smallBold"
+              numberOfLines={expanded ? undefined : 1}
+              style={styles.cardTitle}>
+              {issue.title || issue.shortId || 'Issue'}
+            </ThemedText>
+            {selectionActive ? (
+              <Feather
+                name={selected ? 'check-circle' : 'circle'}
+                size={18}
+                color={selected ? '#7553FF' : theme.textSecondary}
               />
-              {!!issue.status && (
-                <DetailItem
-                  label="Status"
-                  value={issue.substatus ? `${issue.status} · ${issue.substatus}` : issue.status}
-                />
-              )}
-              {!!issue.shortId && <DetailItem label="Issue" value={issue.shortId} />}
-              {!!issue.platform && <DetailItem label="Platform" value={issue.platform} />}
-              {!!issue.logger && <DetailItem label="Logger" value={issue.logger} />}
-              {!!issue.count && <DetailItem label="Events" value={issue.count} />}
-              {issue.userCount != null && (
-                <DetailItem label="Users" value={String(issue.userCount)} />
-              )}
-              {!!issue.firstSeen && (
-                <DetailItem label="First seen" value={relativeTime(issue.firstSeen)} />
-              )}
-              {!!issue.lastSeen && (
-                <DetailItem label="Last seen" value={relativeTime(issue.lastSeen)} />
-              )}
-              {!!issue.assignee && <DetailItem label="Assignee" value={issue.assignee} />}
-              {!!issue.numComments && (
-                <DetailItem label="Comments" value={String(issue.numComments)} />
-              )}
-            </View>
-
-            {loadingEvent ? (
-              <ActivityIndicator color={theme.textSecondary} style={styles.frameState} />
-            ) : eventError ? (
-              <ThemedText type="small" themeColor="textSecondary" style={styles.frameState}>
-                Couldn’t load event details.
-              </ThemedText>
-            ) : event ? (
-              <>
-                {!!event.request?.url && (
-                  <Section title="Request">
-                    <ThemedText type="code" numberOfLines={2}>
-                      {[event.request.method, event.request.url].filter(Boolean).join(' ')}
-                    </ThemedText>
-                  </Section>
-                )}
-
-                {!!event.user && (
-                  <Section title="User">
-                    <ThemedText type="small" numberOfLines={1}>
-                      {[
-                        event.user.username,
-                        event.user.email,
-                        event.user.id && `id ${event.user.id}`,
-                        event.user.ip_address,
-                      ]
-                        .filter(Boolean)
-                        .join('  ·  ') || '—'}
-                    </ThemedText>
-                  </Section>
-                )}
-
-                {frames.length > 0 && (
-                  <Section title="Stack trace">
-                    <View style={styles.frames}>
-                      {frames.map((frame, i) => (
-                        <FrameRow key={`${frame.filename}:${frame.lineno}:${i}`} frame={frame} />
-                      ))}
-                    </View>
-                  </Section>
-                )}
-
-                {!!event.tags?.length && (
-                  <Section title="Tags">
-                    <View style={styles.chips}>
-                      {event.tags.map((tag) => (
-                        <TagChip key={`${tag.key}:${tag.value}`} tag={tag} />
-                      ))}
-                    </View>
-                  </Section>
-                )}
-
-                {!!event.breadcrumbs?.length && (
-                  <Section title="Breadcrumbs">
-                    <View style={styles.crumbs}>
-                      {event.breadcrumbs.map((crumb, i) => (
-                        <BreadcrumbRow key={`${crumb.timestamp}:${i}`} crumb={crumb} />
-                      ))}
-                    </View>
-                  </Section>
-                )}
-
-                {!!event.date_created && (
-                  <ThemedText type="small" themeColor="textSecondary">
-                    Event {event.id.slice(0, 8)} · {relativeTime(event.date_created)}
-                  </ThemedText>
-                )}
-              </>
             ) : (
-              <ThemedText type="small" themeColor="textSecondary" style={styles.frameState}>
-                No event details available.
-              </ThemedText>
+              <Feather
+                name="chevron-down"
+                size={16}
+                color={theme.textSecondary}
+                style={expanded && styles.chevronOpen}
+              />
             )}
+            {/* Holds the corner open for the copy button overlaid above. */}
+            <View style={styles.copySlot} />
+          </View>
+          {!!issue.culprit && (
+            <ThemedText
+              type="small"
+              themeColor="textSecondary"
+              numberOfLines={expanded ? undefined : 1}>
+              {issue.culprit}
+            </ThemedText>
+          )}
+          {!!meta && (
+            <ThemedText type="small" themeColor="textSecondary" numberOfLines={1}>
+              {meta}
+            </ThemedText>
+          )}
 
-            {!!issue.permalink && (
-              <Pressable
-                accessibilityRole="link"
-                accessibilityLabel="Open this issue in Sentry"
-                onPress={() => issue.permalink && void Linking.openURL(issue.permalink)}
-                style={({ pressed }) => [styles.openLink, pressed && styles.pressed]}>
-                <ThemedText type="small" style={{ color: '#7553FF' }}>
-                  Open in Sentry
+          {fix && <FixChip fix={fix} />}
+
+          {expanded && (
+            <Animated.View entering={FadeIn.duration(180)} style={styles.details}>
+              {/* Headline error message (type: value), when we have it. */}
+              {!!(headline || issue.metadataValue) && (
+                <ThemedText type="code" style={styles.headline}>
+                  {headline || issue.metadataValue}
                 </ThemedText>
-                <Feather name="external-link" size={14} color="#7553FF" />
-              </Pressable>
-            )}
-          </Animated.View>
+              )}
+
+              <View style={styles.detailGrid}>
+                {!!issue.level && <DetailItem label="Level" value={issue.level.toUpperCase()} />}
+                <DetailItem
+                  label="Handling"
+                  value={issue.isUnhandled ? 'Unhandled' : 'Handled'}
+                />
+                {!!issue.status && (
+                  <DetailItem
+                    label="Status"
+                    value={issue.substatus ? `${issue.status} · ${issue.substatus}` : issue.status}
+                  />
+                )}
+                {!!issue.shortId && <DetailItem label="Issue" value={issue.shortId} />}
+                {!!issue.platform && <DetailItem label="Platform" value={issue.platform} />}
+                {!!issue.logger && <DetailItem label="Logger" value={issue.logger} />}
+                {!!issue.count && <DetailItem label="Events" value={issue.count} />}
+                {issue.userCount != null && (
+                  <DetailItem label="Users" value={String(issue.userCount)} />
+                )}
+                {!!issue.firstSeen && (
+                  <DetailItem label="First seen" value={relativeTime(issue.firstSeen)} />
+                )}
+                {!!issue.lastSeen && (
+                  <DetailItem label="Last seen" value={relativeTime(issue.lastSeen)} />
+                )}
+                {!!issue.assignee && <DetailItem label="Assignee" value={issue.assignee} />}
+                {!!issue.numComments && (
+                  <DetailItem label="Comments" value={String(issue.numComments)} />
+                )}
+              </View>
+
+              {loadingEvent ? (
+                <ActivityIndicator color={theme.textSecondary} style={styles.frameState} />
+              ) : eventError ? (
+                <ThemedText type="small" themeColor="textSecondary" style={styles.frameState}>
+                  Couldn’t load event details.
+                </ThemedText>
+              ) : event ? (
+                <>
+                  {!!event.request?.url && (
+                    <Section title="Request">
+                      <ThemedText type="code" numberOfLines={2}>
+                        {[event.request.method, event.request.url].filter(Boolean).join(' ')}
+                      </ThemedText>
+                    </Section>
+                  )}
+
+                  {!!event.user && (
+                    <Section title="User">
+                      <ThemedText type="small" numberOfLines={1}>
+                        {[
+                          event.user.username,
+                          event.user.email,
+                          event.user.id && `id ${event.user.id}`,
+                          event.user.ip_address,
+                        ]
+                          .filter(Boolean)
+                          .join('  ·  ') || '—'}
+                      </ThemedText>
+                    </Section>
+                  )}
+
+                  {frames.length > 0 && (
+                    <Section title="Stack trace">
+                      <View style={styles.frames}>
+                        {frames.map((frame, i) => (
+                          <FrameRow key={`${frame.filename}:${frame.lineno}:${i}`} frame={frame} />
+                        ))}
+                      </View>
+                    </Section>
+                  )}
+
+                  {!!event.tags?.length && (
+                    <Section title="Tags">
+                      <View style={styles.chips}>
+                        {event.tags.map((tag) => (
+                          <TagChip key={`${tag.key}:${tag.value}`} tag={tag} />
+                        ))}
+                      </View>
+                    </Section>
+                  )}
+
+                  {!!event.breadcrumbs?.length && (
+                    <Section title="Breadcrumbs">
+                      <View style={styles.crumbs}>
+                        {event.breadcrumbs.map((crumb, i) => (
+                          <BreadcrumbRow key={`${crumb.timestamp}:${i}`} crumb={crumb} />
+                        ))}
+                      </View>
+                    </Section>
+                  )}
+
+                  {!!event.date_created && (
+                    <ThemedText type="small" themeColor="textSecondary">
+                      Event {event.id.slice(0, 8)} · {relativeTime(event.date_created)}
+                    </ThemedText>
+                  )}
+                </>
+              ) : (
+                <ThemedText type="small" themeColor="textSecondary" style={styles.frameState}>
+                  No event details available.
+                </ThemedText>
+              )}
+
+              {!!issue.permalink && (
+                <Pressable
+                  accessibilityRole="link"
+                  accessibilityLabel="Open this issue in Sentry"
+                  onPress={() => issue.permalink && void Linking.openURL(issue.permalink)}
+                  style={({ pressed }) => [styles.openLink, pressed && styles.pressed]}>
+                  <ThemedText type="small" style={{ color: '#7553FF' }}>
+                    Open in Sentry
+                  </ThemedText>
+                  <Feather name="external-link" size={14} color="#7553FF" />
+                </Pressable>
+              )}
+            </Animated.View>
+          )}
+        </ThemedView>
+      </Pressable>
+      <Pressable
+        onPress={handleCopy}
+        hitSlop={8}
+        accessibilityRole="button"
+        accessibilityLabel={`Copy ${issue.shortId ?? issue.title}`}
+        accessibilityHint="Copies the error and stack trace to the clipboard"
+        style={({ pressed }) => [styles.copyButton, pressed && styles.pressed]}>
+        {copying ? (
+          <ActivityIndicator size="small" color={theme.textSecondary} />
+        ) : (
+          <Feather
+            name={copied ? 'check' : 'copy'}
+            size={COPY_ICON}
+            color={copied ? '#7553FF' : theme.textSecondary}
+          />
         )}
-      </ThemedView>
-    </Pressable>
+      </Pressable>
+    </View>
   );
 }
 
@@ -1015,6 +1090,20 @@ const styles = StyleSheet.create({
   },
   chevronOpen: {
     transform: [{ rotate: '180deg' }],
+  },
+  // The copy button overlays the card's top-right corner. Its icon lands exactly
+  // on the header row's trailing spacer: both are COPY_ICON wide and both end at
+  // the card's padding, so the row's own gap does the separating.
+  copySlot: {
+    width: COPY_ICON,
+  },
+  copyButton: {
+    position: 'absolute',
+    top: Spacing.three - Spacing.half,
+    right: Spacing.three - Spacing.half,
+    padding: Spacing.half,
+    minWidth: COPY_ICON + Spacing.half * 2,
+    alignItems: 'center',
   },
   details: {
     marginTop: Spacing.two,
