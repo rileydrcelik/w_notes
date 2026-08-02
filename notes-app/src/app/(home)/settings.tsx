@@ -17,7 +17,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { SwipeBackView } from '@/components/swipe-back-view';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
-import { Colors, hexToRgba, Spacing, type Palette } from '@/constants/theme';
+import { Accent, Colors, hexToRgba, Spacing, type Palette } from '@/constants/theme';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
 import { useTheme } from '@/hooks/use-theme';
 import { useAuth } from '@/lib/auth/auth-context';
@@ -29,7 +29,10 @@ import {
 import { useEditorPrefs } from '@/store/editor-prefs-store';
 import { useThemePref, type ThemeKey } from '@/store/theme-store';
 
-const ACCENT = '#7a89b8';
+// The shared app accent, imported rather than re-typed: a hand-copied hex here
+// is identical until the day someone adjusts the real one and this screen
+// quietly keeps the old value.
+const ACCENT = Accent;
 
 // Plain before tinted, light before dark within each pair — so the list reads as
 // two families rather than four unrelated choices.
@@ -39,7 +42,8 @@ const THEME_OPTIONS: { key: ThemeKey; label: string; description: string }[] = [
   { key: 'dark', label: 'Dark', description: 'Dark background, light text' },
   { key: 'solarized', label: 'Solarized Light', description: 'Warm, low-contrast paper' },
   { key: 'solarizedDark', label: 'Solarized Dark', description: 'Deep teal, low-contrast' },
-  { key: 'mocha', label: 'Mocha', description: 'Catppuccin — soft violet dark' },
+  { key: 'midnight', label: 'Midnight', description: 'Catppuccin — soft violet dark' },
+  { key: 'mocha', label: 'Mocha', description: 'Warm espresso brown, cream text' },
 ];
 
 export default function SettingsScreen() {
@@ -53,6 +57,7 @@ export default function SettingsScreen() {
     if (key === 'light') return Colors.light;
     if (key === 'solarized') return Colors.solarizedLight;
     if (key === 'solarizedDark') return Colors.solarizedDark;
+    if (key === 'midnight') return Colors.midnight;
     if (key === 'mocha') return Colors.mocha;
     return Colors[device === 'dark' ? 'dark' : 'light'];
   };

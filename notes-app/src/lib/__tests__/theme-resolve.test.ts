@@ -12,13 +12,14 @@
 import { describe, expect, it } from 'vitest';
 
 import { Colors } from '@/constants/theme';
-import { resolveTheme, THEME_KEYS, type ThemeKey } from '@/lib/theme-resolve';
+import { migrateThemeKey, resolveTheme, THEME_KEYS, type ThemeKey } from '@/lib/theme-resolve';
 
 const PINNED: { key: ThemeKey; scheme: 'light' | 'dark'; colors: (typeof Colors)[keyof typeof Colors] }[] = [
   { key: 'light', scheme: 'light', colors: Colors.light },
   { key: 'dark', scheme: 'dark', colors: Colors.dark },
   { key: 'solarized', scheme: 'light', colors: Colors.solarizedLight },
   { key: 'solarizedDark', scheme: 'dark', colors: Colors.solarizedDark },
+  { key: 'midnight', scheme: 'dark', colors: Colors.midnight },
   { key: 'mocha', scheme: 'dark', colors: Colors.mocha },
 ];
 
@@ -52,13 +53,46 @@ describe('resolveTheme', () => {
     );
   });
 
-  it('keeps the three dark themes distinct from one another', () => {
-    // Mocha resolves to scheme 'dark' like the other two, so scheme alone can't
-    // tell them apart — the palette has to.
-    const darks = (['dark', 'solarizedDark', 'mocha'] as const).map(
+  it('keeps the four dark themes distinct from one another', () => {
+    // They all resolve to scheme 'dark', so scheme alone can't tell them apart —
+    // the palette has to. Midnight and Mocha are the pair most at risk here:
+    // Mocha is the name Midnight used to carry, so a half-finished rename would
+    // leave both keys pointing at the same violet palette.
+    const darks = (['dark', 'solarizedDark', 'midnight', 'mocha'] as const).map(
       (key) => resolveTheme(key, 'light').colors.background,
     );
-    expect(new Set(darks).size).toBe(3);
+    expect(new Set(darks).size).toBe(4);
+  });
+
+  it('reads Mocha as the brown palette, not the violet one it used to name', () => {
+    expect(resolveTheme('mocha', 'light').colors).toEqual(Colors.mocha);
+    expect(resolveTheme('midnight', 'light').colors).toEqual(Colors.midnight);
+    // The brown is genuinely warm: red channel above blue on both base and text.
+    const { background, text } = resolveTheme('mocha', 'light').colors;
+    for (const hex of [background, text]) {
+      const [r, , b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
+      expect(r).toBeGreaterThan(b);
+    }
+  });
+});
+
+describe('migrateThemeKey', () => {
+  it('rewrites a pre-rename Mocha to Midnight', () => {
+    // Without this, every device saved on Catppuccin turns brown on next launch.
+    expect(migrateThemeKey('mocha')).toBe('midnight');
+  });
+
+  it('leaves every other key alone', () => {
+    for (const key of THEME_KEYS.filter((k) => k !== 'mocha')) {
+      expect(migrateThemeKey(key)).toBe(key);
+    }
+  });
+
+  it('produces only keys the resolver actually knows', () => {
+    for (const key of THEME_KEYS) {
+      const migrated = migrateThemeKey(key);
+      expect(THEME_KEYS).toContain(migrated as ThemeKey);
+    }
   });
 
   it('every key in the union resolves to a palette the app actually defines', () => {
