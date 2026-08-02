@@ -1,11 +1,12 @@
 import { Stack, useLocalSearchParams } from 'expo-router';
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { FlatList, StyleSheet, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { BottomFade } from '@/components/edge-fade';
 import { FolderCard, NoteCard } from '@/components/notes/cards';
 import { ScrollToTopButton } from '@/components/scroll-to-top';
+import { SearchBar } from '@/components/search-bar';
 import { SwipeBackView } from '@/components/swipe-back-view';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
@@ -13,6 +14,7 @@ import { Spacing } from '@/constants/theme';
 import type { Folder, Note } from '@/data/notes';
 import { trailingSpacers, useGridColumns, useGridColumnWidth, useGridEdgePadding } from '@/lib/grid';
 import { pinnedFirst } from '@/lib/pinned';
+import { rankMatches } from '@/lib/search';
 import { useScrollToTop } from '@/hooks/use-scroll-to-top';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
 import { useTheme } from '@/hooks/use-theme';
@@ -41,13 +43,29 @@ export default function FolderScreen() {
   const columnWidth = useGridColumnWidth();
   const edgePadding = useGridEdgePadding();
   const { scrollProps, scrolled, scrollToTop } = useScrollToTop<FlatList<GridItem>>();
+  const [query, setQuery] = useState('');
+  const q = query.trim();
+  const searching = q.length > 0;
 
   // Subfolders sit above the notes, mirroring the home screen's ordering — and
   // as there, a star outranks that grouping and pins the item to the very top.
-  const items: GridItem[] = pinnedFirst([
+  // Searching drops that grouping along with the pinning: relevance is what a
+  // query asks to be ordered by, so a matching note can outrank a subfolder.
+  const contents = [
     ...subfolders.map((sub) => ({ kind: 'folder' as const, folder: sub, favorite: sub.favorite })),
     ...notes.map((note) => ({ kind: 'note' as const, note, favorite: note.favorite })),
-  ]);
+  ];
+  const items: GridItem[] = searching
+    ? rankMatches(
+        contents,
+        q,
+        (entry) =>
+          entry.kind === 'folder'
+            ? { titles: [entry.folder.name] }
+            : { titles: [entry.note.title], body: entry.note.body },
+        (entry) => entry.favorite,
+      )
+    : pinnedFirst(contents);
   // Keep a partial last row at single-card width instead of stretching it.
   for (let i = 0; i < trailingSpacers(items.length, columns); i++) items.push({ kind: 'spacer' });
 
@@ -94,6 +112,13 @@ export default function FolderScreen() {
         style={[styles.titleInput, { color: theme.text }]}
         editable={!!folder}
       />
+      {/* Searches this folder, not the library — the home screen is where a
+          search spans the whole tree. Only offered once there is something in
+          here to filter, which also keeps it away from the just-created folder
+          this screen drops you into. */}
+      {contents.length > 0 && (
+        <SearchBar value={query} onChangeText={setQuery} placeholder="Search this folder" />
+      )}
     </View>
   );
 
@@ -124,7 +149,9 @@ export default function FolderScreen() {
           ListHeaderComponent={header}
           ListEmptyComponent={
             <ThemedText themeColor="textSecondary" style={styles.empty}>
-              Nothing here yet. Tap + to add a note, or long-press it for a folder.
+              {searching
+                ? `Nothing in this folder matches “${q}”.`
+                : 'Nothing here yet. Tap + to add a note, or long-press it for a folder.'}
             </ThemedText>
           }
           renderItem={({ item }) => {

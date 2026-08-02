@@ -1,10 +1,12 @@
 import Feather from '@expo/vector-icons/Feather';
 import { Stack, useRouter } from 'expo-router';
+import { useState } from 'react';
 import { FlatList, Pressable, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { BottomFade } from '@/components/edge-fade';
 import { ScrollToTopButton } from '@/components/scroll-to-top';
+import { SearchBar } from '@/components/search-bar';
 import { SwipeBackView } from '@/components/swipe-back-view';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
@@ -12,6 +14,7 @@ import { Spacing } from '@/constants/theme';
 import type { Note } from '@/data/notes';
 import { trailingSpacers, useGridColumns, useGridColumnWidth, useGridEdgePadding, useTileHeight } from '@/lib/grid';
 import { pinnedFirst } from '@/lib/pinned';
+import { rankMatches } from '@/lib/search';
 import { useScrollToTop } from '@/hooks/use-scroll-to-top';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
 import { useTheme } from '@/hooks/use-theme';
@@ -30,11 +33,23 @@ export default function SharedScreen() {
   const columnWidth = useGridColumnWidth();
   const edgePadding = useGridEdgePadding();
   const { scrollProps, scrolled, scrollToTop } = useScrollToTop<FlatList<GridItem>>();
+  const [query, setQuery] = useState('');
+  const q = query.trim();
+  const searching = q.length > 0;
 
-  const items: GridItem[] = pinnedFirst(notes.filter((note) => note.shared)).map((note) => ({
-    kind: 'note' as const,
-    note,
-  }));
+  const shared = notes.filter((note) => note.shared);
+  // Browsing pins starred notes; searching ranks by relevance and lets a star
+  // break ties instead — see `rankMatches`.
+  const items: GridItem[] = (
+    searching
+      ? rankMatches(
+          shared,
+          q,
+          (note) => ({ titles: [note.title], body: note.body }),
+          (note) => note.favorite,
+        )
+      : pinnedFirst(shared)
+  ).map((note) => ({ kind: 'note' as const, note }));
   for (let i = 0; i < trailingSpacers(items.length, columns); i++) items.push({ kind: 'spacer' });
 
   return (
@@ -55,10 +70,22 @@ export default function SharedScreen() {
             edgePadding,
             { paddingTop: insets.top + Spacing.two, paddingBottom: tabBarInset },
           ]}
-          ListHeaderComponent={<ThemedText type="subtitle" style={styles.title}>Shared</ThemedText>}
+          ListHeaderComponent={
+            <View>
+              <ThemedText type="subtitle" style={styles.title}>
+                Shared
+              </ThemedText>
+              {/* Only offered when there is something to filter. */}
+              {shared.length > 0 && (
+                <SearchBar value={query} onChangeText={setQuery} placeholder="Search shared notes" />
+              )}
+            </View>
+          }
           ListEmptyComponent={
             <ThemedText themeColor="textSecondary" style={styles.empty}>
-              Nothing shared yet. Share a note from its options menu to add it here.
+              {searching
+                ? `No shared notes match “${q}”.`
+                : 'Nothing shared yet. Share a note from its options menu to add it here.'}
             </ThemedText>
           }
           renderItem={({ item }) => {
