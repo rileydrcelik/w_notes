@@ -33,7 +33,28 @@ class Settings(BaseSettings):
     # server-side (SSM) and never shipped in the app bundle. Empty => the autofix
     # endpoints return 503. Needs Contents R/W + Pull requests R + Actions R/W on
     # the target repo.
+    #
+    # This is the *operator's* token for this deployment's own autofix pipeline.
+    # It is deliberately NOT a fallback for the user-facing /github routes: those
+    # read the caller's own credential (see `app/credentials.py`), because a
+    # shared token meant every account browsed the operator's repos — which is
+    # exactly what happened in the field before per-user credentials existed.
     github_token: str = ""
+
+    # Fernet key (urlsafe-base64, 32 bytes) encrypting per-user provider tokens
+    # at rest. Generate with:
+    #     python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+    # Stored in SSM alongside the other secrets. Empty => the credential routes
+    # return 503 and no plugin token can be saved or read, which fails closed:
+    # better to have the GitHub plugin unavailable than to write user PATs to the
+    # database in plaintext.
+    #
+    # Rotation: re-encrypting requires the old key, so keep the previous value in
+    # `credential_encryption_key_old` while rotating; reads try the current key
+    # first and fall back, writes always use the current key. Once every row has
+    # been rewritten (any save, or the rotate script) the old key can be dropped.
+    credential_encryption_key: str = ""
+    credential_encryption_key_old: str = ""
 
     # "owner/name" of the repo autofix dispatches target (e.g. "rileydrcelik/aiko").
     # Empty (with token) => autofix disabled.

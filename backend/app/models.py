@@ -303,3 +303,40 @@ class ResumeVersion(Base):
         Index("idx_resume_versions_user_seq", "user_id", "server_seq"),
         Index("idx_resume_versions_user_note", "user_id", "note_id"),
     )
+
+
+class UserCredential(Base):
+    """One provider token belonging to one account (a GitHub PAT, a Sentry API
+    token). Stored encrypted; see ``app/crypto.py``.
+
+    **Deliberately not syncable.** It has no ``server_seq``, and the sync router
+    neither pushes nor pulls it. A credential is not user content: putting it in
+    the delta stream would write every device's copy into local SQLite in
+    plaintext, and the whole point of holding it here is that it is encrypted at
+    rest in one place. Devices read it implicitly, by the server using it on
+    their behalf.
+
+    Keyed ``(user_id, provider)`` — one token per provider per account, so
+    saving again replaces rather than accumulating.
+    """
+
+    __tablename__ = "user_credentials"
+
+    user_id: Mapped[str] = mapped_column(
+        String, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    # 'github' | 'sentry'. Kept as a plain string rather than a DB enum so
+    # adding a provider is a code change, not a migration.
+    provider: Mapped[str] = mapped_column(String, primary_key=True)
+
+    # Fernet ciphertext of the token. Never logged, never returned by any route.
+    token_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
+
+    # Last 4 characters of the *plaintext*, kept so the UI can show "…ab12" and
+    # let someone confirm which token is saved without the server ever handing
+    # the secret back. 4 characters of a 40+ character token is not a meaningful
+    # disclosure and is the standard affordance.
+    hint: Mapped[str] = mapped_column(String, nullable=False, default="")
+
+    created_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    updated_at: Mapped[int] = mapped_column(BigInteger, nullable=False)

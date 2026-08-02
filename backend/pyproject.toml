@@ -16,6 +16,11 @@ dependencies = [
     "boto3>=1.35",
     "httpx>=0.27",
     "anthropic>=0.75",
+    # Fernet, for the per-user provider tokens in app/crypto.py. It arrives
+    # anyway as a transitive dependency of firebase-admin, but app code imports
+    # it directly now — and a resolver that dropped it would fail closed, taking
+    # the GitHub and Sentry plugins down with it.
+    "cryptography>=43",
 ]
 
 [project.optional-dependencies]
