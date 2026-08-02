@@ -932,10 +932,15 @@ export default function SentryIssuesScreen() {
           attemptsRef.current[issueId] = attempts;
           const timedOut = attempts >= 24; // ~2 min at 5s
           try {
+            // Poll for the branch this fix was dispatched on, not just the
+            // issue: one issue can have several attempts over its life, and
+            // without the branch the server can only guess which one we mean —
+            // which is how a chip ended up reporting a long-closed PR as the
+            // outcome of a run that had only just started.
             const status = await apiFetch<AutofixStatus>(
               `/sentry/autofix/status?short_id=${encodeURIComponent(s.shortId!)}${
                 target?.repo ? `&repo=${encodeURIComponent(target.repo)}` : ''
-              }`,
+              }${s.status?.branch ? `&branch=${encodeURIComponent(s.status.branch)}` : ''}`,
             );
             setFixStates((prev) =>
               prev[issueId]

@@ -123,8 +123,12 @@ jobs:
             echo "Branch $BRANCH has no commits over main — no fix to propose."
             exit 0
           fi
-          if [ -n "$(gh pr list --head "$BRANCH" --state all --json number --jq '.[].number')" ]; then
-            echo "A pull request for $BRANCH already exists."
+          # --state open, not --state all: the check is "would this duplicate a
+          # PR that's already up for review", and only an open PR can be
+          # duplicated. Matching closed ones too meant a branch whose earlier PR
+          # had been rejected could never get a new PR opened for it again.
+          if [ -n "$(gh pr list --head "$BRANCH" --state open --json number --jq '.[].number')" ]; then
+            echo "An open pull request for $BRANCH already exists."
             exit 0
           fi
           gh pr create --head "$BRANCH" --base main \

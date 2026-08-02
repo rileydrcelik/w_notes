@@ -489,6 +489,11 @@ _AUTOFIX_MODELS = frozenset(
     {"claude-haiku-4-5", "claude-sonnet-5", "claude-opus-4-8"}
 )
 
+# How many times one Sentry issue may be re-attempted on its own branch. A cap
+# rather than unbounded retries: an issue that has burned this many agent runs
+# without sticking wants a person, not another run.
+_MAX_AUTOFIX_ATTEMPTS = 10
+
 
 # A GitHub "owner/name" slug. The repo an autofix targets is interpolated into
 # API paths and (downstream) the workflow, so an override is only honored when it
@@ -677,20 +682,80 @@ def _autofix_payload(
     }
 
 
-async def _autofix_in_flight(gh: httpx.AsyncClient, repo: str, branch: str) -> bool:
-    """True if a fix for this issue's branch already exists (a PR in any state, or
-    the pushed branch) — so we don't dispatch a second billed agent run to redo
-    work that's already done or in progress. Mirrors the checks in
-    ``autofix_status``."""
-    pulls = await _guarded(gh.get(f"/repos/{repo}/pulls", params={"state": "all", "per_page": 30}), "GitHub")
+def _attempt_branch(base: str, n: int) -> str:
+    """The nth attempt at fixing one issue. Attempt 1 keeps the bare base name so
+    existing branches, PRs and workflow runs are unaffected."""
+    return base if n <= 1 else f"{base}-{n}"
+
+
+def _attempt_of(base: str, branch: str) -> int | None:
+    """Which attempt a branch is, or None if it isn't in this issue's family."""
+    if branch == base:
+        return 1
+    suffix = branch[len(base) + 1 :] if branch.startswith(f"{base}-") else ""
+    return int(suffix) if suffix.isdigit() else None
+
+
+async def _family_prs(gh: httpx.AsyncClient, repo: str, base: str) -> dict[str, dict]:
+    """Newest PR per branch across every attempt at this issue, keyed by branch."""
+    pulls = await _guarded(
+        gh.get(f"/repos/{repo}/pulls", params={"state": "all", "per_page": 100}), "GitHub"
+    )
     _raise_for_github(pulls)
-    if any((pr.get("head") or {}).get("ref") == branch for pr in pulls.json()):
-        return True
-    br = await _guarded(gh.get(f"/repos/{repo}/branches/{branch}"), "GitHub")
-    if br.status_code == 404:
-        return False
-    _raise_for_github(br)
-    return True
+    found: dict[str, dict] = {}
+    for pr in pulls.json():  # newest first
+        ref = (pr.get("head") or {}).get("ref") or ""
+        if _attempt_of(base, ref) is not None:
+            found.setdefault(ref, pr)
+    return found
+
+
+async def _family_branches(gh: httpx.AsyncClient, repo: str, base: str) -> set[str]:
+    """Every pushed branch in this issue's attempt family, in one request. The
+    matching-refs endpoint is a prefix match, so the family test still filters."""
+    resp = await _guarded(gh.get(f"/repos/{repo}/git/matching-refs/heads/{base}"), "GitHub")
+    _raise_for_github(resp)
+    refs = set()
+    for ref in resp.json():
+        name = (ref.get("ref") or "").removeprefix("refs/heads/")
+        if _attempt_of(base, name) is not None:
+            refs.add(name)
+    return refs
+
+
+async def _autofix_target_branch(
+    gh: httpx.AsyncClient, repo: str, base: str
+) -> str | None:
+    """The branch a new autofix run should use, or None when one is already in
+    flight and a second billed run would only duplicate it.
+
+    An attempt is *spent* once its PR is closed or merged. Closed means the
+    proposal was rejected; merged means a fix landed — and if Sentry is reporting
+    the issue again, neither is a reason to refuse to try again. Only an open PR
+    (still under review) or a pushed branch with no PR yet (agent still running)
+    is genuinely in flight.
+
+    Treating a spent attempt as in-flight is what made W-NOTES-RN-C permanently
+    unfixable: PR #4 on ``autofixes/issue-w-notes-rn-c`` was closed, so every
+    later dispatch short-circuited to ``dispatched: false`` and the status poll
+    reported that same closed PR back to the app for ever. Nothing retried,
+    because from the outside it looked like the work had already been done.
+    """
+    prs = await _family_prs(gh, repo, base)
+    if any(pr.get("state") == "open" for pr in prs.values()):
+        return None
+
+    branches = await _family_branches(gh, repo, base)
+    for n in range(1, _MAX_AUTOFIX_ATTEMPTS + 1):
+        branch = _attempt_branch(base, n)
+        if branch in prs:
+            continue  # spent — closed or merged
+        if branch in branches:
+            # Pushed but no PR yet: a run is live (or the workflow is about to
+            # open one). Don't race it with a second run on the same branch.
+            return None
+        return branch
+    return None
 
 
 @router.post("/autofix", response_model=AutofixResponse, status_code=status.HTTP_202_ACCEPTED)
@@ -716,16 +781,18 @@ async def autofix(
         event = event_resp.json()
 
     short_id = issue.get("shortId") or req.issue_id
-    branch = _branch_for(short_id)
+    base = _branch_for(short_id)
     # Only honor an allowlisted override; anything else falls back to the workflow
     # default (Haiku). Guards against injecting arbitrary text into `--model`.
     model = req.model if req.model in _AUTOFIX_MODELS else None
 
-    # Dedup: if a fix is already in flight or landed, don't burn another agent run.
+    # Dedup: if a run is genuinely in flight, don't burn another agent run. A
+    # recurrence after a closed or merged attempt gets a fresh branch instead.
     async with _github_client() as gh:
-        if await _autofix_in_flight(gh, repo, branch):
+        branch = await _autofix_target_branch(gh, repo, base)
+        if branch is None:
             return AutofixResponse(
-                dispatched=False, issue_id=req.issue_id, short_id=short_id, branch=branch
+                dispatched=False, issue_id=req.issue_id, short_id=short_id, branch=base
             )
 
         payload = _autofix_payload(issue, event, branch, model)
@@ -749,35 +816,52 @@ async def autofix(
 async def autofix_status(
     short_id: str = Query(..., description="Sentry issue short id, e.g. PYTHON-FASTAPI-3"),
     repo: str | None = Query(None, description="Target repo (owner/name); defaults to the server repo"),
+    branch: str | None = Query(
+        None,
+        description="The attempt branch this poll is about, as returned by /autofix. "
+        "Omit to report the newest attempt.",
+    ),
     user: User = Depends(get_current_user),
 ) -> AutofixStatus:
     _require_github_token()
     repo = _resolve_repo(repo)
-    branch = _branch_for(short_id)
+    base = _branch_for(short_id)
+    # Only ever report on this issue's own branches — `branch` arrives from the
+    # client, so it must not be able to point the poll at an unrelated PR.
+    want = branch if branch and _attempt_of(base, branch) is not None else None
 
     async with _github_client() as gh:
-        # A PR is the strongest signal — check first (covers open/merged/closed).
-        pulls = await _guarded(gh.get(f"/repos/{repo}/pulls", params={"state": "all", "per_page": 30}), "GitHub")
-        _raise_for_github(pulls)
-        for pr in pulls.json():
-            if (pr.get("head") or {}).get("ref") == branch:
-                if pr.get("merged_at"):
-                    state = "pr_merged"
-                elif pr.get("state") == "closed":
-                    state = "pr_closed"
-                else:
-                    state = "pr_open"
-                return AutofixStatus(
-                    state=state,
-                    branch=branch,
-                    pr_number=pr.get("number"),
-                    pr_url=pr.get("html_url"),
-                    title=pr.get("title"),
-                )
+        # Report the attempt the caller actually started. Falling back to "newest
+        # attempt" (for clients that don't send one) still beats "first match",
+        # which pinned the chip to a stale PR: the app would show a run that
+        # finished months ago as the outcome of the fix you just started.
+        prs = await _family_prs(gh, repo, base)
+        if want is not None:
+            prs = {ref: pr for ref, pr in prs.items() if ref == want}
+        if prs:
+            newest_pr = max(prs, key=lambda ref: _attempt_of(base, ref) or 0)
+            pr = prs[newest_pr]
+            branch = newest_pr
+            if pr.get("merged_at"):
+                state = "pr_merged"
+            elif pr.get("state") == "closed":
+                state = "pr_closed"
+            else:
+                state = "pr_open"
+            return AutofixStatus(
+                state=state,
+                branch=branch,
+                pr_number=pr.get("number"),
+                pr_url=pr.get("html_url"),
+                title=pr.get("title"),
+            )
 
-        # No PR yet — has the agent at least pushed the branch?
-        br = await _guarded(gh.get(f"/repos/{repo}/branches/{branch}"), "GitHub")
-    if br.status_code == 404:
-        return AutofixStatus(state="none", branch=branch)
-    _raise_for_github(br)
-    return AutofixStatus(state="branch_created", branch=branch)
+        # No PR yet — has the agent at least pushed a branch?
+        branches = await _family_branches(gh, repo, base)
+
+    if want is not None:
+        branches = {ref for ref in branches if ref == want}
+    if not branches:
+        return AutofixStatus(state="none", branch=want or base)
+    newest = max(branches, key=lambda ref: _attempt_of(base, ref) or 0)
+    return AutofixStatus(state="branch_created", branch=newest)
