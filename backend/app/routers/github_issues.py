@@ -320,8 +320,8 @@ async def issue_count(
             "/search/issues",
             params={"q": f"repo:{repo} is:issue is:open", "per_page": 1},
         )
-    _raise_for_upstream(resp)
-    return IssueCount(count=int(resp.json().get("total_count", 0)))
+        _raise_for_upstream(resp)
+        return IssueCount(count=int(resp.json().get("total_count", 0)))
 
 
 @router.get("/issues", response_model=IssueList)
@@ -339,9 +339,9 @@ async def list_issues(
         params["page"] = int(cursor)
     async with _client() as client:
         resp = await client.get(f"/repos/{repo}/issues", params=params)
-    _raise_for_upstream(resp)
-    items = [item for item in resp.json() if not _is_pull_request(item)]
-    nxt = _next_page(resp)
+        _raise_for_upstream(resp)
+        items = [item for item in resp.json() if not _is_pull_request(item)]
+        nxt = _next_page(resp)
     return IssueList(
         issues=[IssueSummary.model_validate(item) for item in items],
         next_cursor=str(nxt) if nxt else None,
@@ -358,8 +358,8 @@ async def get_issue(
     _require_repo(repo)
     async with _client() as client:
         resp = await client.get(f"/repos/{repo}/issues/{number}")
-    _raise_for_upstream(resp)
-    return IssueSummary.model_validate(resp.json())
+        _raise_for_upstream(resp)
+        return IssueSummary.model_validate(resp.json())
 
 
 @router.get("/issues/{number}/comments", response_model=CommentList)
@@ -374,8 +374,8 @@ async def list_comments(
         resp = await client.get(
             f"/repos/{repo}/issues/{number}/comments", params={"per_page": 50}
         )
-    _raise_for_upstream(resp)
-    return CommentList(comments=[Comment.model_validate(c) for c in resp.json()])
+        _raise_for_upstream(resp)
+        return CommentList(comments=[Comment.model_validate(c) for c in resp.json()])
 
 
 @router.get("/labels", response_model=LabelList)
@@ -387,8 +387,8 @@ async def list_labels(
     _require_repo(repo)
     async with _client() as client:
         resp = await client.get(f"/repos/{repo}/labels", params={"per_page": 100})
-    _raise_for_upstream(resp)
-    return LabelList(labels=[Label.model_validate(ln) for ln in resp.json()])
+        _raise_for_upstream(resp)
+        return LabelList(labels=[Label.model_validate(ln) for ln in resp.json()])
 
 
 @router.get("/assignees", response_model=AssigneeList)
@@ -401,8 +401,8 @@ async def list_assignees(
     _require_repo(repo)
     async with _client() as client:
         resp = await client.get(f"/repos/{repo}/assignees", params={"per_page": 100})
-    _raise_for_upstream(resp)
-    return AssigneeList(assignees=[SimpleUser.model_validate(u) for u in resp.json()])
+        _raise_for_upstream(resp)
+        return AssigneeList(assignees=[SimpleUser.model_validate(u) for u in resp.json()])
 
 
 @router.get("/milestones", response_model=MilestoneList)
@@ -416,8 +416,8 @@ async def list_milestones(
         resp = await client.get(
             f"/repos/{repo}/milestones", params={"state": "open", "per_page": 100}
         )
-    _raise_for_upstream(resp)
-    return MilestoneList(milestones=[Milestone.model_validate(m) for m in resp.json()])
+        _raise_for_upstream(resp)
+        return MilestoneList(milestones=[Milestone.model_validate(m) for m in resp.json()])
 
 
 # ---- Mutations ----
@@ -451,8 +451,8 @@ async def create_issue(
         payload["milestone"] = req.milestone
     async with _client() as client:
         resp = await client.post(f"/repos/{repo}/issues", json=payload)
-    _raise_for_upstream(resp)
-    return IssueSummary.model_validate(resp.json())
+        _raise_for_upstream(resp)
+        return IssueSummary.model_validate(resp.json())
 
 
 class UpdateStateRequest(BaseModel):
@@ -509,13 +509,13 @@ async def update_issue_state(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "No fields to update.")
     async with _client() as client:
         resp = await client.patch(f"/repos/{repo}/issues/{number}", json=payload)
-    _raise_for_upstream(resp)
-    issue = resp.json()
-    return IssueStateResponse(
-        number=number,
-        state=issue.get("state"),
-        state_reason=issue.get("state_reason"),
-    )
+        _raise_for_upstream(resp)
+        issue = resp.json()
+        return IssueStateResponse(
+            number=number,
+            state=issue.get("state"),
+            state_reason=issue.get("state_reason"),
+        )
 
 
 class CreateCommentRequest(BaseModel):
@@ -539,5 +539,5 @@ async def add_comment(
         resp = await client.post(
             f"/repos/{repo}/issues/{number}/comments", json={"body": req.body}
         )
-    _raise_for_upstream(resp)
-    return Comment.model_validate(resp.json())
+        _raise_for_upstream(resp)
+        return Comment.model_validate(resp.json())
