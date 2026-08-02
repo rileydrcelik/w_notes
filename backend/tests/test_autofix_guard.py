@@ -76,13 +76,20 @@ def test_read_only_callers_skip_the_check(autofix_configured):
     assert _resolve_repo(None) == REPO
 
 
-async def test_dispatch_refused_before_any_upstream_call(client, device, autofix_configured):
+async def test_dispatch_refused_before_any_upstream_call(
+    client, device, autofix_configured, save_credential
+):
     """End to end: the rejection lands before Sentry or GitHub is contacted.
 
     Nothing is stubbed here on purpose — if the guard were ordered after the
     context-gathering calls, this test would hang or error on a real network
     call instead of returning 422, which is exactly the regression to catch.
+
+    The caller is given a Sentry credential first so the request actually
+    reaches the repo guard. Without one the route now stops earlier, at the
+    missing-credential 503 — safe, but it would test nothing about routing.
     """
+    await save_credential(device, "sentry")
     resp = await client.post(
         AUTOFIX,
         headers=device,
@@ -94,3 +101,22 @@ async def test_dispatch_refused_before_any_upstream_call(client, device, autofix
     )
     assert resp.status_code == 422
     assert "python-fastapi" in resp.json()["detail"]
+
+
+async def test_dispatch_refused_without_a_sentry_credential(
+    client, device, autofix_configured
+):
+    """No credential means no dispatch — and nothing upstream is contacted.
+
+    Autofix gathers its context through the caller's own Sentry token, so an
+    account that hasn't supplied one cannot start a run. Worth pinning
+    separately: this is the ordering that keeps a credential-less caller from
+    reaching any upstream call at all.
+    """
+    resp = await client.post(
+        AUTOFIX,
+        headers=device,
+        json={"issue_id": "7627623445", "org": "aiko-6q", "project": "w-notes-fastapi"},
+    )
+    assert resp.status_code == 503
+    assert "Settings" in resp.json()["detail"]

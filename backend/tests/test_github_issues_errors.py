@@ -24,14 +24,25 @@ def test_success_passes_through():
 def test_under_scoped_token_names_the_missing_permission():
     with pytest.raises(HTTPException) as exc:
         _raise_for_upstream(_resp(403, {"x-accepted-github-permissions": "issues=write"}))
-    assert exc.value.status_code == 502
+    # 400, not 502: the token is the caller's own now, so a rejection is
+    # something they can act on rather than a server fault.
+    assert exc.value.status_code == 400
     assert "issues=write" in exc.value.detail
 
 
-def test_rejection_without_the_header_keeps_the_plain_message():
+def test_rejection_points_the_caller_at_their_own_token():
+    """A rejected token has to send the reader somewhere they can fix it.
+
+    Under the shared server token this said "GitHub rejected the server token",
+    which was honest then and is misleading now — it reads as "the operator
+    broke something", so the one person who *can* fix it goes and waits.
+    """
     with pytest.raises(HTTPException) as exc:
         _raise_for_upstream(_resp(401))
-    assert exc.value.detail == "GitHub rejected the server token"
+    assert exc.value.status_code == 400
+    assert "your token" in exc.value.detail
+    assert "Settings" in exc.value.detail
+    assert "server token" not in exc.value.detail
 
 
 def test_unknown_repo_404_passes_through():

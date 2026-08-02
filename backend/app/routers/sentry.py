@@ -1,9 +1,16 @@
 """Sentry proxy endpoints — read a project's issues on the client's behalf.
 
 A "Sentry note" in the app carries a marker plus a small config naming which
-``org``/``project`` it watches; those travel to this router per-request. The
-Sentry REST API token stays here on the server (an internal-integration token,
-loaded from config/SSM) and is never shipped in the Expo bundle.
+``org``/``project`` it watches; those travel to this router per-request.
+
+**The read endpoints act as the caller's own Sentry API token**, stored
+encrypted per account (see ``app/credentials.py``) and never shipped in the Expo
+bundle. A single server-wide token used to serve every account, which meant
+everyone read issues through the operator's Sentry access.
+
+The ``/autofix`` endpoints are the exception and stay on the server's own
+credentials: they drive *this deployment's* pipeline — its repo, its workflow —
+which is the operator's, not the caller's.
 
 Issue data is fetched **live** — it deliberately does not flow through the
 sync/SQLite pipeline, so there's no stale copy and nothing to echo back.
@@ -24,8 +31,11 @@ import re
 import httpx
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
+from app.credentials import require_user_token
+from app.db import get_session
 from app.deps import get_current_user
 from app.models import User
 
@@ -93,7 +103,7 @@ class IssueList(BaseModel):
 
 
 class ProjectSummary(BaseModel):
-    """A project the server token can see — enough to render a picker row and
+    """A project the caller's token can see — enough to render a picker row and
     build a note's ``{org, project}`` config from the selection."""
 
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
@@ -190,20 +200,26 @@ class LatestEvent(BaseModel):
 # ---- Helpers ----
 
 
-def _require_token() -> str:
-    token = get_settings().sentry_api_token
-    if not token:
-        raise HTTPException(
-            status.HTTP_503_SERVICE_UNAVAILABLE, "Sentry API is not configured"
-        )
-    return token
+async def _caller_token(
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> str:
+    """The **caller's own** Sentry API token, or 503 telling them to add one.
+
+    Same reasoning as the GitHub proxy: a single server-wide token meant every
+    account read issues through the operator's Sentry access. The autofix
+    endpoints below are different — they drive *this deployment's* pipeline and
+    legitimately use the server's own credentials.
+    """
+    return await require_user_token(session, user.id, "sentry")
 
 
-def _client() -> httpx.AsyncClient:
+def _client(token: str) -> httpx.AsyncClient:
+    """A Sentry client acting as `token` — the caller's, never the server's."""
     settings = get_settings()
     return httpx.AsyncClient(
         base_url=settings.sentry_api_base.rstrip("/"),
-        headers={"Authorization": f"Bearer {settings.sentry_api_token}"},
+        headers={"Authorization": f"Bearer {token}"},
         timeout=_TIMEOUT,
     )
 
@@ -225,15 +241,19 @@ async def _guarded(call, upstream: str = "Sentry") -> httpx.Response:
 
 
 def _raise_for_upstream(resp: httpx.Response) -> None:
-    """Turn a non-2xx Sentry response into an HTTPException. A 401/403 means our
-    server token is bad/under-scoped — that's a server misconfig, not the
-    caller's fault, so it surfaces as 502 rather than leaking as the client's own
-    auth failure. Other 4xx (e.g. an unknown project → 404) pass through."""
+    """Turn a non-2xx Sentry response into an HTTPException.
+
+    A 401/403 now surfaces as **400, not 502**, for the same reason as the
+    GitHub proxy: the token being rejected is the caller's own, so calling it a
+    bad gateway would blame the server for a credential only the caller can
+    replace. Other 4xx (e.g. an unknown project → 404) pass through.
+    """
     if resp.is_success:
         return
     if resp.status_code in (401, 403):
         raise HTTPException(
-            status.HTTP_502_BAD_GATEWAY, "Sentry rejected the server token"
+            status.HTTP_400_BAD_REQUEST,
+            "Sentry rejected your token — check it in Settings → Plugins",
         )
     code = resp.status_code if resp.status_code < 500 else status.HTTP_502_BAD_GATEWAY
     raise HTTPException(code, f"Sentry API error ({resp.status_code})")
@@ -370,15 +390,14 @@ async def list_issues(
     environment: str | None = Query(None),
     limit: int = Query(25, ge=1, le=100),
     cursor: str | None = Query(None, description="Opaque next-page cursor"),
-    user: User = Depends(get_current_user),
+    token: str = Depends(_caller_token),
 ) -> IssueList:
-    _require_token()
     params: dict[str, object] = {"query": query, "limit": limit}
     if environment:
         params["environment"] = environment
     if cursor:
         params["cursor"] = cursor
-    async with _client() as client:
+    async with _client(token) as client:
         resp = await _guarded(client.get(f"/projects/{org}/{project}/issues/", params=params))
     _raise_for_upstream(resp)
     return IssueList(
@@ -390,10 +409,9 @@ async def list_issues(
 @router.get("/issues/{issue_id}", response_model=IssueSummary)
 async def get_issue(
     issue_id: str,
-    user: User = Depends(get_current_user),
+    token: str = Depends(_caller_token),
 ) -> IssueSummary:
-    _require_token()
-    async with _client() as client:
+    async with _client(token) as client:
         resp = await _guarded(client.get(f"/issues/{issue_id}/"))
     _raise_for_upstream(resp)
     return IssueSummary.model_validate(resp.json())
@@ -401,16 +419,15 @@ async def get_issue(
 
 @router.get("/projects", response_model=ProjectList)
 async def list_projects(
-    user: User = Depends(get_current_user),
+    token: str = Depends(_caller_token),
 ) -> ProjectList:
-    """Every project the server token can see, each with its org slug — the
+    """Every project the caller's token can see, each with its org slug — the
     source for the in-app picker that configures a Sentry note. Pages through
     Sentry's cursor so an org with many projects isn't truncated, with a hard
     cap so a malformed cursor can't loop forever."""
-    _require_token()
     projects: list[ProjectSummary] = []
     cursor: str | None = None
-    async with _client() as client:
+    async with _client(token) as client:
         for _ in range(20):
             params = {"cursor": cursor} if cursor else {}
             resp = await _guarded(client.get("/projects/", params=params))
@@ -432,13 +449,12 @@ class ResolveResponse(BaseModel):
 @router.post("/issues/{issue_id}/resolve", response_model=ResolveResponse)
 async def resolve_issue(
     issue_id: str,
-    user: User = Depends(get_current_user),
+    token: str = Depends(_caller_token),
 ) -> ResolveResponse:
     """Mark a Sentry issue resolved — the app's "Ignore" action. Sentry
     auto-reopens it on regression, so this is a dismissal, not a permanent mute.
     Same PUT the autofix workflow makes after opening a PR."""
-    _require_token()
-    async with _client() as client:
+    async with _client(token) as client:
         resp = await _guarded(client.put(f"/issues/{issue_id}/", json={"status": "resolved"}))
     _raise_for_upstream(resp)
     return ResolveResponse(resolved=True, issue_id=issue_id)
@@ -447,10 +463,9 @@ async def resolve_issue(
 @router.get("/issues/{issue_id}/latest-event", response_model=LatestEvent)
 async def latest_event(
     issue_id: str,
-    user: User = Depends(get_current_user),
+    token: str = Depends(_caller_token),
 ) -> LatestEvent:
-    _require_token()
-    async with _client() as client:
+    async with _client(token) as client:
         resp = await _guarded(client.get(f"/issues/{issue_id}/events/latest/"))
     _raise_for_upstream(resp)
     event = resp.json()
@@ -761,9 +776,15 @@ async def _autofix_target_branch(
 @router.post("/autofix", response_model=AutofixResponse, status_code=status.HTTP_202_ACCEPTED)
 async def autofix(
     req: AutofixRequest = Body(...),
-    user: User = Depends(get_current_user),
+    token: str = Depends(_caller_token),  # caller's Sentry token: gathers context
 ) -> AutofixResponse:
-    _require_token()  # need Sentry to gather context
+    # The GitHub side stays on the *server's* token: this dispatches into this
+    # deployment's own autofix repo and workflow, which is the operator's
+    # pipeline, not the caller's. That asymmetry is deliberate — but it means
+    # any account that can reach this endpoint can spend the operator's agent
+    # budget and, where autofix-ship is armed, trigger a merge and deploy. The
+    # per-user credential does not close that; an operator allowlist on this
+    # route is still outstanding (see DEPLOYMENT-READINESS.md §A2).
     _require_github_token()  # and GitHub to dispatch
     # The note's repo, or the server default — but the fallback is only allowed
     # for projects whose code actually lives there. This dispatch bills an agent
@@ -772,7 +793,7 @@ async def autofix(
     repo = _resolve_repo(req.repo, req.project)
 
     # Pull issue detail + latest event to build the context bundle.
-    async with _client() as client:
+    async with _client(token) as client:
         issue_resp = await _guarded(client.get(f"/issues/{req.issue_id}/"))
         _raise_for_upstream(issue_resp)
         issue = issue_resp.json()
