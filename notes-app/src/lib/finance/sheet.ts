@@ -136,6 +136,7 @@ export function serializeSheet(sheet: Sheet): string {
   return JSON.stringify(sheet);
 }
 
+
 // ---- Cell classification ----
 
 export type CellKind = 'empty' | 'formula' | 'number' | 'text';
@@ -394,7 +395,29 @@ export function readableTextColor(background: string): string {
 const DARK_INK = '#1A1A1A';
 const LIGHT_INK = '#F5F5F5';
 
-/** True once the sheet holds nothing a user typed — used by the empty-note guard. */
+/** Top-level and per-cell keys this version of the app knows how to read. */
+const KNOWN_SHEET_KEYS = ['version', 'rows', 'cols', 'cells', 'colWidths'];
+const KNOWN_CELL_KEYS = ['raw', 'style'];
+
+const hasUnknownKeys = (obj: object, known: string[]) =>
+  Object.keys(obj).some((k) => !known.includes(k));
+
+/**
+ * True once the sheet holds nothing a user typed — used by the empty-note guard
+ * that discards a spreadsheet created and then never written in.
+ *
+ * Styling alone doesn't count as content: highlighting a blank cell leaves the
+ * sheet empty, because what was highlighted was nothing.
+ *
+ * A document carrying keys this version doesn't recognise is never empty,
+ * though. They are a newer version's data — the same data `parseSheet` spreads
+ * through rather than dropping — and this function's answer gets a note deleted,
+ * so guessing "empty" about a document we can't fully read would discard exactly
+ * what the preservation rule in the module note exists to protect.
+ */
 export function isSheetEmpty(sheet: Sheet): boolean {
-  return Object.values(sheet.cells).every((cell) => (cell.raw ?? '').trim() === '');
+  if (hasUnknownKeys(sheet, KNOWN_SHEET_KEYS)) return false;
+  return Object.values(sheet.cells).every(
+    (cell) => (cell.raw ?? '').trim() === '' && !hasUnknownKeys(cell, KNOWN_CELL_KEYS),
+  );
 }

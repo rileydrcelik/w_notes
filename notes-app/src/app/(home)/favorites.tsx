@@ -2,6 +2,7 @@ import { Stack } from 'expo-router';
 import { FlatList, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { BottomFade } from '@/components/edge-fade';
 import { FolderCard, NoteCard } from '@/components/notes/cards';
 import { ScrollToTopButton } from '@/components/scroll-to-top';
 import { SwipeBackView } from '@/components/swipe-back-view';
@@ -72,6 +73,7 @@ export default function FavoritesScreen() {
             );
           }}
         />
+        <BottomFade />
         <ScrollToTopButton visible={scrolled} onPress={scrollToTop} />
       </ThemedView>
     </SwipeBackView>

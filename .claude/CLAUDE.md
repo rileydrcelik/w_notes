@@ -42,6 +42,15 @@
   for filters (`StateFilterBar` in `app/(home)/github/[id].tsx`), 40px squircle
   icon buttons for secondary actions (`components/scroll-to-top.tsx`). Radii come
   from the `Spacing` scale, not hand-picked numbers.
+- no scrollbars on web, anywhere. `global.css` hides them app-wide — a bar is
+  browser chrome that cuts a hard edge through surfaces meant to read as
+  floating glass, and it's styled differently per platform, so one screen ends
+  up looking like two designs. Don't re-enable one for a single surface, and
+  don't reach for a `scrollbarWidth`/`overflow` style to suppress one either;
+  it's already gone. Scrolling itself is untouched. When a surface really does
+  need to say more content lies below, design the signal — a fade over the
+  bottom edge (see the form in `components/resume/resume-entry-modal.tsx`), a
+  half-visible next row — rather than bringing a bar back.
 
 ## TESTING
 CI (`.github/workflows/tests.yml`) runs pytest, vitest and the Playwright e2e

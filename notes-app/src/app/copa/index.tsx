@@ -35,6 +35,7 @@ import { useSyncRefresh } from '@/hooks/use-sync-refresh';
 import { htmlToPlainText } from '@/lib/html-text';
 import { gridEdgePadding } from '@/lib/grid';
 import { downloadCopaFile, fileIconFor, formatBytes, isImage, isVideo } from '@/lib/copa-files';
+import { pinnedFirst } from '@/lib/pinned';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
 import { useTheme } from '@/hooks/use-theme';
 import { useCopa } from '@/store/copa-store';
@@ -250,14 +251,18 @@ export default function CopaScreen() {
 
   const q = query.trim().toLowerCase();
   const searching = q.length > 0;
-  const visible = searching
-    ? items.filter(
-        (item) =>
-          item.label.toLowerCase().includes(q) ||
-          item.content.toLowerCase().includes(q) ||
-          (item.fileName?.toLowerCase().includes(q) ?? false),
-      )
-    : items;
+  // Starred blocks pin to the top — of the search results too, since a search
+  // that surfaces a pinned block should still surface it first.
+  const visible = pinnedFirst(
+    searching
+      ? items.filter(
+          (item) =>
+            item.label.toLowerCase().includes(q) ||
+            item.content.toLowerCase().includes(q) ||
+            (item.fileName?.toLowerCase().includes(q) ?? false),
+        )
+      : items,
+  );
 
   // In the web grid, pad the final row with transparent cells so its cards stay
   // at single-column width instead of stretching to fill the row.

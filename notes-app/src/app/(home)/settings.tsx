@@ -31,11 +31,15 @@ import { useThemePref, type ThemeKey } from '@/store/theme-store';
 
 const ACCENT = '#7a89b8';
 
+// Plain before tinted, light before dark within each pair — so the list reads as
+// two families rather than four unrelated choices.
 const THEME_OPTIONS: { key: ThemeKey; label: string; description: string }[] = [
   { key: 'system', label: 'System', description: 'Match your device' },
+  { key: 'light', label: 'Light', description: 'White background, dark text' },
   { key: 'dark', label: 'Dark', description: 'Dark background, light text' },
   { key: 'solarized', label: 'Solarized Light', description: 'Warm, low-contrast paper' },
   { key: 'solarizedDark', label: 'Solarized Dark', description: 'Deep teal, low-contrast' },
+  { key: 'mocha', label: 'Mocha', description: 'Catppuccin — soft violet dark' },
 ];
 
 export default function SettingsScreen() {
@@ -46,8 +50,10 @@ export default function SettingsScreen() {
   // Each swatch previews the palette it applies; System resolves to the device.
   const previewPalette = (key: ThemeKey): Palette => {
     if (key === 'dark') return Colors.dark;
+    if (key === 'light') return Colors.light;
     if (key === 'solarized') return Colors.solarizedLight;
     if (key === 'solarizedDark') return Colors.solarizedDark;
+    if (key === 'mocha') return Colors.mocha;
     return Colors[device === 'dark' ? 'dark' : 'light'];
   };
 
@@ -67,7 +73,7 @@ export default function SettingsScreen() {
             <AccountSection />
 
             <ThemedText type="small" themeColor="textSecondary" style={styles.sectionLabel}>
-              APPEARANCE
+              THEME
             </ThemedText>
 
             <View style={styles.options}>
@@ -271,9 +277,11 @@ function EditorSection() {
 
 /**
  * The note plugins available in the navbar's create (+) menu — Sentry views,
- * GitHub views, task managers, and sheets — each defaulting on. Enabling one
- * reveals its (currently inert) credential fields: they persist on-device but
- * aren't yet wired to auth, since the server holds the real tokens.
+ * GitHub views, task managers, sheets, and resumes — each defaulting **off**.
+ * Plugins are opt-in, so this section is the one place they're discoverable;
+ * every one stays listed here whether or not it's on, and the choice persists.
+ * Enabling one reveals its (currently inert) credential fields: they persist
+ * on-device but aren't yet wired to auth, since the server holds the real tokens.
  *
  * The section is labelled "Plugins"; the underlying settings keys stay
  * `createOptions.*` so renaming the copy doesn't reset anyone's toggles.

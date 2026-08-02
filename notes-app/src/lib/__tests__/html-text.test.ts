@@ -6,7 +6,7 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { htmlToPlainText, plainTextToHtml } from '@/lib/html-text';
+import { hasEscapedBlockMarkup, htmlToPlainText, plainTextToHtml } from '@/lib/html-text';
 
 describe('htmlToPlainText', () => {
   it('returns an empty string for empty input', () => {
@@ -82,6 +82,71 @@ describe('htmlToPlainText', () => {
   it('handles a nested list without losing items', () => {
     const html = '<ul><li>outer<ul><li>inner</li></ul></li></ul>';
     expect(htmlToPlainText(html)).toBe('• outer\n• inner');
+  });
+
+  it('decodes an escaped block tag back into the literal string that renders as a visible tag', () => {
+    // This is the exact mechanism behind the `hasEscapedBlockMarkup` fingerprint:
+    // when the native HTML parser fails on a paste it stashes the raw markup as
+    // literal text, the next serialize escapes it to `&lt;li&gt;`, and this
+    // decode is what turns it back into a visible "<li>one</li>" on screen. If
+    // this stops decoding `&lt;`/`&gt;`, the symptom stops reproducing and the
+    // detector above loses its reason to exist — so this case is load-bearing,
+    // not incidental.
+    expect(htmlToPlainText('<p>&lt;li&gt;one&lt;/li&gt;</p>')).toBe('<li>one</li>');
+  });
+});
+
+/**
+ * `hasEscapedBlockMarkup` is a signal, not a verdict: it flags a body that
+ * looks like it holds block tags the editor escaped instead of parsing, so the
+ * app can report/ask about it. It must never fire on a healthy body that
+ * simply contains real markup — that would flag every ordinary note with a
+ * list — and it deliberately ignores inline tags as too weak a signal.
+ */
+describe('hasEscapedBlockMarkup', () => {
+  it.each([
+    ['<li>', '&lt;li&gt;'],
+    ['<ul>', '&lt;ul&gt;'],
+    ['closing </ul>', '&lt;/ul&gt;'],
+    ['<blockquote>', '&lt;blockquote&gt;'],
+    ['<h2>', '&lt;h2&gt;'],
+    ['<pre>', '&lt;pre&gt;'],
+    ['<table>', '&lt;table&gt;'],
+    ['<div>', '&lt;div&gt;'],
+  ])('detects an escaped %s tag', (_label, escaped) => {
+    expect(hasEscapedBlockMarkup(`<p>before ${escaped} after</p>`)).toBe(true);
+  });
+
+  it('matches regardless of tag case', () => {
+    expect(hasEscapedBlockMarkup('<p>&lt;LI&gt;</p>')).toBe(true);
+  });
+
+  it('does not flag a healthy body with real, unescaped markup', () => {
+    // The most important negative: a real list must never trip this, or the
+    // detector would fire on every ordinary note that has one.
+    expect(hasEscapedBlockMarkup('<html><ul><li>one</li></ul></html>')).toBe(false);
+  });
+
+  it('returns false for empty input', () => {
+    expect(hasEscapedBlockMarkup('')).toBe(false);
+  });
+
+  it('returns false for a body with no markup at all', () => {
+    expect(hasEscapedBlockMarkup('just some plain text')).toBe(false);
+  });
+
+  it.each([
+    ['<b>', '&lt;b&gt;'],
+    ['<a href>', '&lt;a href&gt;'],
+    ['<em>', '&lt;em&gt;'],
+  ])('does not flag an escaped inline %s tag alone', (_label, escaped) => {
+    expect(hasEscapedBlockMarkup(`<p>before ${escaped} after</p>`)).toBe(false);
+  });
+
+  it('returns true when a real list and escaped block markup are both present', () => {
+    expect(
+      hasEscapedBlockMarkup('<ul><li>real item</li></ul><p>&lt;blockquote&gt;</p>'),
+    ).toBe(true);
   });
 });
 

@@ -1,7 +1,9 @@
 import { Stack, useLocalSearchParams } from 'expo-router';
+import { useEffect, useRef } from 'react';
 import { FlatList, StyleSheet, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { BottomFade } from '@/components/edge-fade';
 import { FolderCard, NoteCard } from '@/components/notes/cards';
 import { ScrollToTopButton } from '@/components/scroll-to-top';
 import { SwipeBackView } from '@/components/swipe-back-view';
@@ -10,19 +12,25 @@ import { ThemedView } from '@/components/themed-view';
 import { Spacing } from '@/constants/theme';
 import type { Folder, Note } from '@/data/notes';
 import { GRID_COLUMNS, gridEdgePadding, trailingSpacers, useGridColumnWidth } from '@/lib/grid';
+import { pinnedFirst } from '@/lib/pinned';
 import { useScrollToTop } from '@/hooks/use-scroll-to-top';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
 import { useTheme } from '@/hooks/use-theme';
 import { useNotes } from '@/store/notes-store';
 
 type GridItem =
-  | { kind: 'folder'; folder: Folder }
-  | { kind: 'note'; note: Note }
+  | { kind: 'folder'; folder: Folder; favorite?: boolean }
+  | { kind: 'note'; note: Note; favorite?: boolean }
   | { kind: 'spacer' };
 
 export default function FolderScreen() {
-  const { id } = useLocalSearchParams<{ id: string }>();
-  const { getFolder, getNotesInFolder, getSubfolders, updateFolder } = useNotes();
+  // `created` is set only by the two places that make a folder and route you
+  // straight into it; see the unmount sweep below for why that distinction is
+  // load-bearing rather than cosmetic.
+  const { id, created } = useLocalSearchParams<{ id: string; created?: string }>();
+  const justCreated = created === '1';
+  const { getFolder, getNotesInFolder, getSubfolders, updateFolder, deleteFolderIfEmpty } =
+    useNotes();
   const theme = useTheme();
   const folder = getFolder(id);
   const subfolders = folder ? getSubfolders(folder.id) : [];
@@ -32,13 +40,47 @@ export default function FolderScreen() {
   const columnWidth = useGridColumnWidth();
   const { scrollProps, scrolled, scrollToTop } = useScrollToTop<FlatList<GridItem>>();
 
-  // Subfolders sit above the notes, mirroring the home screen's ordering.
-  const items: GridItem[] = [
-    ...subfolders.map((sub) => ({ kind: 'folder' as const, folder: sub })),
-    ...notes.map((note) => ({ kind: 'note' as const, note })),
-  ];
+  // Subfolders sit above the notes, mirroring the home screen's ordering — and
+  // as there, a star outranks that grouping and pins the item to the very top.
+  const items: GridItem[] = pinnedFirst([
+    ...subfolders.map((sub) => ({ kind: 'folder' as const, folder: sub, favorite: sub.favorite })),
+    ...notes.map((note) => ({ kind: 'note' as const, note, favorite: note.favorite })),
+  ]);
   // Keep a partial last row at single-card width instead of stretching it.
   for (let i = 0; i < trailingSpacers(items.length); i++) items.push({ kind: 'spacer' });
+
+  // Read by the unmount effect so it can keep empty deps — otherwise its cleanup
+  // would fire on every folder change rather than on a real unmount.
+  const sweep = useRef({ id, deleteFolderIfEmpty, justCreated });
+  useEffect(() => {
+    sweep.current = { id, deleteFolderIfEmpty, justCreated };
+  });
+
+  // On leaving the screen: discard a folder that is still unnamed and still
+  // empty. Creating a folder drops you straight into it (see the create menu in
+  // components/floating-tab-bar.tsx), so backing out without typing a name or
+  // adding anything is how an untitled empty folder gets left behind.
+  //
+  // Only for a folder *this* screen was opened to create, which is what the
+  // `created` param marks. The test used to be emptiness alone, and emptiness is
+  // a state an old folder can wander back into: empty one out, open it, clear the
+  // name meaning to retype it, then leave — and it was gone. Tombstoned, synced
+  // to your other devices, and invisible in the trash, because
+  // `worthKeepingInTrash` won't list a folder with no name and no children. A
+  // folder you have had for months should not be deletable by a keystroke you
+  // were in the middle of.
+  //
+  // The name isn't buffered here — the header writes each keystroke straight
+  // through `updateFolder` — so there's nothing to flush, and no local copy that
+  // could be staler than the row. `deleteFolderIfEmpty` re-tests both conditions
+  // under the write lock, so this is a request, not an instruction: a folder
+  // that was named or filled in the meantime stays.
+  useEffect(() => {
+    return () => {
+      if (!sweep.current.justCreated) return;
+      sweep.current.deleteFolderIfEmpty(sweep.current.id);
+    };
+  }, []);
 
   const header = (
     <View style={styles.header}>
@@ -98,6 +140,7 @@ export default function FolderScreen() {
             );
           }}
         />
+        <BottomFade />
         <ScrollToTopButton visible={scrolled} onPress={scrollToTop} />
       </ThemedView>
     </SwipeBackView>

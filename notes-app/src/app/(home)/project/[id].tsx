@@ -13,6 +13,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, FlatList, Pressable, RefreshControl, StyleSheet, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { BottomFade } from '@/components/edge-fade';
 import { FolderCard, NoteCard } from '@/components/notes/cards';
 import { ProjectConfig } from '@/components/notes/project-config';
 import { ScrollToTopButton } from '@/components/scroll-to-top';
@@ -338,6 +339,7 @@ export default function ProjectScreen() {
             </ThemedText>
           }
         />
+        <BottomFade />
         <ScrollToTopButton visible={scrolled} onPress={scrollToTop} />
       </ThemedView>
     </SwipeBackView>

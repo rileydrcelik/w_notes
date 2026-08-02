@@ -39,6 +39,36 @@ export function htmlToPlainText(html: string): string {
 }
 
 /**
+ * Structural tags that carry no meaning as literal text in a note. Inline marks
+ * (`<b>`, `<a>`, …) are left out on purpose: they're short, common in prose
+ * about writing, and far weaker evidence than a stray `<li>`.
+ */
+const ESCAPED_BLOCK_TAG = /&lt;\/?(?:ul|ol|li|blockquote|pre|h[1-6]|table|tr|td|div)\b/i;
+
+/**
+ * Whether a stored body looks like it contains block markup that was escaped
+ * instead of parsed — the fingerprint of a paste the native editor failed to
+ * read.
+ *
+ * When `react-native-enriched`'s HTML parser throws on pasted markup it falls
+ * back to inserting that markup into the buffer as literal text (iOS:
+ * `InputHtmlParser.mm`'s `@catch`, which our own note at
+ * `components/markdown-editor.tsx:106` already describes). The next serialize
+ * escapes those angle brackets, so `<li>` becomes `&lt;li&gt;` in the canonical
+ * body — and every renderer then faithfully decodes it back into a visible tag.
+ * That is why the damage shows identically on web and on mobile: one corrupted
+ * body, not two broken previews.
+ *
+ * A **signal, not a verdict.** A note genuinely written about HTML contains
+ * `&lt;li&gt;` legitimately and would match this, which is exactly why nothing
+ * here rewrites a body — repairing on this evidence would corrupt the honest
+ * note to fix the damaged one. Use it to report and to ask, never to edit.
+ */
+export function hasEscapedBlockMarkup(html: string): boolean {
+  return !!html && ESCAPED_BLOCK_TAG.test(html);
+}
+
+/**
  * Wrap plain text in the canonical rich-text HTML both editors read and write,
  * so text that arrives from outside the app (a clipboard paste, a dropped
  * selection) renders as real paragraphs instead of one escaped blob. Roughly the

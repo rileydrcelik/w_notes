@@ -14,6 +14,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Alert, FlatList, Pressable, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { BottomFade } from '@/components/edge-fade';
 import { IssueAttributesSheet } from '@/components/notes/issue-attributes-sheet';
 import { ScrollToTopButton } from '@/components/scroll-to-top';
 import { SwipeBackView } from '@/components/swipe-back-view';
@@ -524,6 +525,7 @@ export default function IssueTypeScreen() {
             </ThemedText>
           }
         />
+        <BottomFade />
         <ScrollToTopButton visible={scrolled} onPress={scrollToTop} />
         <IssueAttributesSheet
           open={editingIds !== null}

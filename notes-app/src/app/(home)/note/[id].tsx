@@ -2,12 +2,15 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { Stack, useLocalSearchParams } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
 import {
+  Keyboard,
   KeyboardAvoidingView,
   Platform,
   ScrollView,
   StyleSheet,
   TextInput,
   useWindowDimensions,
+  View,
+  type LayoutChangeEvent,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { EnrichedTextInputInstance, OnChangeStateEvent } from 'react-native-enriched';
@@ -39,6 +42,58 @@ export default function NoteScreen() {
   // beneath it regardless of how many lines the title wraps to.
   const [titleHeight, setTitleHeight] = useState(0);
   const { scrollProps, scrolled, scrollToTop } = useScrollToTop<ScrollView>();
+
+  // How much of the scroll frame the keyboard is covering. Android only: the
+  // window is edge-to-edge there, so the keyboard overlaps the frame instead of
+  // shrinking it, and the frame's own height still counts the covered strip. On
+  // iOS the KeyboardAvoidingView above already shortens the frame, so its layout
+  // height is the visible height and this stays 0.
+  const keyboardInset = useRef(0);
+  useEffect(() => {
+    if (Platform.OS !== 'android') return;
+    const show = Keyboard.addListener('keyboardDidShow', (e) => {
+      keyboardInset.current = e.endCoordinates.height;
+    });
+    const hide = Keyboard.addListener('keyboardDidHide', () => {
+      keyboardInset.current = 0;
+    });
+    return () => {
+      show.remove();
+      hide.remove();
+    };
+  }, []);
+
+  // The scroll frame's height, and whether the caret sits at the very end of the
+  // body — the two things needed to put a growing document's last line back on
+  // screen. Refs, because the layout callback below must not re-run the screen.
+  const frameHeight = useRef(0);
+  const caretAtEnd = useRef(true);
+
+  /**
+   * Follow the caret down as the body grows.
+   *
+   * The editor doesn't scroll itself (`scrollEnabled={false}` — this ScrollView
+   * owns the scrolling so the sticky title stays put), so once the text passes
+   * the bottom of the frame you carry on typing into a line you can't see. This
+   * fires when the editor's measured height changes, which is exactly when a new
+   * line appeared.
+   *
+   * Only when the caret is at the end. `react-native-enriched` reports character
+   * offsets but no caret coordinates, so "at the end" is the one position whose
+   * pixel target is known without guessing: the bottom of the editor. Typing in
+   * the middle of a note is left alone rather than scrolled somewhere plausible
+   * but wrong.
+   */
+  const onEditorLayout = (e: LayoutChangeEvent) => {
+    if (!editing || !caretAtEnd.current) return;
+    const visible = frameHeight.current - keyboardInset.current;
+    if (visible <= 0) return;
+    // Offset that puts the editor's last line at the bottom of what's visible,
+    // plus a little room so the caret isn't flush against the keyboard.
+    const y = e.nativeEvent.layout.height - visible + Spacing.six;
+    if (y <= 0) return;
+    scrollProps.ref.current?.scrollTo({ y, animated: true });
+  };
 
   const note = getNote(id);
   const [title, setTitle] = useState(note?.title ?? '');
@@ -206,6 +261,9 @@ export default function NoteScreen() {
           />
           <ScrollView
             {...scrollProps}
+            onLayout={(e) => {
+              frameHeight.current = e.nativeEvent.layout.height;
+            }}
             contentContainerStyle={[
               styles.content,
               // While editing, pad a full screen below so the body scrolls well
@@ -216,15 +274,22 @@ export default function NoteScreen() {
             ]}
             keyboardShouldPersistTaps="handled"
             showsVerticalScrollIndicator={false}>
-            <MarkdownEditor
-              key={`${id}:${bodyRev}`}
-              value={body}
-              onChangeText={onChangeBody}
-              placeholder="Start typing…"
-              editorRef={editorRef}
-              onFocusChange={setEditing}
-              onStateChange={setFmtState}
-            />
+            {/* The wrapper is what gets measured: its height is the body's, with
+                none of the ScrollView's editing padding in it. */}
+            <View onLayout={onEditorLayout}>
+              <MarkdownEditor
+                key={`${id}:${bodyRev}`}
+                value={body}
+                onChangeText={onChangeBody}
+                placeholder="Start typing…"
+                editorRef={editorRef}
+                onFocusChange={setEditing}
+                onStateChange={setFmtState}
+                onSelectionChange={(s) => {
+                  caretAtEnd.current = s.atEnd;
+                }}
+              />
+            </View>
           </ScrollView>
           {/* Fades scrolling body text into the sticky title. */}
           <LinearGradient

@@ -2,6 +2,20 @@ import { Stack } from 'expo-router';
 
 import { useTheme } from '@/hooks/use-theme';
 
+/**
+ * Put home underneath every screen this stack can open.
+ *
+ * Without this, landing straight on a nested URL — a web reload on `/note/x`, an
+ * opened link, a tab promoted by the DB guard — builds a stack containing only
+ * that screen. Back then has nothing to pop, so the action escapes this stack
+ * and gets handled by the pager above, which slides to the copa tab: the reported
+ * "back sometimes takes me to copa". Anchoring to `index` gives a deep-linked
+ * screen the home screen beneath it, so back pops to where it looks like it
+ * should. It costs nothing on an ordinary in-app navigation, where index is
+ * already there.
+ */
+export const unstable_settings = { anchor: 'index' };
+
 export default function HomeStackLayout() {
   const colors = useTheme();
 

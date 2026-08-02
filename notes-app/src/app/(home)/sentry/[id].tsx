@@ -14,6 +14,7 @@ import {
 import Animated, { FadeIn } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { BottomFade } from '@/components/edge-fade';
 import { ScrollToTopButton } from '@/components/scroll-to-top';
 import { SwipeBackView } from '@/components/swipe-back-view';
 import { ThemedText } from '@/components/themed-text';
@@ -23,6 +24,16 @@ import { useContextMenu } from '@/hooks/use-context-menu';
 import { useScrollToTop } from '@/hooks/use-scroll-to-top';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
 import { useTheme } from '@/hooks/use-theme';
+import {
+  fixStorageKey,
+  isPollable,
+  parseFixes,
+  resumeDispatching,
+  serializeFixes,
+  type AutofixStatus,
+  type FixState,
+} from '@/lib/autofix-progress';
+import { db } from '@/lib/db';
 import { apiFetch } from '@/lib/sync/api';
 import { sentryTarget, type SentryTarget } from '@/lib/sentry-note';
 import { SentryConfig } from '@/components/notes/sentry-config';
@@ -62,35 +73,9 @@ type Issue = {
 
 type IssueListResponse = { issues: Issue[]; next_cursor?: string | null };
 
-// Backend /sentry/autofix responses.
+// Backend /sentry/autofix responses. The status/progress shapes, and the rules
+// for carrying progress across a reload, live in lib/autofix-progress.
 type AutofixResponse = { dispatched: boolean; issue_id: string; short_id?: string | null; branch: string };
-type AutofixStatusState = 'none' | 'branch_created' | 'pr_open' | 'pr_merged' | 'pr_closed';
-type AutofixStatus = {
-  state: AutofixStatusState;
-  branch: string;
-  pr_number?: number | null;
-  pr_url?: string | null;
-  title?: string | null;
-};
-// Per-issue autofix progress tracked on the screen (never synced).
-type FixState = {
-  phase: 'dispatching' | 'error' | 'tracking';
-  shortId?: string;
-  status?: AutofixStatus;
-  stopped?: boolean; // polling gave up (timeout); keep the last status shown
-  message?: string;
-};
-
-// A fix is still "in flight" (worth polling) until a PR shows up or we give up.
-function isPollable(fix: FixState | undefined): boolean {
-  return (
-    !!fix &&
-    fix.phase === 'tracking' &&
-    !fix.stopped &&
-    !!fix.shortId &&
-    (fix.status?.state === 'none' || fix.status?.state === 'branch_created')
-  );
-}
 
 type ContextLine = { lineno: number; code: string };
 
@@ -652,10 +637,42 @@ export default function SentryIssuesScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // Per-issue autofix progress (kept in memory only — never synced). Keyed by
-  // Sentry issue id. `attemptsRef` caps how long we poll each one.
+  // Per-issue autofix progress, keyed by Sentry issue id. `attemptsRef` caps how
+  // long we poll each one. Mirrored to the local settings table so the chips
+  // outlive a reload — the workflow they describe runs for minutes on GitHub,
+  // long after the page that started it has gone. See lib/autofix-progress.
   const [fixStates, setFixStates] = useState<Record<string, FixState>>({});
   const attemptsRef = useRef<Record<string, number>>({});
+  const fixesHydrated = useRef(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    db.getSetting(fixStorageKey(id))
+      .then((raw) => {
+        if (cancelled) return;
+        const restored = parseFixes(raw, Date.now());
+        // Fresh polling budgets: a fix that timed out while we were away gets
+        // another window rather than coming back already given up on.
+        attemptsRef.current = {};
+        if (Object.keys(restored).length) setFixStates(restored);
+      })
+      .catch((e) => console.warn('[autofix] failed to restore progress:', e))
+      .finally(() => {
+        if (!cancelled) fixesHydrated.current = true;
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [id]);
+
+  // Write progress back on every change — but not before the restore above has
+  // landed, or an empty initial state would erase what's stored.
+  useEffect(() => {
+    if (!fixesHydrated.current) return;
+    db.setSetting(fixStorageKey(id), serializeFixes(fixStates, Date.now())).catch((e) =>
+      console.warn('[autofix] failed to save progress:', e),
+    );
+  }, [id, fixStates]);
 
   const load = useCallback(
     async (mode: 'initial' | 'refresh') => {
@@ -688,6 +705,23 @@ export default function SentryIssuesScreen() {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- async load
     void load('initial');
   }, [load]);
+
+  // A fix restored mid-dispatch has no reply coming — the request died with the
+  // page that sent it. The issue list carries the short id the status poll needs,
+  // so hand it over and let polling take it from there instead of leaving a
+  // spinner that can never resolve. A no-op when nothing is mid-dispatch.
+  //
+  // Keyed on the fixes as well as the issues, because the two arrive in no fixed
+  // order: the restore is a local SQLite read and the list is a network round
+  // trip, and on the day the read loses that race a restored chip would sit on
+  // "Sending to autofix…" forever, having missed the only pass that could have
+  // promoted it. Re-running is free — `resumeDispatching` hands back the very
+  // same object when there's nothing to promote, so the state bails out and this
+  // settles after one extra pass rather than looping.
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- identity-stable
+    setFixStates((prev) => resumeDispatching(prev, issues));
+  }, [issues, fixStates]);
 
   // Write the picked org/project (+ optional repo) into the note's config. Once
   // it lands, `target` resolves and the screen swaps from picker to issues list.
@@ -918,6 +952,7 @@ export default function SentryIssuesScreen() {
           )}
         />
         )}
+        <BottomFade />
         <ScrollToTopButton visible={scrolled} onPress={scrollToTop} />
       </ThemedView>
     </SwipeBackView>

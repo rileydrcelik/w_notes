@@ -721,7 +721,9 @@ function CreateMenu({
   const onCreateFolder = () => {
     onClose();
     const id = createFolder(currentFolderId(pathname, getNote));
-    router.push({ pathname: '/folder/[id]', params: { id } });
+    // `created` arms the folder screen's discard-if-untouched sweep. Only the
+    // create paths set it, so backing out of an existing folder can't delete it.
+    router.push({ pathname: '/folder/[id]', params: { id, created: '1' } });
   };
 
   const onCreateBlock = () => {

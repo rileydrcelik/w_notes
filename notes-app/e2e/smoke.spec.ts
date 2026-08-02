@@ -174,3 +174,50 @@ test('dropping a file on the copa feed creates a file block', async ({ page }) =
   await expect(page.getByText(name)).toBeVisible();
   await expect(page.getByText('Drop to add a block')).toBeHidden();
 });
+
+/**
+ * Back, from a screen the browser opened directly.
+ *
+ * A note reached by *tapping* has home under it in the stack, so back has
+ * something to pop and this passes trivially. A note reached by URL — a reload,
+ * a shared link — does not: the stack is rebuilt from the path alone. Back then
+ * escapes the home stack entirely and is handled by the pager above it, which
+ * used to answer by sliding to the copa tab.
+ *
+ * Only a real browser can set that up, which is why this is here and not in the
+ * fast suites: the bug lives in how the router reconstructs state from a URL.
+ * `unstable_settings.anchor` in `(home)/_layout.tsx` and `backBehavior` on the
+ * pager are the two halves of the fix, and asserting we land on `/` rather than
+ * merely "not on the note" is what tells them apart from a back that did nothing.
+ */
+test('back from a directly-opened note goes home, not to copa', async ({ page }) => {
+  await page.goto('/');
+  await ready(page);
+
+  const title = `e2e deep link ${Date.now()}`;
+  await page.getByLabel('Create').click();
+  await page.getByPlaceholder('Title').fill(title);
+  await page.getByLabel('Go back').click();
+  await expect(page.getByText(title)).toBeVisible();
+
+  // Reload home before going any further. The store renders a new note
+  // optimistically without awaiting wa-sqlite, so navigating straight to its URL
+  // races the write and lands on "This note could not be found" — a failure that
+  // looks like a routing bug but isn't one. Surviving this reload means the note
+  // is really on disk, so what follows tests routing and nothing else.
+  await page.reload();
+  await expect(page.getByText(title)).toBeVisible();
+
+  await page.getByText(title).click();
+  await expect(page).toHaveURL(/\/note\/note-/);
+
+  // The reported repro: reload while the note is open, so the stack is rebuilt
+  // from the URL alone with nothing behind it.
+  await page.reload();
+  await expect(page.getByPlaceholder('Title')).toHaveValue(title);
+
+  await page.getByLabel('Go back').click();
+
+  await expect(page).toHaveURL(/\/$/);
+  await expect(page.getByText(title)).toBeVisible();
+});

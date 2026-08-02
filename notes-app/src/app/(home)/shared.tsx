@@ -3,6 +3,7 @@ import { Stack, useRouter } from 'expo-router';
 import { FlatList, Pressable, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { BottomFade } from '@/components/edge-fade';
 import { ScrollToTopButton } from '@/components/scroll-to-top';
 import { SwipeBackView } from '@/components/swipe-back-view';
 import { ThemedText } from '@/components/themed-text';
@@ -10,6 +11,7 @@ import { ThemedView } from '@/components/themed-view';
 import { Spacing } from '@/constants/theme';
 import type { Note } from '@/data/notes';
 import { GRID_COLUMNS, gridEdgePadding, trailingSpacers, useGridColumnWidth, useTileHeight } from '@/lib/grid';
+import { pinnedFirst } from '@/lib/pinned';
 import { useScrollToTop } from '@/hooks/use-scroll-to-top';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
 import { useTheme } from '@/hooks/use-theme';
@@ -27,9 +29,10 @@ export default function SharedScreen() {
   const columnWidth = useGridColumnWidth();
   const { scrollProps, scrolled, scrollToTop } = useScrollToTop<FlatList<GridItem>>();
 
-  const items: GridItem[] = notes
-    .filter((note) => note.shared)
-    .map((note) => ({ kind: 'note' as const, note }));
+  const items: GridItem[] = pinnedFirst(notes.filter((note) => note.shared)).map((note) => ({
+    kind: 'note' as const,
+    note,
+  }));
   for (let i = 0; i < trailingSpacers(items.length); i++) items.push({ kind: 'spacer' });
 
   return (
@@ -79,6 +82,7 @@ export default function SharedScreen() {
             );
           }}
         />
+        <BottomFade />
         <ScrollToTopButton visible={scrolled} onPress={scrollToTop} />
       </ThemedView>
     </SwipeBackView>

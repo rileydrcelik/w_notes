@@ -15,8 +15,9 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { SearchBar, SEARCH_BAR_HEIGHT } from '@/components/search-bar';
 import { ThemedText } from '@/components/themed-text';
 import { Spacing } from '@/constants/theme';
-import type { Folder } from '@/data/notes';
+import type { Folder, Note } from '@/data/notes';
 import { useTheme } from '@/hooks/use-theme';
+import { folderHref, isListableNote, noteHref, noteIcon } from '@/lib/item-route';
 import { useNotes } from '@/store/notes-store';
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
@@ -37,18 +38,34 @@ export function RightSidebar({ open, onClose }: { open: boolean; onClose: () => 
   const colors = useTheme();
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { folders, notes, trash, getNotesInFolder, getRootNotes, getRootFolders, getSubfolders, createFolder } =
-    useNotes();
-  const rootNotes = getRootNotes();
+  const {
+    folders,
+    notes,
+    trash,
+    getNotesInFolder,
+    getRootNotes,
+    getRootFolders,
+    getSubfolders,
+    createFolder,
+  } = useNotes();
+
+  // The hierarchy lists notes, and an issue type is not one — it's a row of the
+  // task manager that happens to be stored as a note. Filtering here rather than
+  // at each call site keeps the counts honest too: a project folder used to
+  // report the number of issue types as its note count.
+  const notesIn = (folderId: string) => getNotesInFolder(folderId).filter(isListableNote);
+  const rootNotes = getRootNotes().filter(isListableNote);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [query, setQuery] = useState('');
 
   // Quick-access counts, all live: favorites and shared from the flags on notes/
   // folders, trash from the trash store. Each row opens its screen.
+  const listable = notes.filter(isListableNote);
+  const listableCount = listable.length;
   const favoritesCount =
     folders.filter((folder) => folder.favorite).length +
-    notes.filter((note) => note.favorite).length;
-  const sharedCount = notes.filter((note) => note.shared).length;
+    listable.filter((note) => note.favorite).length;
+  const sharedCount = listable.filter((note) => note.shared).length;
 
   const quickItems: { key: string; label: string; icon: FeatherName; count: number; path: Href }[] =
     [
@@ -66,7 +83,7 @@ export function RightSidebar({ open, onClose }: { open: boolean; onClose: () => 
   // matching note, or anything beneath it in the tree qualifies.
   const folderMatchesSearch = (folder: Folder): boolean =>
     folder.name.toLowerCase().includes(q) ||
-    getNotesInFolder(folder.id).some((note) => noteMatches(note.title, note.body)) ||
+    notesIn(folder.id).some((note) => noteMatches(note.title, note.body)) ||
     getSubfolders(folder.id).some(folderMatchesSearch);
 
   // The hierarchy is rendered from the home-screen folders down; searching
@@ -79,9 +96,12 @@ export function RightSidebar({ open, onClose }: { open: boolean; onClose: () => 
 
   const toggle = (id: string) => setExpanded((prev) => ({ ...prev, [id]: !prev[id] }));
 
-  const openNote = (id: string) => {
+  // A note opens the screen its plugin type calls for, not the text editor. A
+  // resume's body is LaTeX and a finance note's document isn't in `body` at all,
+  // so `/note/[id]` was the wrong destination for every plugin note here.
+  const openNote = (note: Note) => {
     onClose();
-    router.push({ pathname: '/note/[id]', params: { id } });
+    router.push(noteHref(note));
   };
 
   const goTo = (path: Href) => {
@@ -92,14 +112,21 @@ export function RightSidebar({ open, onClose }: { open: boolean; onClose: () => 
   const addFolder = () => {
     const id = createFolder(null);
     onClose();
-    router.push({ pathname: '/folder/[id]', params: { id } });
+    // See floating-tab-bar's create menu: `created` is what arms the folder
+    // screen's discard-if-untouched sweep.
+    router.push({ pathname: '/folder/[id]', params: { id, created: '1' } });
   };
 
   // Renders a folder row and, when open, its subfolders (recursively) and notes
   // beneath it — each level stepped further in from the right edge.
   const renderFolder = (folder: Folder, depth: number): ReactNode => {
-    const folderNotes = getNotesInFolder(folder.id);
+    const folderNotes = notesIn(folder.id);
     const subfolders = getSubfolders(folder.id);
+    // A project is a folder in storage only: on screen it's an issue tracker,
+    // and what's inside it are issue types rather than notes. Expanding one here
+    // listed that machinery as if the user had written it, so it opens its own
+    // screen instead — the same thing its card on the home screen does.
+    const isProject = folder.kind === 'project';
     const nameMatch = searching && folder.name.toLowerCase().includes(q);
     // While searching (unless this folder's own name matched) narrow to the
     // matching notes and the subfolders whose branch contains a match.
@@ -110,12 +137,13 @@ export function RightSidebar({ open, onClose }: { open: boolean; onClose: () => 
     const childFolders =
       searching && !nameMatch ? subfolders.filter(folderMatchesSearch) : subfolders;
     // Searching forces every surviving branch open; otherwise honor the toggle.
-    const isOpen = searching ? true : expanded[folder.id];
+    // A project never opens in place — there is nothing under it to show.
+    const isOpen = isProject ? false : searching ? true : expanded[folder.id];
 
     return (
       <Animated.View key={folder.id} layout={LinearTransition.duration(220)}>
         <Pressable
-          onPress={() => toggle(folder.id)}
+          onPress={() => (isProject ? goTo(folderHref(folder)) : toggle(folder.id))}
           style={({ pressed }) => [
             styles.row,
             { marginRight: depth * INDENT },
@@ -126,7 +154,7 @@ export function RightSidebar({ open, onClose }: { open: boolean; onClose: () => 
           </ThemedText>
           <View style={styles.spacer} />
           <Feather
-            name={isOpen ? 'chevron-down' : 'chevron-left'}
+            name={isProject ? 'columns' : isOpen ? 'chevron-down' : 'chevron-left'}
             size={18}
             color={colors.textSecondary}
           />
@@ -143,7 +171,7 @@ export function RightSidebar({ open, onClose }: { open: boolean; onClose: () => 
                 entering={FadeIn.duration(160).delay(index * 25)}
                 exiting={FadeOut.duration(120)}>
                 <Pressable
-                  onPress={() => openNote(note.id)}
+                  onPress={() => openNote(note)}
                   style={({ pressed }) => [
                     styles.row,
                     { marginRight: (depth + 1) * INDENT },
@@ -153,7 +181,7 @@ export function RightSidebar({ open, onClose }: { open: boolean; onClose: () => 
                     {note.title}
                   </ThemedText>
                   <Feather
-                    name="file-text"
+                    name={noteIcon(note)}
                     size={16}
                     color={colors.textSecondary}
                     style={styles.leadIcon}
@@ -191,7 +219,7 @@ export function RightSidebar({ open, onClose }: { open: boolean; onClose: () => 
                   onPress={onClose}
                   style={({ pressed }) => [styles.row, pressed && styles.pressed]}>
                   <ThemedText type="small" themeColor="textSecondary">
-                    {notes.length}
+                    {listableCount}
                   </ThemedText>
                   <ThemedText style={[styles.rowLabel, styles.quickLabel]} numberOfLines={1}>
                     All Notes
@@ -247,12 +275,17 @@ export function RightSidebar({ open, onClose }: { open: boolean; onClose: () => 
                   {visibleRootNotes.map((note) => (
                     <Animated.View key={note.id} layout={LinearTransition.duration(220)}>
                       <Pressable
-                        onPress={() => openNote(note.id)}
+                        onPress={() => openNote(note)}
                         style={({ pressed }) => [styles.row, pressed && styles.pressed]}>
                         <ThemedText style={styles.rowLabel} numberOfLines={1}>
                           {note.title}
                         </ThemedText>
-                        <Feather name="file-text" size={18} color={colors.text} style={styles.leadIcon} />
+                        <Feather
+                          name={noteIcon(note)}
+                          size={18}
+                          color={colors.text}
+                          style={styles.leadIcon}
+                        />
                       </Pressable>
                     </Animated.View>
                   ))}

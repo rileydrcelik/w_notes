@@ -80,6 +80,13 @@ function Screens() {
       tabBar={() => null}
       // Open on home; copa sits to its left so a swipe-right reveals it.
       initialRouteName="(home)"
+      // …but "first" must not also mean "where back goes". The router's default
+      // `firstRoute` sends any unhandled back action to the first declared tab —
+      // copa — purely because of that swipe ordering. `initialRoute` makes back
+      // mean home: from copa it lands on home, and on home it's a no-op that
+      // falls through to the caller (the navbar's own fallback, or the OS on
+      // Android) instead of sliding sideways.
+      backBehavior="initialRoute"
       screenOptions={{ swipeEnabled }}>
       <TopTabs.Screen name="copa" />
       <TopTabs.Screen name="(home)" />

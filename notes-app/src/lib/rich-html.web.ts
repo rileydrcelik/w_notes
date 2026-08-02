@@ -56,9 +56,22 @@ export function tiptapHtmlToStored(html: string): string {
     });
   });
 
+  // Bullet/ordered items: strip the <p> wrapper native doesn't use. Done on the
+  // tree rather than on the serialized string: the regex this replaces —
+  // `/<li([^>]*)><p>(.*?)<\/p><\/li>/gs` — pairs the first `</p></li>` it finds
+  // with the opening `<li>`, so one nested list mis-pairs the tags and it emits
+  // structurally broken HTML. Unwrapping the node in place can't mis-pair, and
+  // it keeps whatever follows the paragraph inside the item.
+  //
+  // The editor's own schema (`ListItemP`, content 'paragraph') means typed
+  // content never nests, so this was latent — but a body can also arrive from
+  // native or from an older version, and those carry no such guarantee.
+  doc.querySelectorAll('li').forEach((li) => {
+    const first = li.firstElementChild;
+    if (first?.tagName === 'P') first.replaceWith(...Array.from(first.childNodes));
+  });
+
   let out = doc.body.innerHTML;
-  // Bullet/ordered items: strip the <p> wrapper native doesn't use.
-  out = out.replace(/<li([^>]*)><p>(.*?)<\/p><\/li>/gs, '<li$1>$2</li>');
   out = out.replace(/checked=""/g, 'checked');
   out = out.replace(/<p><\/p>/g, '<br>');
 

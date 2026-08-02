@@ -9,9 +9,18 @@
  */
 import Feather from '@expo/vector-icons/Feather';
 import { useEffect, useState } from 'react';
-import { Platform, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
+import {
+  KeyboardAvoidingView,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  TextInput,
+  View,
+} from 'react-native';
 import Animated, { FadeIn, FadeOut, SlideInDown, SlideOutDown } from 'react-native-reanimated';
 
+import { SheetFade } from '@/components/edge-fade';
 import { GlassSurface } from '@/components/glass-surface';
 import { ThemedText } from '@/components/themed-text';
 import { IssueAttributeEditors } from '@/components/notes/issue-attribute-editors';
@@ -114,118 +123,135 @@ export function IssueAttributesSheet({
             accessibilityRole="button"
             accessibilityLabel="Cancel"
           />
-          <Animated.View
-            entering={SlideInDown.duration(260)}
-            exiting={SlideOutDown.duration(220)}
-            style={[styles.sheetHost, { paddingBottom: tabBarInset }]}>
-            <GlassSurface intensity={75} tintOpacity={0.9} style={styles.sheet}>
-              <View style={styles.headerRow}>
-                <Feather name="sliders" size={18} color={ACCENT} />
-                <ThemedText style={styles.title}>
-                  {count === 1 ? 'Edit issue' : `Edit ${count} ${noun}`}
-                </ThemedText>
-                <Pressable
-                  onPress={onClose}
-                  accessibilityRole="button"
-                  accessibilityLabel="Close"
-                  hitSlop={8}
-                  style={({ pressed }) => pressed && styles.pressed}>
-                  <Feather name="x" size={20} color={theme.textSecondary} />
-                </Pressable>
-              </View>
-
-              <ScrollView style={styles.body} keyboardShouldPersistTaps="handled">
-                {single && (
-                  <View style={styles.detailsSection}>
-                    <ThemedText type="small" themeColor="textSecondary" style={styles.typesLabel}>
-                      Details
+          {/* The sheet sits on the bottom edge and holds text fields, so without
+              this the keyboard opens straight over the thing being typed into —
+              the title and description are the first fields it covers. Same
+              treatment as github-issue-compose, which this sheet otherwise
+              mirrors. Android needs no `behavior`: it resizes the window
+              itself. */}
+            <KeyboardAvoidingView
+              behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+              style={styles.avoider}
+              pointerEvents="box-none">
+              <Animated.View
+                entering={SlideInDown.duration(260)}
+                exiting={SlideOutDown.duration(220)}
+                style={[styles.sheetHost, { paddingBottom: tabBarInset }]}>
+                <GlassSurface intensity={75} tintOpacity={0.9} style={styles.sheet}>
+                  <View style={styles.headerRow}>
+                    <Feather name="sliders" size={18} color={ACCENT} />
+                    <ThemedText style={styles.title}>
+                      {count === 1 ? 'Edit issue' : `Edit ${count} ${noun}`}
                     </ThemedText>
-                    <TextInput
-                      value={title}
-                      onChangeText={setTitle}
-                      placeholder="Title"
-                      placeholderTextColor={theme.textSecondary}
-                      style={[styles.input, { color: theme.text, borderColor: hexToRgba(theme.text, 0.12) }]}
-                    />
-                    <TextInput
-                      value={description}
-                      onChangeText={setDescription}
-                      placeholder="Description (optional)"
-                      placeholderTextColor={theme.textSecondary}
-                      multiline
-                      style={[
-                        styles.input,
-                        styles.descInput,
-                        { color: theme.text, borderColor: hexToRgba(theme.text, 0.12) },
-                      ]}
-                    />
+                    <Pressable
+                      onPress={onClose}
+                      accessibilityRole="button"
+                      accessibilityLabel="Close"
+                      hitSlop={8}
+                      style={({ pressed }) => pressed && styles.pressed}>
+                      <Feather name="x" size={20} color={theme.textSecondary} />
+                    </Pressable>
                   </View>
-                )}
-                {showTypes && (
-                  <View style={styles.typesSection}>
-                    <ThemedText type="small" themeColor="textSecondary" style={styles.typesLabel}>
-                      Types
-                    </ThemedText>
-                    <View style={styles.typeChips}>
-                      {types!.map((t) => {
-                        const selected = typeIds.includes(t.id);
-                        return (
-                          <Pressable
-                            key={t.id}
-                            onPress={() => toggleType(t.id)}
-                            accessibilityRole="checkbox"
-                            accessibilityState={{ checked: selected }}
-                            accessibilityLabel={`Type ${t.title}`}
-                            style={({ pressed }) => [
-                              styles.typeChip,
-                              {
-                                borderColor: selected ? ACCENT : hexToRgba(theme.text, 0.12),
-                                backgroundColor: selected ? hexToRgba(ACCENT, 0.16) : 'transparent',
-                              },
-                              pressed && styles.pressed,
-                            ]}>
-                            {selected && (
-                              <Feather name="check" size={12} color={ACCENT} style={styles.typeChipCheck} />
-                            )}
-                            <ThemedText type="small" numberOfLines={1}>
-                              {t.title || 'Untitled'}
-                            </ThemedText>
-                          </Pressable>
-                        );
-                      })}
-                    </View>
-                  </View>
-                )}
-                <IssueAttributeEditors
-                  attributes={attributes}
-                  values={values}
-                  onChange={change}
-                  repo={repo}
-                />
-              </ScrollView>
 
-              <Pressable
-                onPress={() =>
-                  onSubmit(
-                    values,
-                    single
-                      ? { title, description, typeIds: showTypes ? typeIds : undefined }
-                      : undefined,
-                  )
-                }
-                disabled={!canApply}
-                accessibilityRole="button"
-                accessibilityLabel="Apply"
-                accessibilityState={{ disabled: !canApply }}
-                style={({ pressed }) => [
-                  styles.cta,
-                  !canApply && styles.ctaDisabled,
-                  pressed && canApply && styles.pressed,
-                ]}>
-                <ThemedText style={styles.ctaText}>Apply</ThemedText>
-              </Pressable>
-            </GlassSurface>
-          </Animated.View>
+                  {/* Capped below its own height with Apply pinned outside the
+                      scroll, so the cap has to read as "more below" rather than as
+                      the end of the sheet — the custom attributes live down there. */}
+                  <View style={styles.scrollWrap}>
+                    <ScrollView style={styles.body} keyboardShouldPersistTaps="handled">
+                      {single && (
+                        <View style={styles.detailsSection}>
+                          <ThemedText type="small" themeColor="textSecondary" style={styles.typesLabel}>
+                            Details
+                          </ThemedText>
+                          <TextInput
+                            value={title}
+                            onChangeText={setTitle}
+                            placeholder="Title"
+                            placeholderTextColor={theme.textSecondary}
+                            style={[styles.input, { color: theme.text, borderColor: hexToRgba(theme.text, 0.12) }]}
+                          />
+                          <TextInput
+                            value={description}
+                            onChangeText={setDescription}
+                            placeholder="Description (optional)"
+                            placeholderTextColor={theme.textSecondary}
+                            multiline
+                            style={[
+                              styles.input,
+                              styles.descInput,
+                              { color: theme.text, borderColor: hexToRgba(theme.text, 0.12) },
+                            ]}
+                          />
+                        </View>
+                      )}
+                      {showTypes && (
+                        <View style={styles.typesSection}>
+                          <ThemedText type="small" themeColor="textSecondary" style={styles.typesLabel}>
+                            Types
+                          </ThemedText>
+                          <View style={styles.typeChips}>
+                            {types!.map((t) => {
+                              const selected = typeIds.includes(t.id);
+                              return (
+                                <Pressable
+                                  key={t.id}
+                                  onPress={() => toggleType(t.id)}
+                                  accessibilityRole="checkbox"
+                                  accessibilityState={{ checked: selected }}
+                                  accessibilityLabel={`Type ${t.title}`}
+                                  style={({ pressed }) => [
+                                    styles.typeChip,
+                                    {
+                                      borderColor: selected ? ACCENT : hexToRgba(theme.text, 0.12),
+                                      backgroundColor: selected ? hexToRgba(ACCENT, 0.16) : 'transparent',
+                                    },
+                                    pressed && styles.pressed,
+                                  ]}>
+                                  {selected && (
+                                    <Feather name="check" size={12} color={ACCENT} style={styles.typeChipCheck} />
+                                  )}
+                                  <ThemedText type="small" numberOfLines={1}>
+                                    {t.title || 'Untitled'}
+                                  </ThemedText>
+                                </Pressable>
+                              );
+                            })}
+                          </View>
+                        </View>
+                      )}
+                      <IssueAttributeEditors
+                        attributes={attributes}
+                        values={values}
+                        onChange={change}
+                        repo={repo}
+                      />
+                    </ScrollView>
+                    <SheetFade />
+                  </View>
+
+                  <Pressable
+                    onPress={() =>
+                      onSubmit(
+                        values,
+                        single
+                          ? { title, description, typeIds: showTypes ? typeIds : undefined }
+                          : undefined,
+                      )
+                    }
+                    disabled={!canApply}
+                    accessibilityRole="button"
+                    accessibilityLabel="Apply"
+                    accessibilityState={{ disabled: !canApply }}
+                    style={({ pressed }) => [
+                      styles.cta,
+                      !canApply && styles.ctaDisabled,
+                      pressed && canApply && styles.pressed,
+                    ]}>
+                    <ThemedText style={styles.ctaText}>Apply</ThemedText>
+                  </Pressable>
+                </GlassSurface>
+              </Animated.View>
+            </KeyboardAvoidingView>
         </>
       )}
     </View>
@@ -235,6 +261,9 @@ export function IssueAttributesSheet({
 const styles = StyleSheet.create({
   overlay: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, justifyContent: 'flex-end' },
   backdrop: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.35)' },
+  avoider: {
+    width: '100%',
+  },
   sheetHost: {
     width: '100%',
     paddingHorizontal: Spacing.three,
@@ -253,6 +282,7 @@ const styles = StyleSheet.create({
   },
   headerRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.two },
   title: { flex: 1, fontSize: 17, fontWeight: '700' },
+  scrollWrap: { position: 'relative' },
   body: { maxHeight: 380 },
   cta: {
     backgroundColor: ACCENT,

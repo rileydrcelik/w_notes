@@ -67,6 +67,89 @@ export function extensionOf(name: string): string {
   return dot > 0 ? name.slice(dot).toLowerCase() : '';
 }
 
+/** Longest we'll wait for a frame before giving up on a thumbnail. */
+const THUMBNAIL_TIMEOUT_MS = 8000;
+/** Widest thumbnail we generate; a card never shows more than a few hundred px. */
+const THUMBNAIL_MAX_WIDTH = 640;
+
+/**
+ * Generates a video frame thumbnail uri, or `undefined` if it can't — the web
+ * counterpart of native's `expo-video-thumbnails` call.
+ *
+ * The browser has no thumbnail API, so this draws the frame itself: load the
+ * video far enough to seek, seek a little way in, paint that frame onto a canvas
+ * and keep the result as its own object URL. Seeking off zero on purpose — the
+ * first frame of a lot of video is a black or blank lead-in, which makes for a
+ * thumbnail that looks broken rather than empty.
+ *
+ * Never throws and never rejects. A block with no thumbnail falls back to the
+ * film icon, which is a perfectly good outcome; a rejected promise here would
+ * take down the import or the sync pass that asked for it. The timeout exists
+ * for the same reason — a video the browser can't decode would otherwise leave
+ * the caller waiting on an event that never comes.
+ */
+export async function generateVideoThumbnail(fileUri: string): Promise<string | undefined> {
+  if (typeof document === 'undefined') return undefined;
+
+  return new Promise<string | undefined>((resolve) => {
+    const video = document.createElement('video');
+    let settled = false;
+
+    const finish = (uri: string | undefined) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      // Detach the source so the browser can release the decoded video.
+      video.removeAttribute('src');
+      video.load();
+      resolve(uri);
+    };
+
+    const timer = setTimeout(() => finish(undefined), THUMBNAIL_TIMEOUT_MS);
+
+    video.muted = true;
+    video.playsInline = true;
+    video.preload = 'metadata';
+    video.crossOrigin = 'anonymous';
+
+    video.onerror = () => finish(undefined);
+
+    video.onloadeddata = () => {
+      // A short way in, but never past the end of a very short clip.
+      const target = Number.isFinite(video.duration) ? Math.min(0.5, video.duration / 4) : 0;
+      // Seeking to where we already are fires no `seeked` event, so draw now.
+      if (target <= 0 || video.currentTime === target) draw();
+      else video.currentTime = target;
+    };
+
+    video.onseeked = draw;
+
+    function draw() {
+      try {
+        const { videoWidth, videoHeight } = video;
+        if (!videoWidth || !videoHeight) return finish(undefined);
+        const scale = Math.min(1, THUMBNAIL_MAX_WIDTH / videoWidth);
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.round(videoWidth * scale);
+        canvas.height = Math.round(videoHeight * scale);
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return finish(undefined);
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        canvas.toBlob(
+          (blob) => finish(blob ? URL.createObjectURL(blob) : undefined),
+          'image/jpeg',
+          0.6,
+        );
+      } catch {
+        // Tainted canvas, decode failure, anything — no thumbnail, no crash.
+        finish(undefined);
+      }
+    }
+
+    video.src = fileUri;
+  });
+}
+
 /** Largest file we'll import (2 GB). Matches the native cap / backend advisory. */
 export const MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024;
 
@@ -93,7 +176,7 @@ export async function importPickedFile(_id: string): Promise<ImportedFile | null
     fileName: asset.name,
     mimeType: asset.mimeType,
     fileSize: asset.size ?? undefined,
-    thumbUri: undefined,
+    thumbUri: isVideo(asset.mimeType) ? await generateVideoThumbnail(asset.uri) : undefined,
   };
 }
 
@@ -127,20 +210,28 @@ export async function importDroppedFile(
     return null;
   }
 
+  const fileUri = URL.createObjectURL(file);
   return {
-    fileUri: URL.createObjectURL(file),
+    fileUri,
     fileName: droppedFileName(file),
     mimeType: file.type || undefined,
     fileSize: file.size || undefined,
-    thumbUri: undefined,
+    thumbUri: isVideo(file.type) ? await generateVideoThumbnail(fileUri) : undefined,
   };
 }
 
-/** Best-effort cleanup of a block's object URL (no-op for non-blob URIs). */
-export function removeCopaFiles({ fileUri }: { fileUri?: string; thumbUri?: string }): void {
-  if (fileUri?.startsWith('blob:')) {
+/**
+ * Best-effort cleanup of a block's object URLs (no-op for non-blob URIs).
+ *
+ * The thumbnail is its own object URL now that web generates one, so it needs
+ * revoking alongside the file — leaving it behind pins the decoded frame in
+ * memory for the rest of the session.
+ */
+export function removeCopaFiles({ fileUri, thumbUri }: { fileUri?: string; thumbUri?: string }): void {
+  for (const uri of [fileUri, thumbUri]) {
+    if (!uri?.startsWith('blob:')) continue;
     try {
-      URL.revokeObjectURL(fileUri);
+      URL.revokeObjectURL(uri);
     } catch {
       // Already revoked / not an object URL — nothing to do.
     }

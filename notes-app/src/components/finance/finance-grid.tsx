@@ -11,8 +11,9 @@
  * text, because a real editor per cell would put hundreds of native views on
  * screen at once.
  */
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Animated,
   Platform,
   Pressable,
   ScrollView,
@@ -239,6 +240,47 @@ export function FinanceGrid({ sheet, onChange, selection, onSelectionChange }: P
   }, []);
 
   /**
+   * Freezing the row numbers.
+   *
+   * The gutter keeps its place in the layout — first child of the body row, so
+   * every measurement below still maps a pointer onto a cell the same way — and
+   * is simply pushed back by however far the grid has scrolled, which parks it
+   * against the viewport's left edge. Lifting it out into its own scroller
+   * instead would have meant two vertical scrollers kept in sync, and a second
+   * coordinate space for the drag-selection to get wrong.
+   *
+   * Driven natively so a scroll doesn't re-render several hundred cells per
+   * frame; `scrollXRef` mirrors it for the hit-test, which runs in JS. Web has
+   * no native driver, and react-native-web animates this off the JS one.
+   */
+  // A lazy `useState` rather than a ref: the value is read during render (it's
+  // handed to a style), and the compiler's rules put ref reads out of bounds
+  // there. The initializer runs once, so it's just as stable.
+  const [scrollX] = useState(() => new Animated.Value(0));
+  const scrollXRef = useRef(0);
+  const onHorizontalScroll = useMemo(
+    () =>
+      Animated.event([{ nativeEvent: { contentOffset: { x: scrollX } } }], {
+        useNativeDriver: Platform.OS !== 'web',
+      }),
+    [scrollX],
+  );
+
+  // Mirror the animated offset back into JS. Subscribing to the value rather
+  // than passing an `onScroll` listener keeps the native driver in play and puts
+  // the ref write where a ref write belongs — in an effect, not in render.
+  useEffect(() => {
+    const id = scrollX.addListener(({ value }) => {
+      scrollXRef.current = value;
+      // Scrolling moves the grid under the pointer, so the cached origin has to
+      // follow it or every mapped cell is offset by the scroll distance.
+      measureOrigin();
+    });
+    return () => scrollX.removeListener(id);
+  }, [scrollX, measureOrigin]);
+  const stickyShift = useMemo(() => ({ transform: [{ translateX: scrollX }] }), [scrollX]);
+
+  /**
    * Records both the grid's origin and its true per-cell size. The content box
    * holds exactly `rowCount` x `colCount` cells, so dividing gives the rendered
    * cell size directly — no assumption about how borders affect layout.
@@ -288,8 +330,13 @@ export function FinanceGrid({ sheet, onChange, selection, onSelectionChange }: P
       if (Platform.OS !== 'web') return false;
       const { pageX, pageY } = evt.nativeEvent;
       // The row-number gutter shares this container; without this a click there
-      // would clamp to column A and open a cell the user never aimed at.
-      if (pageX < originRef.current.x) return false;
+      // would clamp to column A and open a cell the user never aimed at. Now
+      // that the gutter is frozen it also covers whichever cells have scrolled
+      // under it, and those must be just as unclickable — so the band this
+      // rejects grows with the scroll offset rather than staying at the
+      // content's left edge, which has moved off to the left by exactly that
+      // much.
+      if (pageX < originRef.current.x + scrollXRef.current) return false;
       const cell = cellAt(pageX, pageY);
       const active = editingRef.current;
       // Let clicks inside the cell being edited through to its input, so the
@@ -545,13 +592,11 @@ export function FinanceGrid({ sheet, onChange, selection, onSelectionChange }: P
   const cols = Array.from({ length: colCount }, (_, c) => c);
 
   return (
-    <ScrollView
+    <Animated.ScrollView
       horizontal
       scrollEnabled={!dragging}
       showsHorizontalScrollIndicator={false}
-      // Scrolling moves the grid under the pointer, so the cached origin has to
-      // follow it or every mapped cell is offset by the scroll distance.
-      onScroll={measureOrigin}
+      onScroll={onHorizontalScroll}
       scrollEventThrottle={16}
       // Both scrollers need this, not just the inner one: either would
       // otherwise swallow the first tap while the keyboard is up to dismiss it,
@@ -561,7 +606,13 @@ export function FinanceGrid({ sheet, onChange, selection, onSelectionChange }: P
       <View>
         {/* Column headers, pinned above the scrolling body. */}
         <View style={styles.headerRow}>
-          <View style={[styles.gutterCorner, { borderColor: gridLine }]} />
+          <Animated.View
+            style={[
+              styles.gutterCorner,
+              { borderColor: gridLine, backgroundColor: colors.background },
+              stickyShift,
+            ]}
+          />
           {cols.map((c) => (
             <View
               key={c}
@@ -591,7 +642,8 @@ export function FinanceGrid({ sheet, onChange, selection, onSelectionChange }: P
             onResponderMove={onResponderMove}
             onResponderRelease={endDrag}
             onResponderTerminate={endDrag}>
-            <View style={styles.gutter}>
+            <Animated.View
+              style={[styles.gutter, { backgroundColor: colors.background }, stickyShift]}>
               {rows.map((r) => (
                 <View
                   key={r}
@@ -603,7 +655,7 @@ export function FinanceGrid({ sheet, onChange, selection, onSelectionChange }: P
                   <Text style={[styles.headerText, { color: colors.textSecondary }]}>{r + 1}</Text>
                 </View>
               ))}
-            </View>
+            </Animated.View>
             {/* The detector owns its own view, so the content box below keeps
                 `contentRef` for measurement rather than having it cloned away.
                 Both share an origin, so the gesture's local coordinates map
@@ -648,7 +700,7 @@ export function FinanceGrid({ sheet, onChange, selection, onSelectionChange }: P
           </View>
         </ScrollView>
       </View>
-    </ScrollView>
+    </Animated.ScrollView>
   );
 }
 
@@ -656,10 +708,14 @@ const styles = StyleSheet.create({
   hScroll: { paddingRight: 24 },
   headerRow: { flexDirection: 'row' },
   body: { flexDirection: 'row' },
-  gutter: { width: GUTTER_W },
+  // Both carry a zIndex and an opaque fill because they no longer merely sit
+  // beside the cells — once frozen they slide over them, and a transparent
+  // gutter would show column D's contents through the row numbers.
+  gutter: { width: GUTTER_W, zIndex: 2 },
   gutterCorner: {
     width: GUTTER_W,
     height: HEADER_H,
+    zIndex: 2,
     borderRightWidth: StyleSheet.hairlineWidth,
     borderBottomWidth: StyleSheet.hairlineWidth,
   },

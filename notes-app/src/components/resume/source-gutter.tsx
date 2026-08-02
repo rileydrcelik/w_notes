@@ -4,8 +4,8 @@
  * The gutter depends on the editor not wrapping, and a phone is the one place
  * where that trade goes the wrong way — turning wrapping off to make room for
  * numbers means every `\resumeSubheading` runs off the side of a 390pt screen
- * and has to be scrolled to be read. Numbers are worth a horizontal scrollbar on
- * a desktop and not worth it on a phone, so `gutterWidth` returns zero here and
+ * and has to be scrolled to be read. Numbers are worth scrolling sideways on a
+ * desktop and not worth it on a phone, so `gutterWidth` returns zero here and
  * the editor lays out as it always has.
  *
  * **Its exported names and signatures must match `source-gutter.web.tsx`.** A

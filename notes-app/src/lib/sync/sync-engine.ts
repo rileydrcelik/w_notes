@@ -118,8 +118,10 @@ async function runSync(): Promise<SyncResult> {
     // Ensure the device key exists + is persisted before the first request.
     await getDeviceKey();
 
-    // Once per session, reconcile local file paths before any file pass (web
-    // clears stale object URLs so their bytes re-download; native no-ops).
+    // Once per session, reconcile local file paths before any file pass. Both
+    // platforms no-op today: clearing web's dead object URLs moved into the
+    // database open, which is the only point ahead of the stores hydrating. The
+    // hook stays as the seam for any future per-session file reconciliation.
     if (!filesPrepared) {
       await prepareLocalFiles();
       filesPrepared = true;

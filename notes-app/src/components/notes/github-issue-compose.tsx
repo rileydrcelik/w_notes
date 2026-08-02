@@ -19,6 +19,7 @@ import {
 import Animated, { FadeIn, FadeOut, SlideInDown, SlideOutDown } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { SheetFade } from '@/components/edge-fade';
 import { GlassSurface } from '@/components/glass-surface';
 import { ThemedText } from '@/components/themed-text';
 import { hexToRgba, Spacing } from '@/constants/theme';
@@ -190,97 +191,104 @@ export function GithubIssueCompose({
                   </Pressable>
                 </View>
 
-                <ScrollView
-                  style={styles.form}
-                  contentContainerStyle={styles.formContent}
-                  keyboardShouldPersistTaps="handled">
-                  <TextInput
-                    value={title}
-                    onChangeText={setTitle}
-                    placeholder="Title"
-                    placeholderTextColor={theme.textSecondary}
-                    style={[
-                      styles.input,
-                      { color: theme.text, backgroundColor: theme.backgroundElement },
-                    ]}
-                  />
-                  <TextInput
-                    value={body}
-                    onChangeText={setBody}
-                    placeholder="Description (optional, Markdown)"
-                    placeholderTextColor={theme.textSecondary}
-                    multiline
-                    style={[
-                      styles.input,
-                      styles.bodyInput,
-                      { color: theme.text, backgroundColor: theme.backgroundElement },
-                    ]}
-                  />
+                {/* The form is capped well below its own height and Create is
+                    pinned outside the scroll, so without a fade the cap reads as
+                    the end of the form — the way resume-entry-modal's Description
+                    field once read as a field that wasn't there. */}
+                <View style={styles.scrollWrap}>
+                  <ScrollView
+                    style={styles.form}
+                    contentContainerStyle={styles.formContent}
+                    keyboardShouldPersistTaps="handled">
+                    <TextInput
+                      value={title}
+                      onChangeText={setTitle}
+                      placeholder="Title"
+                      placeholderTextColor={theme.textSecondary}
+                      style={[
+                        styles.input,
+                        { color: theme.text, backgroundColor: theme.backgroundElement },
+                      ]}
+                    />
+                    <TextInput
+                      value={body}
+                      onChangeText={setBody}
+                      placeholder="Description (optional, Markdown)"
+                      placeholderTextColor={theme.textSecondary}
+                      multiline
+                      style={[
+                        styles.input,
+                        styles.bodyInput,
+                        { color: theme.text, backgroundColor: theme.backgroundElement },
+                      ]}
+                    />
 
-                  {labels.length > 0 && (
-                    <View style={styles.field}>
-                      <ThemedText type="small" themeColor="textSecondary" style={styles.fieldLabel}>
-                        Labels
-                      </ThemedText>
-                      <View style={styles.chips}>
-                        {labels.map((l) => (
-                          <Chip
-                            key={l.name}
-                            label={l.name}
-                            color={l.color ? `#${l.color}` : undefined}
-                            selected={selLabels.includes(l.name)}
-                            onPress={() => setSelLabels((prev) => toggleIn(prev, l.name))}
-                          />
-                        ))}
+                    {labels.length > 0 && (
+                      <View style={styles.field}>
+                        <ThemedText type="small" themeColor="textSecondary" style={styles.fieldLabel}>
+                          Labels
+                        </ThemedText>
+                        <View style={styles.chips}>
+                          {labels.map((l) => (
+                            <Chip
+                              key={l.name}
+                              label={l.name}
+                              color={l.color ? `#${l.color}` : undefined}
+                              selected={selLabels.includes(l.name)}
+                              onPress={() => setSelLabels((prev) => toggleIn(prev, l.name))}
+                            />
+                          ))}
+                        </View>
                       </View>
-                    </View>
-                  )}
+                    )}
 
-                  {assignees.length > 0 && (
-                    <View style={styles.field}>
-                      <ThemedText type="small" themeColor="textSecondary" style={styles.fieldLabel}>
-                        Assignees
-                      </ThemedText>
-                      <View style={styles.chips}>
-                        {assignees.map((a) => (
-                          <Chip
-                            key={a.login}
-                            label={a.login}
-                            selected={selAssignees.includes(a.login)}
-                            onPress={() => setSelAssignees((prev) => toggleIn(prev, a.login))}
-                          />
-                        ))}
+                    {assignees.length > 0 && (
+                      <View style={styles.field}>
+                        <ThemedText type="small" themeColor="textSecondary" style={styles.fieldLabel}>
+                          Assignees
+                        </ThemedText>
+                        <View style={styles.chips}>
+                          {assignees.map((a) => (
+                            <Chip
+                              key={a.login}
+                              label={a.login}
+                              selected={selAssignees.includes(a.login)}
+                              onPress={() => setSelAssignees((prev) => toggleIn(prev, a.login))}
+                            />
+                          ))}
+                        </View>
                       </View>
-                    </View>
-                  )}
+                    )}
 
-                  {milestones.length > 0 && (
-                    <View style={styles.field}>
-                      <ThemedText type="small" themeColor="textSecondary" style={styles.fieldLabel}>
-                        Milestone
-                      </ThemedText>
-                      <View style={styles.chips}>
-                        {milestones.map((m) => (
-                          <Chip
-                            key={m.number}
-                            label={m.title}
-                            selected={selMilestone === m.number}
-                            // Single-select: tapping the active one clears it.
-                            onPress={() =>
-                              setSelMilestone((prev) => (prev === m.number ? null : m.number))
-                            }
-                          />
-                        ))}
+                    {milestones.length > 0 && (
+                      <View style={styles.field}>
+                        <ThemedText type="small" themeColor="textSecondary" style={styles.fieldLabel}>
+                          Milestone
+                        </ThemedText>
+                        <View style={styles.chips}>
+                          {milestones.map((m) => (
+                            <Chip
+                              key={m.number}
+                              label={m.title}
+                              selected={selMilestone === m.number}
+                              // Single-select: tapping the active one clears it.
+                              onPress={() =>
+                                setSelMilestone((prev) => (prev === m.number ? null : m.number))
+                              }
+                            />
+                          ))}
+                        </View>
                       </View>
-                    </View>
-                  )}
+                    )}
 
-                  {!!error && (
-                    <ThemedText type="small" style={styles.error}>
-                      {error}
-                    </ThemedText>
-                  )}
-                </ScrollView>
+                    {!!error && (
+                      <ThemedText type="small" style={styles.error}>
+                        {error}
+                      </ThemedText>
+                    )}
+                  </ScrollView>
+                  <SheetFade />
+                </View>
 
                 <Pressable
                   onPress={submit}
@@ -353,6 +361,9 @@ const styles = StyleSheet.create({
     flex: 1,
     fontSize: 17,
     fontWeight: '700',
+  },
+  scrollWrap: {
+    position: 'relative',
   },
   form: {
     maxHeight: 420,

@@ -158,6 +158,12 @@ type Props = {
   onFocusChange?: (focused: boolean) => void;
   /** Reports the active inline/block styles so the toolbar can highlight them. */
   onStateChange?: (state: OnChangeStateEvent) => void;
+  /**
+   * Declared to match native, where a screen uses it to scroll the caret back
+   * into view. Unused here: the browser keeps the caret visible in a focused
+   * contenteditable by itself, and there is no keyboard covering the page.
+   */
+  onSelectionChange?: (selection: { start: number; end: number; atEnd: boolean }) => void;
 };
 
 /**

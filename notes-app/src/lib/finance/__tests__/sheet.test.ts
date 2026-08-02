@@ -376,4 +376,36 @@ describe('isSheetEmpty', () => {
     expect(isSheetEmpty(applyStyle(emptySheet(), { r0: 0, c0: 0, r1: 0, c1: 0 }, { bg: '#ff0' }))).toBe(true);
     expect(isSheetEmpty(setCellRaw(emptySheet(), 0, 0, 'x'))).toBe(false);
   });
+
+  it('is unaffected by the recognised keys, including a colWidths map', () => {
+    const sheet: Sheet = { ...emptySheet(), colWidths: { '0': 120, '3': 80 } };
+    expect(isSheetEmpty(sheet)).toBe(true);
+  });
+
+  it('is never empty when a top-level key this version does not recognise is present', () => {
+    const sheet = { ...emptySheet(), fromTheFuture: true } as Sheet;
+    expect(isSheetEmpty(sheet)).toBe(false);
+  });
+
+  it('is never empty when a cell carries a key this version does not recognise, even with a blank raw', () => {
+    const sheet: Sheet = {
+      ...emptySheet(),
+      cells: { [cellKey(0, 0)]: { raw: '', futureField: 'x' } as Sheet['cells'][string] },
+    };
+    expect(isSheetEmpty(sheet)).toBe(false);
+  });
+
+  it('a document round-tripped through parseSheet with an unknown key is non-empty', () => {
+    // parseSheet deliberately spreads unknown top-level keys through (see the
+    // module note) rather than dropping them, so this is the realistic path:
+    // a newer app version's document, read back by this one.
+    const json = JSON.stringify({
+      version: 1,
+      rows: 5,
+      cols: 5,
+      cells: {},
+      fromTheFuture: 'preserve me',
+    });
+    expect(isSheetEmpty(parseSheet(json))).toBe(false);
+  });
 });

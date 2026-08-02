@@ -2,6 +2,7 @@ import * as SQLite from 'expo-sqlite';
 
 import { Sentry } from '@/lib/sentry';
 import { removeCopaFiles } from '@/lib/copa-files';
+import { worthKeepingInTrash } from '@/lib/trash-visibility';
 import { whenDbOwner } from '@/lib/web-db-lock';
 import type { Folder, Issue, Note, ResumeVersion } from '@/data/notes';
 import type { CopaItem } from '@/data/copa';
@@ -264,6 +265,28 @@ function getDb(): Promise<SQLite.SQLiteDatabase> {
   return dbPromise;
 }
 
+/**
+ * Clears `file_uri`/`thumb_uri` for blocks whose path is a browser object URL
+ * (`blob:`). Those URLs only live for one page session, so a persisted one is
+ * dead on arrival after a reload. Nulling it both tells the UI it has no local
+ * bytes — so it shows a file-type icon rather than a broken image — and lets the
+ * sync engine re-download the bytes from S3 for rows that carry a `remote_key`.
+ *
+ * Takes the handle rather than calling `getDb()`, because it runs during `open`
+ * itself: going through the public method would await the connection it is part
+ * of creating. It is deliberately not one of the `WRITE_METHODS` either — the
+ * serialization chain those go through would deadlock for the same reason, and
+ * nothing else can be writing yet at this point in startup.
+ *
+ * Device-local paths, so this doesn't mark anything dirty. No-op on native,
+ * where paths are durable `file://` URIs and no row matches.
+ */
+async function clearEphemeralFilePaths(database: SQLite.SQLiteDatabase): Promise<void> {
+  await database.runAsync(
+    "UPDATE copa_items SET file_uri = NULL, thumb_uri = NULL WHERE file_uri LIKE 'blob:%'",
+  );
+}
+
 async function open(): Promise<SQLite.SQLiteDatabase> {
   // On web, wait until this tab owns the DB before touching the OPFS file. A
   // follower that opened it would fail (another tab holds the exclusive handle)
@@ -386,6 +409,17 @@ async function open(): Promise<SQLite.SQLiteDatabase> {
     CREATE INDEX IF NOT EXISTS idx_resume_versions_note_id ON resume_versions (note_id);
     CREATE INDEX IF NOT EXISTS idx_resume_versions_dirty ON resume_versions (dirty);
   `);
+  // Drop file paths that died with the last page session, before anything can
+  // read them. On web a block's `file_uri` is a `blob:` object URL, which is
+  // valid only for the page that made it — but it outlives that page in SQLite,
+  // so a fresh load starts out holding URLs that look real and resolve to
+  // nothing. This used to run inside the first sync pass, which is later than
+  // the stores hydrate: the copa feed's first render put those dead URLs
+  // straight into an <Image>, showing a broken preview until the bytes had been
+  // re-fetched from S3 and the sync event pushed a reload. Clearing them here
+  // makes the first paint honest — a file-type icon, then the real thumbnail
+  // when it lands. No-op on native, where paths are durable `file://` URIs.
+  await clearEphemeralFilePaths(database);
   return database;
 }
 
@@ -589,7 +623,9 @@ async function buildTrash(database: SQLite.SQLiteDatabase): Promise<TrashEntry[]
     .filter((n) => !n.trashed_with_folder_id)
     .map((n) => ({ kind: 'note', id: n.id, deletedAt: n.deleted_at!, note: toNote(n) }));
 
-  return [...folderEntries, ...noteEntries].sort((a, b) => b.deletedAt - a.deletedAt);
+  return [...folderEntries, ...noteEntries]
+    .filter(worthKeepingInTrash)
+    .sort((a, b) => b.deletedAt - a.deletedAt);
 }
 
 // ---- Public API (mirrors the data the stores need) ----
@@ -767,6 +803,74 @@ export const db = {
         id,
       ]);
     });
+  },
+
+  /**
+   * Soft-delete a folder only if it is still both unnamed and childless, and
+   * report whether it went. For the auto-cleanup of folders created and then
+   * abandoned without being named — see the screen that calls it.
+   *
+   * The test and the delete are one method rather than a read in the screen
+   * followed by `deleteFolder`, because everything in `WRITE_METHODS` is
+   * serialized against every other write but reads are not: between a separate
+   * read and delete, a sync pull could land the folder's first note and the
+   * delete would take it down with a folder that is no longer empty. Inside one
+   * serialized call no other write can interleave.
+   *
+   * "Childless" counts live rows only — descendants already in the trash don't
+   * keep a folder alive, or emptying a folder into the trash would leave the
+   * husk behind forever. No cascade is needed for the same reason: a folder with
+   * nothing live under it has nothing to take with it.
+   */
+  async deleteFolderIfEmpty(id: string): Promise<boolean> {
+    dbCrumb('deleteFolderIfEmpty', { id });
+    const database = await getDb();
+    const folder = await database.getFirstAsync<FolderRow>(
+      'SELECT * FROM folders WHERE id = ? AND deleted_at IS NULL',
+      [id],
+    );
+    if (!folder || folder.name.trim().length > 0) return false;
+
+    const child = await database.getFirstAsync<{ id: string }>(
+      `SELECT id FROM notes WHERE folder_id = ? AND deleted_at IS NULL
+       UNION ALL
+       SELECT id FROM folders WHERE parent_id = ? AND deleted_at IS NULL
+       LIMIT 1`,
+      [id, id],
+    );
+    if (child) return false;
+
+    const now = Date.now();
+    await database.runAsync(
+      'UPDATE folders SET deleted_at = ?, updated_at = ?, dirty = 1 WHERE id = ?',
+      [now, now, id],
+    );
+    return true;
+  },
+
+  /**
+   * Which plugin surfaces this device already holds data for — note plugin types
+   * plus `'project'` for task-manager folders, which are a folder kind rather
+   * than a note type.
+   *
+   * Read-only, and exists for one job: the create-menu plugin toggles default to
+   * off, and a device that was already using a plugin before that default
+   * existed has no stored preference to fall back on. Asking the data whether a
+   * plugin is in use is the only honest way to tell "never chosen" apart from
+   * "chosen off". Trashed rows count — a plugin whose only sheet you deleted
+   * yesterday is still one you use.
+   */
+  async pluginTypesInUse(): Promise<string[]> {
+    const database = await getDb();
+    const rows = await database.getAllAsync<{ kind: string | null }>(
+      // `folders.kind` is qualified because the second branch also *outputs* a
+      // column called `kind`; SQLite resolves the WHERE against the table either
+      // way, but the unqualified version reads like it filters on the alias.
+      `SELECT DISTINCT plugin_type AS kind FROM notes WHERE plugin_type IS NOT NULL
+       UNION
+       SELECT DISTINCT 'project' AS kind FROM folders WHERE folders.kind = 'project'`,
+    );
+    return rows.map((r) => r.kind).filter((k): k is string => !!k);
   },
 
   async restoreFromTrash(id: string): Promise<void> {
@@ -966,20 +1070,6 @@ export const db = {
       thumbUri,
       id,
     ]);
-  },
-
-  /**
-   * Clears `file_uri`/`thumb_uri` for blocks whose path is a browser object URL
-   * (`blob:`). Those URLs only live for one page session, so a persisted one is
-   * dead after a reload. Nulling it lets the sync engine re-download the bytes
-   * from S3 (rows that still carry a `remote_key`) into a fresh URL. No-op on
-   * native, where paths are durable `file://` URIs. Device-local, so not dirty.
-   */
-  async resetEphemeralFiles(): Promise<void> {
-    const database = await getDb();
-    await database.runAsync(
-      "UPDATE copa_items SET file_uri = NULL, thumb_uri = NULL WHERE file_uri LIKE 'blob:%'",
-    );
   },
 
   // ---- Issues (task-manager project rows) ----
@@ -1606,13 +1696,13 @@ const WRITE_METHODS = [
   'createFolder',
   'updateFolder',
   'deleteFolder',
+  'deleteFolderIfEmpty',
   'restoreFromTrash',
   'createCopa',
   'updateCopa',
   'deleteCopa',
   'setCopaRemoteKey',
   'setCopaLocalFile',
-  'resetEphemeralFiles',
   'createIssue',
   'updateIssue',
   'deleteIssue',

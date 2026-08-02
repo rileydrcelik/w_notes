@@ -159,12 +159,21 @@ export default function CopaBlockScreen() {
   // design, so they're never treated as empty. Flushing stays gated on
   // `editedRef` so leaving a block that changed underneath us (remote) never
   // clobbers that remote change with our stale local copy.
+  //
+  // "Has a file" is `fileName`, the metadata that travels with the row — never
+  // `fileUri` alone, which is this device's path to the downloaded bytes and is
+  // null on any device that has pulled the row but not yet fetched them. On web
+  // it's null for *every* file block after a reload, since object URLs die with
+  // the session and `prepareLocalFiles` clears them (see lib/sync/files.web.ts).
+  // Judging emptiness by `fileUri` therefore deleted real attachments — and copa
+  // has no trash, so there was nothing to restore.
   useEffect(
     () => () => {
       const { id: sid, label: sl, content: sc, stored } = snapshot.current;
       if (!stored) return;
+      const hasFile = !!stored.fileName || !!stored.fileUri;
       const isEmpty =
-        !stored.fileUri && sl.trim().length === 0 && htmlToPlainText(sc).length === 0;
+        !hasFile && sl.trim().length === 0 && htmlToPlainText(sc).length === 0;
       if (isEmpty) {
         deleteCopa(sid);
         return;

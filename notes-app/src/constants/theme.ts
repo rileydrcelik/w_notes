@@ -34,6 +34,20 @@ export const Colors = {
     backgroundSelected: '#dcd4bd', // selection / pressed
     textSecondary: '#657b83', // base00 — secondary content
   },
+  // Catppuccin Mocha. A soft violet-tinted dark rather than a black one: the
+  // base is #1e1e2e, so surfaces read as raised by getting *lighter*, the same
+  // direction Solarized Dark works in. Element/selected come from the palette's
+  // own surface ramp; only `backgroundElementAlt` is interpolated, since
+  // Catppuccin defines no shade between base and surface0 and every other
+  // palette here puts that step there.
+  mocha: {
+    text: '#cdd6f4', // text
+    background: '#1e1e2e', // base
+    backgroundElement: '#313244', // surface0 — raised surfaces
+    backgroundElementAlt: '#282839', // midpoint of base and surface0, for alt cards
+    backgroundSelected: '#45475a', // surface1 — selection / pressed
+    textSecondary: '#a6adc8', // subtext0
+  },
   // Solarized Dark — the canonical mirror of the light variant. Deep teal base
   // (base03/base02) with the brighter blue-grey body text (base1/base0).
   solarizedDark: {

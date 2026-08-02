@@ -10,21 +10,18 @@ import {
 } from 'react';
 import { useColorScheme as useDeviceColorScheme } from 'react-native';
 
-import { Colors, lerpPalette, type Palette } from '@/constants/theme';
+import { lerpPalette, type Palette } from '@/constants/theme';
 import { db } from '@/lib/db';
+import { isThemeKey, resolveTheme, type Scheme, type ThemeKey } from '@/lib/theme-resolve';
 import { subscribeSynced } from '@/lib/sync/sync-engine';
-
-/** What the user picked in Settings. 'system' follows the device. */
-export type ThemeKey = 'system' | 'dark' | 'solarized' | 'solarizedDark';
 
 /** Settings key the chosen theme is persisted under in SQLite. */
 const THEME_KEY = 'themeKey';
-const THEME_KEYS: ThemeKey[] = ['system', 'dark', 'solarized', 'solarizedDark'];
-const isThemeKey = (value: string): value is ThemeKey =>
-  (THEME_KEYS as string[]).includes(value);
 
-/** The light/dark axis some chrome still branches on (blur tint, status bar). */
-export type Scheme = 'light' | 'dark';
+// The key union, its guard and the palette lookup live in lib/theme-resolve, so
+// they can be unit-tested without dragging SQLite in. Re-exported here because
+// this is where the rest of the app already imports them from.
+export type { ThemeKey, Scheme } from '@/lib/theme-resolve';
 
 /** How long a theme change takes to crossfade, in ms. */
 const TRANSITION_MS = 320;
@@ -32,14 +29,6 @@ const TRANSITION_MS = 320;
 /** Ease-in-out so the crossfade accelerates then settles. */
 const easeInOut = (t: number): number =>
   t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
-
-/** Resolve a chosen theme key (plus the device scheme) to a concrete look. */
-function resolveTheme(themeKey: ThemeKey, device: Scheme): { scheme: Scheme; colors: Palette } {
-  if (themeKey === 'solarized') return { scheme: 'light', colors: Colors.solarizedLight };
-  if (themeKey === 'solarizedDark') return { scheme: 'dark', colors: Colors.solarizedDark };
-  if (themeKey === 'dark') return { scheme: 'dark', colors: Colors.dark };
-  return { scheme: device, colors: Colors[device] };
-}
 
 export type ThemePref = {
   themeKey: ThemeKey;

@@ -148,6 +148,8 @@ type NotesContextValue = {
   deleteNote: (id: string) => void;
   /** Moves a folder and its notes to the trash together. */
   deleteFolder: (id: string) => void;
+  /** Discards a folder left unnamed and empty; a no-op if it is either. */
+  deleteFolderIfEmpty: (id: string) => void;
   /** Flips the favorite flag on a note. */
   toggleNoteFavorite: (id: string) => void;
   /** Flips the favorite flag on a folder. */
@@ -425,6 +427,24 @@ export function NotesProvider({ children }: { children: ReactNode }) {
     [folders, notes],
   );
 
+  /**
+   * Drops a folder that was created and then abandoned without ever being named
+   * or filled. The db method re-checks both conditions under the write lock and
+   * tells us whether it actually went, so the in-memory list only loses a folder
+   * that really was deleted — a folder that gained a note between the screen
+   * deciding to call this and the write running stays put.
+   *
+   * No trash entry: the tombstone exists so the delete reaches other devices,
+   * but an unnamed empty folder has nothing to restore, and `buildTrash` filters
+   * it back out on the next launch.
+   */
+  const deleteFolderIfEmpty = useCallback<NotesContextValue['deleteFolderIfEmpty']>((id) => {
+    const write = db.deleteFolderIfEmpty(id).then((deleted) => {
+      if (deleted) setFolders((prev) => prev.filter((f) => f.id !== id));
+    });
+    persist(write);
+  }, []);
+
   const restoreFromTrash = useCallback<NotesContextValue['restoreFromTrash']>(
     (entryId) => {
       const entry = trash.find((e) => e.id === entryId);
@@ -496,6 +516,7 @@ export function NotesProvider({ children }: { children: ReactNode }) {
       moveNote,
       deleteNote,
       deleteFolder,
+      deleteFolderIfEmpty,
       toggleNoteFavorite,
       toggleFolderFavorite,
       markNoteShared,
@@ -519,6 +540,7 @@ export function NotesProvider({ children }: { children: ReactNode }) {
       moveNote,
       deleteNote,
       deleteFolder,
+      deleteFolderIfEmpty,
       toggleNoteFavorite,
       toggleFolderFavorite,
       markNoteShared,

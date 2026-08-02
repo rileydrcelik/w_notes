@@ -42,6 +42,7 @@ import {
   applyStyle,
   clearFormatting,
   emptySheet,
+  isSheetEmpty,
   parseSheet,
   serializeSheet,
   type CellStyle,
@@ -59,7 +60,7 @@ const SAVE_DEBOUNCE_MS = 600;
 
 export default function FinanceScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
-  const { getNote, updateNote } = useNotes();
+  const { getNote, updateNote, deleteNote } = useNotes();
   const theme = useTheme();
   const insets = useSafeAreaInsets();
   const tabBarInset = useTabBarInset();
@@ -148,6 +149,39 @@ export default function FinanceScreen() {
       registerSheetFlush(null);
     };
   }, [flush]);
+
+  // Read by the sweep below so it can keep empty deps and fire only on a real
+  // unmount, not on every edit.
+  const sweep = useRef({ id, title, stored: note, deleteNote });
+  useEffect(() => {
+    sweep.current = { id, title, stored: note, deleteNote };
+  });
+
+  // On leaving the screen: discard a spreadsheet that was created and then never
+  // written in — no title and nothing in the grid. Declared after the flush
+  // effect above so cleanups run flush-then-sweep, and a sheet with real content
+  // is safely on disk before we ask whether it had any.
+  //
+  // `latestRef` is this screen's own live document, which is what makes the test
+  // safe. Judging emptiness by re-reading the row would be ambiguous: a null row
+  // means either "never edited" or "hasn't synced down yet" — `getFinanceSheet`
+  // says as much — and the second reading would delete a sheet whose data is
+  // sitting on the server. A null ref means the load never finished, so there is
+  // no live document to judge and the sweep declines rather than guesses.
+  //
+  // The `finance_sheets` row is deliberately left alone, exactly as a manual
+  // delete leaves it. It is a separate synced row on its own last-write-wins
+  // clock, so if this delete ever turns out to be wrong the sheet's content is
+  // still there to come back to.
+  useEffect(
+    () => () => {
+      const { id: sid, title: st, stored, deleteNote: remove } = sweep.current;
+      const doc = latestRef.current;
+      if (!stored || !doc) return;
+      if (st.trim().length === 0 && isSheetEmpty(doc)) remove(sid);
+    },
+    [],
+  );
 
   const onChangeSheet = useCallback(
     (next: Sheet) => {
@@ -351,5 +385,8 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   pressed: { opacity: 0.6 },
-  gridHost: { flex: 1, paddingLeft: Spacing.three },
+  // A hair of inset, not the usual gutter: the row numbers are frozen against
+  // this edge now, so every pixel spent here is one the sheet loses on every
+  // screen, permanently. Enough to keep the numbers off the bezel, no more.
+  gridHost: { flex: 1, paddingLeft: Spacing.one },
 });

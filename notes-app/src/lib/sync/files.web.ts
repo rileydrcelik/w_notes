@@ -9,19 +9,28 @@
  * fetches them back into a fresh object URL for the session.
  *
  * Object URLs don't survive a page reload, so each session re-downloads a block's
- * bytes from S3 into a new URL. `prepareLocalFiles` (called once per session by
- * the sync engine) clears the stale URLs so that re-download happens.
+ * bytes from S3 into a new URL. The previous session's dead URLs are cleared
+ * when the database is opened rather than from here — see
+ * `clearEphemeralFilePaths` in lib/db.ts for why that timing matters.
  */
-import { db } from '@/lib/db';
+import { generateVideoThumbnail, isVideo } from '@/lib/copa-files';
 import { apiFetch } from './api';
 
 /**
- * Drops object-URL paths left over from a previous session so the engine
- * re-downloads their bytes from S3. Runs once per session before the file passes.
+ * Nothing left to do here. Dropping the previous session's object-URL paths now
+ * happens when the database is opened (`clearEphemeralFilePaths` in lib/db.ts),
+ * which is the only point early enough: the stores hydrate before the first sync
+ * pass, so a reset that waited for this hook let the copa feed render dead URLs
+ * as broken previews until the bytes came back.
+ *
+ * Running it again from here would be worse than pointless — by the time a sync
+ * pass reaches this hook the user may already have attached a file, and nulling
+ * that fresh `blob:` URL would strand its bytes with nothing left to upload.
+ *
+ * Kept as an export because native declares it too, and the pair must match
+ * name-for-name (see lib/__tests__/platform-parity.test.ts).
  */
-export async function prepareLocalFiles(): Promise<void> {
-  await db.resetEphemeralFiles();
-}
+export async function prepareLocalFiles(): Promise<void> {}
 
 /**
  * Uploads a picked file's bytes to S3 and returns the object key to store on the
@@ -46,8 +55,8 @@ export async function uploadCopaFile(fileUri: string, mimeType: string | null): 
 
 /**
  * Downloads a block's bytes from S3 and returns a session object URL to render
- * from. There's no video-thumbnail step on web (no native generator), so
- * `thumbUri` is always null. Throws on failure so the row stays queued.
+ * from, plus a freshly drawn thumbnail for a video. Throws on failure so the row
+ * stays queued.
  */
 export async function downloadCopaFile(_row: {
   id: string;
@@ -62,5 +71,14 @@ export async function downloadCopaFile(_row: {
   const res = await fetch(url);
   if (!res.ok) throw new Error(`S3 download failed: ${res.status} ${res.statusText}`);
   const blob = await res.blob();
-  return { fileUri: URL.createObjectURL(blob), thumbUri: null };
+  const fileUri = URL.createObjectURL(blob);
+  // `thumb_uri` is a device-local column and never syncs, so a video block that
+  // arrived from another device has no thumbnail here however many times it has
+  // been synced — this device has to draw its own. The bytes are already in hand
+  // at this point, so generating costs a decode and nothing more; a failure just
+  // leaves the film icon.
+  const thumbUri = isVideo(_row.mimeType ?? undefined)
+    ? ((await generateVideoThumbnail(fileUri)) ?? null)
+    : null;
+  return { fileUri, thumbUri };
 }

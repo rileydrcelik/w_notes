@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type RefObject } from 'react';
+import { useEffect, useMemo, useRef, useState, type RefObject } from 'react';
 import { Keyboard } from 'react-native';
 import {
   EnrichedTextInput,
@@ -11,6 +11,8 @@ import {
 import { hexToRgba, type Palette } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import { setActiveEditorDismiss } from '@/lib/active-editor';
+import { hasEscapedBlockMarkup } from '@/lib/html-text';
+import { Sentry } from '@/lib/sentry';
 
 const LINK_COLOR = '#3c87f7';
 
@@ -51,6 +53,14 @@ type Props = {
   onFocusChange?: (focused: boolean) => void;
   /** Reports the active inline/block styles so the toolbar can highlight them. */
   onStateChange?: (state: OnChangeStateEvent) => void;
+  /**
+   * Reports where the caret is, so a screen that owns the scrolling can keep it
+   * on screen. `atEnd` is the part worth acting on: the editor doesn't scroll
+   * itself (`scrollEnabled={false}`), and the library exposes character offsets
+   * but no caret coordinates, so "is the caret at the end of the text" is the
+   * one position that can be turned into a scroll target without guessing.
+   */
+  onSelectionChange?: (selection: { start: number; end: number; atEnd: boolean }) => void;
 };
 
 /**
@@ -68,6 +78,7 @@ export function MarkdownEditor({
   editorRef,
   onFocusChange,
   onStateChange,
+  onSelectionChange,
 }: Props) {
   const theme = useTheme();
   // Stable across keystrokes — onChangeHtml re-renders this on every change, and
@@ -81,6 +92,24 @@ export function MarkdownEditor({
   // switching notes.
   const [initialValue] = useState(value);
   const [focused, setFocused] = useState(false);
+
+  // Watch for the native parser giving up on a paste. When it can't read the
+  // pasted markup it drops the raw tags into the buffer as text (see the
+  // `useHtmlNormalizer` note below), the next serialize escapes them, and the
+  // note is permanently left displaying `<li>` on every platform. Nothing here
+  // rewrites the body — the signal can't tell that damage apart from a note
+  // legitimately written about HTML — but it does mean the corruption stops
+  // being silent, and gives us the frequency this needs to be judged on.
+  const reportedCorruption = useRef(false);
+  const watchForEscapedMarkup = (next: string) => {
+    if (reportedCorruption.current) return;
+    if (!hasEscapedBlockMarkup(next) || hasEscapedBlockMarkup(initialValue)) return;
+    reportedCorruption.current = true;
+    Sentry.captureMessage('Escaped block markup appeared in a note body', {
+      level: 'warning',
+      tags: { source: 'markdown-editor', op: 'paste' },
+    });
+  };
 
   // The keyboard's "hide" button dismisses the keyboard without blurring this
   // native input, which would leave the editor (and toolbar) in edit mode with
@@ -112,8 +141,15 @@ export function MarkdownEditor({
       androidExperimentalSynchronousEvents
       htmlStyle={html}
       style={base}
-      onChangeHtml={(e) => onChangeText(e.nativeEvent.value)}
+      onChangeHtml={(e) => {
+        watchForEscapedMarkup(e.nativeEvent.value);
+        onChangeText(e.nativeEvent.value);
+      }}
       onChangeState={(e) => onStateChange?.(e.nativeEvent)}
+      onChangeSelection={(e) => {
+        const { start, end, text } = e.nativeEvent;
+        onSelectionChange?.({ start, end, atEnd: end >= text.length });
+      }}
       onFocus={() => {
         // The native editor isn't registered with RN's TextInputState, so the
         // navbar's "done" can't reach it via Keyboard.dismiss(). Expose a blur.

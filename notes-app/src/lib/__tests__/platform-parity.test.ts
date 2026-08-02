@@ -91,11 +91,13 @@ const rel = (p: string) => relative(SRC, p).replace(/\\/g, '/');
  */
 const ALLOWED_MISSING: Record<string, { names: string[]; reason: string }> = {
   'lib/copa-files.web.ts': {
-    names: ['copaDestination', 'generateVideoThumbnail'],
+    names: ['copaDestination'],
     reason:
-      'Native-only filesystem concepts (a destination File, a video thumbnail). ' +
-      'Their only caller is lib/sync/files.ts — the *native* variant. ' +
-      'files.web.ts never imports them, so they are unreachable on web.',
+      'A destination File is a native-only filesystem concept, and its only ' +
+      'caller is lib/sync/files.ts — the *native* variant. files.web.ts never ' +
+      'imports it, so it is unreachable on web. `generateVideoThumbnail` used ' +
+      'to be listed here too; web implements it now (canvas frame grab), and ' +
+      'files.web.ts calls it, so the pair is genuinely matched.',
   },
 };
 

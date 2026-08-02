@@ -18,7 +18,7 @@
  *
  * It also carries a **line-number gutter**, which is web-only for a reason that
  * is really about wrapping: numbers are only correct if one line is one row, and
- * turning wrapping off is worth a horizontal scrollbar on a desktop and not worth
+ * turning wrapping off is worth scrolling sideways on a desktop and not worth
  * it on a phone. `SourceGutter` renders nothing on native and `gutterWidth`
  * returns zero there, so the field lays out exactly as it always has. See
  * `components/resume/source-gutter.tsx`.
@@ -37,7 +37,7 @@ import { useCommentShortcut } from '@/hooks/use-comment-shortcut';
 import { useTheme } from '@/hooks/use-theme';
 import { setActiveEditorDismiss } from '@/lib/active-editor';
 import type { ScrollOffsetEvent } from '@/hooks/use-scrolled';
-import { hideScrollbar, noFocusOutline, noWrap } from '@/lib/web-style';
+import { noFocusOutline, noWrap } from '@/lib/web-style';
 
 export function LatexSourceEditor({
   value,
@@ -116,10 +116,6 @@ export function LatexSourceEditor({
         style={[
           styles.input,
           noFocusOutline,
-          // The source scrolls, but a bar down its edge would cut into the glass
-          // toolbar floating over it and there is nothing here worth a scroll
-          // position indicator — it's one field, not a feed.
-          hideScrollbar,
           // Source lines run rather than reflow mid-command — and the gutter
           // depends on it, since a wrapped line has one number and two rows. No
           // effect off web, where there is no gutter to keep in step.

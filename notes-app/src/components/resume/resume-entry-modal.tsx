@@ -493,13 +493,13 @@ export function ResumeEntryModal({
 
                 {stage.state === 'form' && (
                   <>
-                    {/* The scroll indicator stays on here, unlike most surfaces
-                        in the app, and the fade below backs it up. This form is
-                        taller than its sheet and always will be, so between them
-                        they are the only things saying there is more below —
-                        with neither, Description read as a field that didn't
-                        exist. `global.css` already makes the bar a slim
-                        translucent one that doesn't cut into the glass. */}
+                    {/* This form is taller than its sheet and always will be, so
+                        something has to say there is more below — without it,
+                        Description read as a field that didn't exist. On web the
+                        fade is that something and the only one, since
+                        `global.css` hides scrollbars app-wide; native keeps its
+                        transient indicator on top of the fade. The fade is
+                        carrying the message, which is why it isn't optional. */}
                     <View style={styles.scrollWrap}>
                       <ScrollView
                         style={styles.formScroll}

@@ -13,6 +13,7 @@ import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Spacing } from '@/constants/theme';
 import { GRID_COLUMNS, gridEdgePadding, trailingSpacers, useGridColumnWidth } from '@/lib/grid';
+import { pinnedFirst } from '@/lib/pinned';
 import { useScreenFadeStyle } from '@/hooks/use-screen-fade';
 import { useScrollToTop } from '@/hooks/use-scroll-to-top';
 import { useSyncRefresh } from '@/hooks/use-sync-refresh';
@@ -22,8 +23,8 @@ import { useNotes } from '@/store/notes-store';
 import { useSidebar } from '@/store/sidebar-store';
 
 type GridItem =
-  | { type: 'folder'; id: string }
-  | { type: 'note'; id: string }
+  | { type: 'folder'; id: string; favorite?: boolean }
+  | { type: 'note'; id: string; favorite?: boolean }
   | { type: 'spacer'; id: string };
 
 // How far / fast a leftward drag must go before it opens the drawer.
@@ -64,10 +65,18 @@ export default function HomeScreen() {
       )
     : getRootNotes();
 
-  const items: GridItem[] = [
-    ...matchedFolders.map((folder) => ({ type: 'folder' as const, id: folder.id })),
-    ...matchedNotes.map((note) => ({ type: 'note' as const, id: note.id })),
-  ];
+  // Starred items pin to the very top as one band, folders and notes together —
+  // a pin outranks the folders-above-notes grouping rather than reordering
+  // inside it. Below the band that grouping is untouched, and because the sort
+  // is stable both halves keep the feed's recency order.
+  const items: GridItem[] = pinnedFirst([
+    ...matchedFolders.map((folder) => ({
+      type: 'folder' as const,
+      id: folder.id,
+      favorite: folder.favorite,
+    })),
+    ...matchedNotes.map((note) => ({ type: 'note' as const, id: note.id, favorite: note.favorite })),
+  ]);
   // A partial last row would stretch its cards to fill the width; transparent
   // spacers keep them at single-column width instead.
   for (let i = 0; i < trailingSpacers(items.length); i++) {
