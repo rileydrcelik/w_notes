@@ -106,7 +106,10 @@ export const SEED_NOTES: SeedNote[] = [
   // ---- Home screen ----
   {
     id: 'dev-seed-note-welcome',
-    title: 'Welcome to w_notes',
+    // Not "Welcome to w_notes" — that title belongs to the real guide in
+    // `lib/welcome-content.ts`, which a dev run seeds as well. Two notes with
+    // one name is a confusing five minutes for whoever hits it.
+    title: 'Dev sample content',
     body:
       p('Everything here is <strong>sample content</strong> for local development.') +
       p('Tap any note to edit it. The navbar pencil becomes a check while you type.') +

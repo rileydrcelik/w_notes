@@ -8,6 +8,7 @@ import {
   DEV_SEED_CLEARED_FLAG,
   DEV_SEED_PREFIX,
 } from '@/lib/dev-seed';
+import { runWelcomeSeed, WELCOME_PREFIX } from '@/lib/welcome-content';
 import { worthKeepingInTrash } from '@/lib/trash-visibility';
 import { migrateThemeKey, THEME_RENAME_FLAG, THEME_SETTING_KEY } from '@/lib/theme-migrate';
 import { whenDbOwner } from '@/lib/web-db-lock';
@@ -469,15 +470,35 @@ async function open(): Promise<SQLite.SQLiteDatabase> {
   // makes the first paint honest — a file-type icon, then the real thumbnail
   // when it lands. No-op on native, where paths are durable `file://` URIs.
   await clearEphemeralFilePaths(database);
+  // Two kinds of content get placed here, in this order, and both are off when
+  // `EXPO_PUBLIC_SEED_CONTENT` is '0'.
+  //
+  // That switch exists for the Playwright suite, which is the one caller that
+  // runs a dev bundle and wants nothing on screen: it drives Metro, so `__DEV__`
+  // is true there. It covers the welcome content too, even though that is
+  // ordinary production behaviour rather than a dev convenience — a smoke suite
+  // for a local-first app should start empty, and that promise is written down
+  // in `playwright.config.ts`. Leaving first-run content out of the switch would
+  // quietly make it false, and silently constrain every test written afterwards
+  // to account for a fixture nobody wrote. Nothing but that config sets it.
+  const seedContent = process.env.EXPO_PUBLIC_SEED_CONTENT !== '0';
+
+  // What a new library opens with. Runs ahead of the dev seed below, which would
+  // otherwise fill the tables and make this decline every time — and ahead of
+  // the stores, so a first launch paints the guide rather than an empty grid.
+  // Swallowed on failure for the same reason as the dev seed: an empty home
+  // screen is a far better outcome than an app that won't open.
+  if (seedContent) {
+    try {
+      await runWelcomeSeed(database);
+    } catch (e) {
+      console.warn('[db] welcome content skipped:', e);
+    }
+  }
   // Dev-only sample content, after every migration above so the columns it names
   // exist, and before `getDb()` hands the connection out so it is already there
   // for the stores' first read. `__DEV__` is false in release builds.
-  //
-  // The env opt-out is for the Playwright suite, which is the one thing that
-  // runs a dev bundle and *doesn't* want content: it drives Metro, so `__DEV__`
-  // is true there, and every test would start against two dozen notes it never
-  // created. `playwright.config.ts` sets it; nothing else should need to.
-  if (__DEV__ && process.env.EXPO_PUBLIC_DEV_SEED !== '0') {
+  if (__DEV__ && seedContent) {
     await seedDevContentIfWanted(database);
   }
   return database;
@@ -1010,6 +1031,14 @@ export const db = {
    * plugin is in use is the only honest way to tell "never chosen" apart from
    * "chosen off". Trashed rows count — a plugin whose only sheet you deleted
    * yesterday is still one you use.
+   *
+   * Sample content the app placed itself is excluded, by both id prefixes. Use
+   * means the user reached for it, and neither the welcome samples nor the dev
+   * seed is evidence of that — they are there before anyone has decided
+   * anything. Counting them would switch Sheets and Resumes on for every new
+   * install, which is not just a wrong default: the welcome sheet's own cells
+   * explain how to enable Sheets, and they would be describing a toggle that was
+   * already on because the sheet describing it exists.
    */
   async pluginTypesInUse(): Promise<string[]> {
     const database = await getDb();
@@ -1017,9 +1046,12 @@ export const db = {
       // `folders.kind` is qualified because the second branch also *outputs* a
       // column called `kind`; SQLite resolves the WHERE against the table either
       // way, but the unqualified version reads like it filters on the alias.
-      `SELECT DISTINCT plugin_type AS kind FROM notes WHERE plugin_type IS NOT NULL
+      `SELECT DISTINCT plugin_type AS kind FROM notes
+         WHERE plugin_type IS NOT NULL AND id NOT LIKE ? AND id NOT LIKE ?
        UNION
-       SELECT DISTINCT 'project' AS kind FROM folders WHERE folders.kind = 'project'`,
+       SELECT DISTINCT 'project' AS kind FROM folders
+         WHERE folders.kind = 'project' AND id NOT LIKE ? AND id NOT LIKE ?`,
+      [`${WELCOME_PREFIX}%`, `${DEV_SEED_PREFIX}%`, `${WELCOME_PREFIX}%`, `${DEV_SEED_PREFIX}%`],
     );
     return rows.map((r) => r.kind).filter((k): k is string => !!k);
   },
