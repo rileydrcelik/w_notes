@@ -36,6 +36,7 @@ import { htmlToPlainText } from '@/lib/html-text';
 import { trailingSpacers, useCopaColumns, useGridEdgePadding } from '@/lib/grid';
 import { downloadCopaFile, fileIconFor, formatBytes, isImage, isVideo } from '@/lib/copa-files';
 import { pinnedFirst } from '@/lib/pinned';
+import { rankMatches } from '@/lib/search';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
 import { useTheme } from '@/hooks/use-theme';
 import { useCopa } from '@/store/copa-store';
@@ -251,20 +252,24 @@ export default function CopaScreen() {
   // Web only: Ctrl/Cmd+V and drag-and-drop add blocks straight to the feed.
   const { dragging } = useCopaPasteDrop();
 
-  const q = query.trim().toLowerCase();
+  const q = query.trim();
   const searching = q.length > 0;
-  // Starred blocks pin to the top — of the search results too, since a search
-  // that surfaces a pinned block should still surface it first.
-  const visible = pinnedFirst(
-    searching
-      ? items.filter(
-          (item) =>
-            item.label.toLowerCase().includes(q) ||
-            item.content.toLowerCase().includes(q) ||
-            (item.fileName?.toLowerCase().includes(q) ?? false),
-        )
-      : items,
-  );
+  // Browsing pins starred blocks to the top. Searching ranks by relevance
+  // instead, with a star breaking ties rather than jumping the queue — see
+  // `rankMatches`. A block's label and filename are names (fuzzy-matched); its
+  // content is rich-text HTML, flattened before matching so a search can't hit
+  // the markup around the text.
+  const visible = searching
+    ? rankMatches(
+        items,
+        q,
+        (item) => ({
+          titles: item.fileName ? [item.label, item.fileName] : [item.label],
+          body: item.content,
+        }),
+        (item) => item.favorite,
+      )
+    : pinnedFirst(items);
 
   // In the web grid, pad the final row with transparent cells so its cards stay
   // at single-column width instead of stretching to fill the row.

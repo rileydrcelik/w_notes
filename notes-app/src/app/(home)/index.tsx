@@ -14,6 +14,7 @@ import { ThemedView } from '@/components/themed-view';
 import { Spacing } from '@/constants/theme';
 import { trailingSpacers, useGridColumns, useGridColumnWidth, useGridEdgePadding } from '@/lib/grid';
 import { pinnedFirst } from '@/lib/pinned';
+import { rankMatches } from '@/lib/search';
 import { useScreenFadeStyle } from '@/hooks/use-screen-fade';
 import { useScrollToTop } from '@/hooks/use-scroll-to-top';
 import { useSyncRefresh } from '@/hooks/use-sync-refresh';
@@ -52,33 +53,54 @@ export default function HomeScreen() {
   const barTop = insets.top + Spacing.two;
   const contentTop = barTop + SEARCH_BAR_HEIGHT + Spacing.three;
 
-  const q = query.trim().toLowerCase();
+  const q = query.trim();
   const searching = q.length > 0;
 
-  // Default view: home-screen folders, then notes that live on the home screen.
-  // While searching, match folders by name and notes by title/body across the
-  // whole tree, so results aren't limited to the home screen.
-  const matchedFolders = searching
-    ? folders.filter((folder) => folder.name.toLowerCase().includes(q))
-    : getRootFolders();
-  const matchedNotes = searching
-    ? notes.filter(
-        (note) => note.title.toLowerCase().includes(q) || note.body.toLowerCase().includes(q),
-      )
-    : getRootNotes();
+  // Everything a search can reach: every folder by name, every note by title and
+  // body, across the whole tree rather than just the home screen. Folders and
+  // notes are ranked as one list — split into two ranked lists, the weakest
+  // folder match would still outrank the note the query names exactly.
+  const searchable = [
+    ...folders.map((folder) => ({
+      item: { type: 'folder' as const, id: folder.id, favorite: folder.favorite },
+      fields: { titles: [folder.name] },
+    })),
+    ...notes.map((note) => ({
+      item: { type: 'note' as const, id: note.id, favorite: note.favorite },
+      fields: { titles: [note.title], body: note.body },
+    })),
+  ];
 
+  // Default view: home-screen folders, then notes that live on the home screen.
   // Starred items pin to the very top as one band, folders and notes together —
   // a pin outranks the folders-above-notes grouping rather than reordering
   // inside it. Below the band that grouping is untouched, and because the sort
   // is stable both halves keep the feed's recency order.
-  const items: GridItem[] = pinnedFirst([
-    ...matchedFolders.map((folder) => ({
-      type: 'folder' as const,
-      id: folder.id,
-      favorite: folder.favorite,
-    })),
-    ...matchedNotes.map((note) => ({ type: 'note' as const, id: note.id, favorite: note.favorite })),
-  ]);
+  //
+  // Results are ordered by relevance instead, and deliberately *not* through
+  // `pinnedFirst`: floating every starred item above every match regardless of
+  // how well it matches is the opposite of what a query asks for. Stars still
+  // break ties inside `rankMatches`, so a starred item wins among equally good
+  // answers — it just can't jump ahead of a better one.
+  const items: GridItem[] = searching
+    ? rankMatches(
+        searchable,
+        q,
+        (entry) => entry.fields,
+        (entry) => entry.item.favorite,
+      ).map((entry) => entry.item)
+    : pinnedFirst([
+        ...getRootFolders().map((folder) => ({
+          type: 'folder' as const,
+          id: folder.id,
+          favorite: folder.favorite,
+        })),
+        ...getRootNotes().map((note) => ({
+          type: 'note' as const,
+          id: note.id,
+          favorite: note.favorite,
+        })),
+      ]);
   // A partial last row would stretch its cards to fill the width; transparent
   // spacers keep them at single-column width instead.
   for (let i = 0; i < trailingSpacers(items.length, columns); i++) {
