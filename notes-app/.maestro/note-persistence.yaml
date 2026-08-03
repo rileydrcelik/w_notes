@@ -10,22 +10,54 @@
 # `stopApp` kills the process outright rather than backgrounding it, so nothing
 # in memory can carry the note across. Passing means the row genuinely reached
 # the on-device database and was read back on a cold start.
+#
+# **Every step following a launch waits explicitly.** A bare `tapOn` gives up
+# after Maestro's default lookup window, and a cold start here is not quick: the
+# splash overlay, the database open (migrations, and on an empty library the
+# first-run content), and the stores' first read all happen before there is
+# anything on screen to tap. `clearState` means every run pays that cost in
+# full. It was enough to make this flow fail three different ways against the
+# same code — "Create" not found, `inputText` hanging with nothing focused, and
+# the assertion finding no note — none of which were the thing under test.
+#
+# Waiting for the app to be ready is not the same as making the test lenient.
+# What is asserted is unchanged; the timeouts only bound how long we are willing
+# to wait before starting to measure. If one of them is ever actually reached,
+# that is a real regression in startup time and should be read as one.
 appId: com.rileydrcelik.wnotes.dev
 ---
 - clearState
 - launchApp
 
+# The tab bar mounts only once the router has resolved a route, so this doubles
+# as the honest "the app is up" signal and as what the first tap needs.
+- extendedWaitUntil:
+    visible: 'Create'
+    timeout: 60000
 - tapOn: 'Create'
+
 # Tap the title field before typing. `inputText` goes to whatever holds focus,
 # and the editor opens with nothing focused — without this the text is typed
-# into the void and the flow fails at the assertion with no obvious cause.
+# into the void. That leaves the note completely empty, which the note screen
+# discards on the way out, so the failure surfaces as the note being absent
+# rather than as anything pointing at the typing.
+- extendedWaitUntil:
+    visible: 'Title'
+    timeout: 30000
 - tapOn: 'Title'
 - inputText: 'maestro note'
 - tapOn: 'Go back'
 
-- assertVisible: 'maestro note'
+- extendedWaitUntil:
+    visible: 'maestro note'
+    timeout: 30000
 
 - stopApp
 - launchApp
 
-- assertVisible: 'maestro note'
+# The one that matters: a cold start reading back from the device's database.
+# Its own generous window, because this launch pays for the database open before
+# it can render a single card.
+- extendedWaitUntil:
+    visible: 'maestro note'
+    timeout: 60000
