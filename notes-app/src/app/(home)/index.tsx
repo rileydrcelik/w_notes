@@ -1,5 +1,5 @@
 import { LinearGradient } from 'expo-linear-gradient';
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { FlatList, Platform, RefreshControl, StyleSheet, View } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, { runOnJS } from 'react-native-reanimated';
@@ -32,36 +32,7 @@ type GridItem =
 const OPEN_DISTANCE = 60;
 const OPEN_VELOCITY = 500;
 
-/**
- * Web: drop query parameters that followed us onto the home URL.
- *
- * A screen opened by URL — a reload on `/note/x`, a shared link — gets home
- * synthesized beneath it by `unstable_settings.anchor` (see `_layout.tsx`), and
- * that synthesized route is built with the deep link's params. Popping to it
- * therefore lands on `/?id=note-…`: the right screen, wearing the previous
- * one's address. Reloading it still works, since nothing here reads `id`, but
- * it is the wrong URL to leave in the bar for someone to copy or bookmark.
- *
- * Fixed at the destination rather than in the back button, so it covers every
- * way of arriving — the navbar control, the swipe-back gesture, and Android's
- * hardware back — instead of only the one the test happens to press.
- *
- * `replaceState` rather than a router call on purpose: home is already the
- * screen we are on, and navigating again to tidy an address would remount the
- * grid and lose the scroll position. This edits the address bar and nothing
- * else. Guarded by `Platform.OS` rather than split into a `.web` file, because
- * a native/web pair that drifts out of sync has broken app launch here before.
- */
-function useCleanHomeUrl() {
-  useEffect(() => {
-    if (Platform.OS !== 'web') return;
-    if (typeof window === 'undefined' || !window.location.search) return;
-    window.history.replaceState(window.history.state, '', window.location.pathname);
-  });
-}
-
 export default function HomeScreen() {
-  useCleanHomeUrl();
   const { folders, notes, getRootNotes, getRootFolders } = useNotes();
   const tabBarInset = useTabBarInset();
   const insets = useSafeAreaInsets();
