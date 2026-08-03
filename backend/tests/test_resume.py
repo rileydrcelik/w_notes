@@ -1522,6 +1522,54 @@ async def test_harden_says_so_when_the_title_has_no_reference(
     assert "no compiled reference" in prompt.lower()
 
 
+async def test_harden_tells_the_model_to_fill_the_page(
+    client, device, anthropic_key, fake_anthropic, monkeypatch
+):
+    """The one instruction in this prompt that pushes back.
+
+    Everything else here — rank, cut, keep only what evidences the role — pushes
+    the same way, and a user hardening against "storage engineer" got a resume
+    that stopped well short of the page because nothing resisted. TeX cannot
+    catch it either: `_write_until_it_fits` breaks on `pages == 1`, and a page a
+    third full reports 1 exactly as a full one does. So this section is the only
+    thing standing between the ranking and a half-empty page.
+    """
+    _stub_compile(monkeypatch, _ONE_PAGE)
+    fake_anthropic(json.dumps({"latex": "x", "emphasis": ""}))
+
+    res = await _harden(client, device, role="Data Engineer")
+
+    assert res.status_code == 200
+    system = _calls[-1]["system"]
+    assert "## Length" in system
+    # The floor itself, and the trade it authorises: adjacent-but-real material
+    # goes on rather than leaving the space empty.
+    assert "One page, and a full one" in system
+    assert "adjacent to the role" in system
+
+
+async def test_harden_without_a_reference_stays_conservative_only_about_requirements(
+    client, device, anthropic_key, fake_anthropic, monkeypatch
+):
+    """An unknown title is the case that produced the short resume.
+
+    With no compiled row, the prompt asks the model to be conservative — which
+    was meant to stop it inventing requirements, and also read as a reason to put
+    less on the page. The sentence has to scope which kind of caution it means,
+    or the two failure modes stay welded together.
+    """
+    _stub_compile(monkeypatch, _ONE_PAGE)
+    fake_anthropic(json.dumps({"latex": "x", "emphasis": ""}))
+
+    res = await _harden(client, device, role="Storage Engineer")
+
+    assert res.status_code == 200
+    assert res.json()["matched_role"] == ""
+    prompt = _calls[-1]["messages"][0]["content"]
+    assert "no compiled reference" in prompt.lower()
+    assert "not about how " in prompt and "much of the page you fill" in prompt
+
+
 async def test_harden_condenses_first_when_the_document_is_over_a_page(
     client, device, anthropic_key, fake_anthropic, monkeypatch
 ):
