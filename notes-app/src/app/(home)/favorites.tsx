@@ -1,15 +1,18 @@
 import { Stack } from 'expo-router';
+import { useState } from 'react';
 import { FlatList, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { BottomFade } from '@/components/edge-fade';
 import { FolderCard, NoteCard } from '@/components/notes/cards';
 import { ScrollToTopButton } from '@/components/scroll-to-top';
+import { SearchBar } from '@/components/search-bar';
 import { SwipeBackView } from '@/components/swipe-back-view';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Spacing } from '@/constants/theme';
-import { GRID_COLUMNS, gridEdgePadding, trailingSpacers, useGridColumnWidth } from '@/lib/grid';
+import { trailingSpacers, useGridColumns, useGridColumnWidth, useGridEdgePadding } from '@/lib/grid';
+import { rankMatches } from '@/lib/search';
 import { useScrollToTop } from '@/hooks/use-scroll-to-top';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
 import { useNotes } from '@/store/notes-store';
@@ -20,17 +23,33 @@ export default function FavoritesScreen() {
   const { folders, notes } = useNotes();
   const tabBarInset = useTabBarInset();
   const insets = useSafeAreaInsets();
+  const columns = useGridColumns();
   const columnWidth = useGridColumnWidth();
+  const edgePadding = useGridEdgePadding();
   const { scrollProps, scrolled, scrollToTop } = useScrollToTop<FlatList<Item>>();
+  const [query, setQuery] = useState('');
+  const q = query.trim();
+  const searching = q.length > 0;
 
   const favoriteFolders = folders.filter((folder) => folder.favorite);
   const favoriteNotes = notes.filter((note) => note.favorite);
-  const items: Item[] = [
-    ...favoriteFolders.map((folder) => ({ type: 'folder' as const, id: folder.id })),
-    ...favoriteNotes.map((note) => ({ type: 'note' as const, id: note.id })),
+  // Everything starred is equally starred, so there is no tiebreak to pass —
+  // relevance is the only ordering a query here can want.
+  const searchable = [
+    ...favoriteFolders.map((folder) => ({
+      item: { type: 'folder' as const, id: folder.id },
+      fields: { titles: [folder.name] },
+    })),
+    ...favoriteNotes.map((note) => ({
+      item: { type: 'note' as const, id: note.id },
+      fields: { titles: [note.title], body: note.body },
+    })),
   ];
+  const items: Item[] = searching
+    ? rankMatches(searchable, q, (entry) => entry.fields).map((entry) => entry.item)
+    : searchable.map((entry) => entry.item);
   // Keep a partial last row at single-card width instead of stretching it.
-  for (let i = 0; i < trailingSpacers(items.length); i++) {
+  for (let i = 0; i < trailingSpacers(items.length, columns); i++) {
     items.push({ type: 'spacer', id: `spacer-${i}` });
   }
 
@@ -42,17 +61,34 @@ export default function FavoritesScreen() {
           {...scrollProps}
           data={items}
           keyExtractor={(item) => `${item.type}-${item.id}`}
-          numColumns={GRID_COLUMNS}
+          numColumns={columns}
+          // The column count changes with the window on web, and React Native
+          // refuses to change numColumns in place — the list must remount.
+          key={columns}
           columnWrapperStyle={styles.row}
-          contentContainerStyle={[styles.content, gridEdgePadding, { paddingBottom: tabBarInset }]}
+          contentContainerStyle={[styles.content, edgePadding, { paddingBottom: tabBarInset }]}
           ListHeaderComponent={
-            <ThemedText type="subtitle" style={[styles.title, { paddingTop: insets.top + Spacing.two }]}>
-              Favorites
-            </ThemedText>
+            <View style={{ paddingTop: insets.top + Spacing.two }}>
+              <ThemedText type="subtitle" style={styles.title}>
+                Favorites
+              </ThemedText>
+              {/* Only offered when there is something to filter, so an empty
+                  screen stays a sentence rather than a sentence under a search
+                  field that can only ever return nothing. */}
+              {searchable.length > 0 && (
+                <SearchBar
+                  value={query}
+                  onChangeText={setQuery}
+                  placeholder="Search favorites"
+                />
+              )}
+            </View>
           }
           ListEmptyComponent={
             <ThemedText themeColor="textSecondary" style={styles.empty}>
-              Nothing favorited yet. Double-tap a note, folder, or copy block to favorite it.
+              {searching
+                ? `No favorites match “${q}”.`
+                : 'Nothing favorited yet. Double-tap a note, folder, or copy block to favorite it.'}
             </ThemedText>
           }
           renderItem={({ item }) => {
@@ -68,7 +104,12 @@ export default function FavoritesScreen() {
             }
             return (
               <View style={[styles.cardCell, { width: columnWidth }]}>
-                <NoteCard note={favoriteNotes.find((n) => n.id === item.id)!} />
+                {/* While searching, the card shows the line it matched on
+                    instead of its opening paragraph. */}
+                <NoteCard
+                  note={favoriteNotes.find((n) => n.id === item.id)!}
+                  query={searching ? q : undefined}
+                />
               </View>
             );
           }}

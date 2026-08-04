@@ -17,10 +17,12 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { SwipeBackView } from '@/components/swipe-back-view';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
-import { Colors, hexToRgba, Spacing, type Palette } from '@/constants/theme';
+import { Accent, Colors, hexToRgba, Spacing, type Palette } from '@/constants/theme';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
 import { useTheme } from '@/hooks/use-theme';
 import { useAuth } from '@/lib/auth/auth-context';
+import { db } from '@/lib/db';
+import { refreshFromDb } from '@/lib/sync/sync-engine';
 import {
   useCreateOptions,
   type CreateCredentialKey,
@@ -29,7 +31,10 @@ import {
 import { useEditorPrefs } from '@/store/editor-prefs-store';
 import { useThemePref, type ThemeKey } from '@/store/theme-store';
 
-const ACCENT = '#7a89b8';
+// The shared app accent, imported rather than re-typed: a hand-copied hex here
+// is identical until the day someone adjusts the real one and this screen
+// quietly keeps the old value.
+const ACCENT = Accent;
 
 // Plain before tinted, light before dark within each pair — so the list reads as
 // two families rather than four unrelated choices.
@@ -39,7 +44,8 @@ const THEME_OPTIONS: { key: ThemeKey; label: string; description: string }[] = [
   { key: 'dark', label: 'Dark', description: 'Dark background, light text' },
   { key: 'solarized', label: 'Solarized Light', description: 'Warm, low-contrast paper' },
   { key: 'solarizedDark', label: 'Solarized Dark', description: 'Deep teal, low-contrast' },
-  { key: 'mocha', label: 'Mocha', description: 'Catppuccin — soft violet dark' },
+  { key: 'midnight', label: 'Midnight', description: 'Catppuccin — soft violet dark' },
+  { key: 'mocha', label: 'Mocha', description: 'Warm espresso brown, cream text' },
 ];
 
 export default function SettingsScreen() {
@@ -53,6 +59,7 @@ export default function SettingsScreen() {
     if (key === 'light') return Colors.light;
     if (key === 'solarized') return Colors.solarizedLight;
     if (key === 'solarizedDark') return Colors.solarizedDark;
+    if (key === 'midnight') return Colors.midnight;
     if (key === 'mocha') return Colors.mocha;
     return Colors[device === 'dark' ? 'dark' : 'light'];
   };
@@ -123,6 +130,10 @@ export default function SettingsScreen() {
                 keystrokes; the hints button reminds you of them. It's web-only,
                 so the toggle is too. */}
             {Platform.OS === 'web' && <EditorSection />}
+
+            {/* Local sample content. `__DEV__` is false in a release build, so
+                this section doesn't exist in a shipped app. */}
+            {__DEV__ && <DeveloperSection />}
             </View>
           </ScrollView>
         </SafeAreaView>
@@ -362,6 +373,75 @@ function CreateOptionsSection() {
             </View>
           );
         })}
+      </View>
+    </>
+  );
+}
+
+/**
+ * Dev-only sample content: a couple of dozen notes, a folder tree, a sheet and a
+ * resume (see `@/lib/dev-seed`). It is already seeded at every launch, so these
+ * two buttons exist for the cases a relaunch doesn't cover — putting the content
+ * back after a sign-out cleared the database, or taking it away to look at the
+ * app empty. Neither row is reachable in a release build.
+ */
+function DeveloperSection() {
+  // Which action is in flight, so that row alone shows the spinner. Both rows
+  // are disabled meanwhile — seeding and clearing must not overlap.
+  const [running, setRunning] = useState<string | null>(null);
+
+  const run = async (label: string, action: () => Promise<void>) => {
+    setRunning(label);
+    try {
+      await action();
+      // These write straight to SQLite, under the stores rather than through
+      // them, so nothing else would notice. This is the same signal a sync pull
+      // emits, and every store already listens for it.
+      refreshFromDb();
+    } catch {
+      Alert.alert('Something went wrong', 'Please try again.');
+    } finally {
+      setRunning(null);
+    }
+  };
+
+  // One-shot actions, so they take the same shape as Sign out above rather than
+  // the label-and-description rows the toggles use: a centered label, and the
+  // explanation once underneath for the pair. The alternative was a trailing
+  // icon, which would have been a third kind of row-ending on this screen and
+  // sat ambiguously between decoration and "tap to drill in".
+  const actions: { label: string; action: () => Promise<void> }[] = [
+    { label: 'Seed sample content', action: () => db.seedDevContent() },
+    { label: 'Clear sample content', action: () => db.clearDevContent() },
+  ];
+
+  return (
+    <>
+      <ThemedText type="small" themeColor="textSecondary" style={styles.sectionLabel}>
+        DEVELOPER
+      </ThemedText>
+      <View style={styles.options}>
+        {actions.map(({ label, action }) => (
+          <Pressable
+            key={label}
+            disabled={running !== null}
+            onPress={() => void run(label, action)}
+            accessibilityRole="button"
+            accessibilityLabel={label}
+            style={({ pressed }) => [pressed && styles.pressed]}>
+            <ThemedView type="backgroundElement" style={[styles.accountRow, styles.center]}>
+              {running === label ? (
+                <ActivityIndicator color={ACCENT} />
+              ) : (
+                <ThemedText style={styles.optionLabel}>{label}</ThemedText>
+              )}
+            </ThemedView>
+          </Pressable>
+        ))}
+        <ThemedText type="small" themeColor="textSecondary" style={styles.accountHint}>
+          Sample notes, folders, a sheet and a resume. They’re seeded at every launch
+          anyway; clearing them stops that until you seed again.
+        </ThemedText>
       </View>
     </>
   );

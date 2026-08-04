@@ -33,9 +33,10 @@ import { useScreenFadeStyle } from '@/hooks/use-screen-fade';
 import { useScrollToTop } from '@/hooks/use-scroll-to-top';
 import { useSyncRefresh } from '@/hooks/use-sync-refresh';
 import { htmlToPlainText } from '@/lib/html-text';
-import { gridEdgePadding } from '@/lib/grid';
+import { trailingSpacers, useCopaColumns, useGridEdgePadding } from '@/lib/grid';
 import { downloadCopaFile, fileIconFor, formatBytes, isImage, isVideo } from '@/lib/copa-files';
 import { pinnedFirst } from '@/lib/pinned';
+import { rankMatches } from '@/lib/search';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
 import { useTheme } from '@/hooks/use-theme';
 import { useCopa } from '@/store/copa-store';
@@ -58,9 +59,10 @@ const CARD_MAX_LINES = Math.max(
   Math.floor((COPA_CARD_HEIGHT - CARD_PADDING * 2 - LABEL_BLOCK - FOOTER_BLOCK) / CONTENT_LINE_HEIGHT),
 );
 
-// One column on phones (full-width cards read fine there); a multi-column grid
-// on web, where a single column would stretch each card into a wide ribbon.
-const COPA_COLUMNS = Platform.OS === 'web' ? 4 : 1;
+// One column on phones (full-width cards read fine there); on web a count
+// derived from the window, so a wide one gets a grid and a narrow one falls back
+// to the same single column rather than slicing itself into slivers.
+// See `copaColumnsFor`.
 
 function CopaCard({ item }: { item: CopaItem }) {
   const theme = useTheme();
@@ -246,30 +248,35 @@ export default function CopaScreen() {
   const { refreshing, onRefresh } = useSyncRefresh();
   const [query, setQuery] = useState('');
   const fadeStyle = useScreenFadeStyle();
+  const columns = useCopaColumns();
   // Web only: Ctrl/Cmd+V and drag-and-drop add blocks straight to the feed.
   const { dragging } = useCopaPasteDrop();
 
-  const q = query.trim().toLowerCase();
+  const q = query.trim();
   const searching = q.length > 0;
-  // Starred blocks pin to the top — of the search results too, since a search
-  // that surfaces a pinned block should still surface it first.
-  const visible = pinnedFirst(
-    searching
-      ? items.filter(
-          (item) =>
-            item.label.toLowerCase().includes(q) ||
-            item.content.toLowerCase().includes(q) ||
-            (item.fileName?.toLowerCase().includes(q) ?? false),
-        )
-      : items,
-  );
+  // Browsing pins starred blocks to the top. Searching ranks by relevance
+  // instead, with a star breaking ties rather than jumping the queue — see
+  // `rankMatches`. A block's label and filename are names (fuzzy-matched); its
+  // content is rich-text HTML, flattened before matching so a search can't hit
+  // the markup around the text.
+  const visible = searching
+    ? rankMatches(
+        items,
+        q,
+        (item) => ({
+          titles: item.fileName ? [item.label, item.fileName] : [item.label],
+          body: item.content,
+        }),
+        (item) => item.favorite,
+      )
+    : pinnedFirst(items);
 
   // In the web grid, pad the final row with transparent cells so its cards stay
   // at single-column width instead of stretching to fill the row.
   type Row = CopaItem | { id: string; spacer: true };
   const data: Row[] = [...visible];
-  if (COPA_COLUMNS > 1) {
-    const pad = (COPA_COLUMNS - (visible.length % COPA_COLUMNS)) % COPA_COLUMNS;
+  if (columns > 1) {
+    const pad = trailingSpacers(visible.length, columns);
     for (let i = 0; i < pad; i++) data.push({ id: `spacer-${i}`, spacer: true });
   }
 
@@ -279,6 +286,7 @@ export default function CopaScreen() {
   const contentTop = barTop + SEARCH_BAR_HEIGHT + Spacing.three;
 
   const { scrollProps, scrolled, scrollToTop } = useScrollToTop<FlatList<Row>>();
+  const edgePadding = useGridEdgePadding();
 
   return (
     <Animated.View style={[styles.container, fadeStyle]}>
@@ -287,14 +295,14 @@ export default function CopaScreen() {
         {...scrollProps}
         data={data}
         keyExtractor={(item) => item.id}
-        numColumns={COPA_COLUMNS}
+        numColumns={columns}
         // numColumns must change with a fresh key, and a row wrapper is only
         // valid for multi-column lists.
-        key={COPA_COLUMNS}
-        columnWrapperStyle={COPA_COLUMNS > 1 ? styles.row : undefined}
+        key={columns}
+        columnWrapperStyle={columns > 1 ? styles.row : undefined}
         contentContainerStyle={[
           styles.content,
-          gridEdgePadding,
+          edgePadding,
           { paddingTop: contentTop, paddingBottom: tabBarInset },
         ]}
         keyboardShouldPersistTaps="handled"
@@ -322,7 +330,7 @@ export default function CopaScreen() {
         renderItem={({ item }) => {
           if ('spacer' in item) return <View style={styles.cardCell} />;
           const card = item.fileUri ? <FileCopaCard item={item} /> : <CopaCard item={item} />;
-          return COPA_COLUMNS > 1 ? <View style={styles.cardCell}>{card}</View> : card;
+          return columns > 1 ? <View style={styles.cardCell}>{card}</View> : card;
         }}
       />
       {/* Fades scrolling cards out behind the floating search field. */}

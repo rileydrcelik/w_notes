@@ -2,7 +2,15 @@ import * as SQLite from 'expo-sqlite';
 
 import { Sentry } from '@/lib/sentry';
 import { removeCopaFiles } from '@/lib/copa-files';
+import {
+  clearDevSeed,
+  runDevSeed,
+  DEV_SEED_CLEARED_FLAG,
+  DEV_SEED_PREFIX,
+} from '@/lib/dev-seed';
+import { runWelcomeSeed, WELCOME_PREFIX } from '@/lib/welcome-content';
 import { worthKeepingInTrash } from '@/lib/trash-visibility';
+import { migrateThemeKey, THEME_RENAME_FLAG, THEME_SETTING_KEY } from '@/lib/theme-migrate';
 import { whenDbOwner } from '@/lib/web-db-lock';
 import type { Folder, Issue, Note, ResumeVersion } from '@/data/notes';
 import type { CopaItem } from '@/data/copa';
@@ -238,6 +246,25 @@ export type ResumeVersionSync = {
   deleted_at: number | null;
 };
 
+/**
+ * One account-scoped preference. `id` *is* the preference name (`themeKey`), so
+ * the table is a key-value store that happens to sync, and a second preference
+ * costs a row rather than a migration.
+ *
+ * Distinct from the `settings` table below it, which stays resolutely
+ * device-local: `sync_cursor`, the device key and `synced_uid` describe *this
+ * device's* relationship to the server, and syncing them would be incoherent.
+ * The split is the whole point — "what this device is doing" vs "what this
+ * person likes".
+ */
+export type UserSettingSync = {
+  id: string;
+  value: string;
+  created_at: number;
+  updated_at: number;
+  deleted_at: number | null;
+};
+
 export type SyncPayload = {
   folders: FolderSync[];
   notes: NoteSync[];
@@ -245,6 +272,7 @@ export type SyncPayload = {
   issues: IssueSync[];
   finance_sheets: FinanceSheetSync[];
   resume_versions: ResumeVersionSync[];
+  user_settings: UserSettingSync[];
 };
 
 // ---- Connection (opened + migrated once, lazily) ----
@@ -384,6 +412,22 @@ async function open(): Promise<SQLite.SQLiteDatabase> {
       dirty       INTEGER NOT NULL DEFAULT 1
     );
 
+    -- Account-scoped preferences (see UserSettingSync). New enough that every
+    -- column can be NOT NULL from creation, so like resume_versions it needs no
+    -- ensureSyncColumns-style backfill.
+    CREATE TABLE IF NOT EXISTS user_settings (
+      id          TEXT PRIMARY KEY NOT NULL,
+      value       TEXT NOT NULL DEFAULT '',
+      created_at  INTEGER NOT NULL,
+      updated_at  INTEGER NOT NULL DEFAULT 0,
+      deleted_at  INTEGER,
+      dirty       INTEGER NOT NULL DEFAULT 1
+    );
+
+    -- Device-local key-value store. Deliberately NOT synced and deliberately
+    -- NOT cleared by clearAllData: it holds this device's sync cursor, its
+    -- device key and the uid it last synced as, which are facts about the
+    -- device rather than about the person. Preferences belong in user_settings.
     CREATE TABLE IF NOT EXISTS settings (
       key    TEXT PRIMARY KEY NOT NULL,
       value  TEXT NOT NULL
@@ -398,6 +442,11 @@ async function open(): Promise<SQLite.SQLiteDatabase> {
   await ensureFolderColumns(database);
   // Sync was added later still: backfill the columns it needs on older tables.
   await ensureSyncColumns(database);
+  // Move an existing theme choice into the synced table, renaming it if it was
+  // saved under the old meaning of `mocha`. Runs here, at open, because it must
+  // land before the theme store hydrates and before the first sync pull — see
+  // migrateThemeKey for why a second run would undo a deliberate choice.
+  await migrateThemeSetting(database);
   await database.execAsync(`
     CREATE INDEX IF NOT EXISTS idx_folders_parent_id ON folders (parent_id);
     CREATE INDEX IF NOT EXISTS idx_notes_dirty ON notes (dirty);
@@ -408,6 +457,7 @@ async function open(): Promise<SQLite.SQLiteDatabase> {
     CREATE INDEX IF NOT EXISTS idx_finance_dirty ON finance_sheets (dirty);
     CREATE INDEX IF NOT EXISTS idx_resume_versions_note_id ON resume_versions (note_id);
     CREATE INDEX IF NOT EXISTS idx_resume_versions_dirty ON resume_versions (dirty);
+    CREATE INDEX IF NOT EXISTS idx_user_settings_dirty ON user_settings (dirty);
   `);
   // Drop file paths that died with the last page session, before anything can
   // read them. On web a block's `file_uri` is a `blob:` object URL, which is
@@ -420,7 +470,129 @@ async function open(): Promise<SQLite.SQLiteDatabase> {
   // makes the first paint honest — a file-type icon, then the real thumbnail
   // when it lands. No-op on native, where paths are durable `file://` URIs.
   await clearEphemeralFilePaths(database);
+  // Two kinds of content get placed here, in this order, and both are off when
+  // `EXPO_PUBLIC_SEED_CONTENT` is '0'.
+  //
+  // That switch exists for the Playwright suite, which is the one caller that
+  // runs a dev bundle and wants nothing on screen: it drives Metro, so `__DEV__`
+  // is true there. It covers the welcome content too, even though that is
+  // ordinary production behaviour rather than a dev convenience — a smoke suite
+  // for a local-first app should start empty, and that promise is written down
+  // in `playwright.config.ts`. Leaving first-run content out of the switch would
+  // quietly make it false, and silently constrain every test written afterwards
+  // to account for a fixture nobody wrote. Nothing but that config sets it.
+  const seedContent = process.env.EXPO_PUBLIC_SEED_CONTENT !== '0';
+
+  // What a new library opens with. Runs ahead of the dev seed below, which would
+  // otherwise fill the tables and make this decline every time — and ahead of
+  // the stores, so a first launch paints the guide rather than an empty grid.
+  // Swallowed on failure for the same reason as the dev seed: an empty home
+  // screen is a far better outcome than an app that won't open.
+  if (seedContent) {
+    try {
+      await runWelcomeSeed(database);
+    } catch (e) {
+      console.warn('[db] welcome content skipped:', e);
+    }
+  }
+  // Dev-only sample content, after every migration above so the columns it names
+  // exist, and before `getDb()` hands the connection out so it is already there
+  // for the stores' first read. `__DEV__` is false in release builds.
+  if (__DEV__ && seedContent) {
+    await seedDevContentIfWanted(database);
+  }
   return database;
+}
+
+/**
+ * Seeds the `__DEV__` sample content unless it has been explicitly cleared.
+ *
+ * The flag lives in the device-local `settings` table, which `clearAllData`
+ * leaves alone — so "Clear" in Settings → Developer survives a sign-out, and
+ * survives the relaunch that would otherwise seed straight back over it and make
+ * the button look broken.
+ *
+ * Failures are swallowed. This is a convenience for local runs; letting it throw
+ * would take the database open down with it and leave the app dead on launch
+ * over sample data nobody needs.
+ */
+async function seedDevContentIfWanted(database: SQLite.SQLiteDatabase): Promise<void> {
+  try {
+    const cleared = await database.getFirstAsync<{ value: string }>(
+      'SELECT value FROM settings WHERE key = ?',
+      [DEV_SEED_CLEARED_FLAG],
+    );
+    if (cleared) return;
+    await runDevSeed(database);
+  } catch (e) {
+    console.warn('[db] dev seed skipped:', e);
+  }
+}
+
+/**
+ * One-time move of the theme preference from the device-local `settings` table
+ * into the synced `user_settings` one, applying the `mocha` -> `midnight` rename
+ * on the way through.
+ *
+ * Two things have to be true and only this placement gives both. It must run
+ * before the theme store reads the value, or the first render shows the old
+ * meaning; and it must run before the first sync pull, or another device's
+ * legitimate `mocha` (the brown one) arrives, gets treated as a pre-rename value
+ * and is turned violet. Database open is the only point ahead of both.
+ *
+ * Guarded by a flag row rather than by "is the target empty", because the value
+ * it writes is a plausible thing for the user to have chosen: re-running it
+ * would keep rewriting a deliberate Mocha back to Midnight for ever.
+ *
+ * The row is left `dirty = 1` so the preference reaches the account on the next
+ * push — a device that already had a theme keeps it and shares it, rather than
+ * appearing to the account as though it never had one.
+ *
+ * It is written with `updated_at = 0`, and that is the important part. Every
+ * conflict in this system is settled by comparing `updated_at`, which is only
+ * meaningful because it says when a value was actually chosen. The old
+ * device-local `settings` table stored no timestamp, so this migration has none
+ * to carry across — and stamping `Date.now()` would assert that a theme picked
+ * months ago was picked during this launch. That lie wins races it should lose:
+ * a device migrating today would overwrite a deliberate choice another device
+ * made last week, and the user would watch it revert with nothing on either
+ * screen to explain why. Zero says the honest thing instead — "this preference
+ * has no known choice time" — so any real choice on the account outranks it,
+ * while it still seeds an account that has no preference at all, and any
+ * genuine pick on this device from here on carries a real timestamp and wins
+ * normally.
+ */
+async function migrateThemeSetting(database: SQLite.SQLiteDatabase): Promise<void> {
+  const done = await database.getFirstAsync<{ value: string }>(
+    'SELECT value FROM settings WHERE key = ?',
+    [THEME_RENAME_FLAG],
+  );
+  if (done) return;
+
+  const saved = await database.getFirstAsync<{ value: string }>(
+    'SELECT value FROM settings WHERE key = ?',
+    [THEME_SETTING_KEY],
+  );
+  if (saved) {
+    // Only seeds a row that isn't there. If one already exists in user_settings
+    // it came from the account, which is the more considered value of the two.
+    // `updated_at` is 0 rather than now — see above; `created_at` is real, since
+    // nothing resolves a conflict with it.
+    await database.runAsync(
+      `INSERT INTO user_settings (id, value, created_at, updated_at, deleted_at, dirty)
+       VALUES (?, ?, ?, 0, NULL, 1)
+       ON CONFLICT(id) DO NOTHING`,
+      [THEME_SETTING_KEY, migrateThemeKey(saved.value), Date.now()],
+    );
+    // The old device-local copy is dropped rather than left behind, so there is
+    // exactly one answer to "what theme is this?" from here on.
+    await database.runAsync('DELETE FROM settings WHERE key = ?', [THEME_SETTING_KEY]);
+  }
+
+  await database.runAsync(
+    'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+    [THEME_RENAME_FLAG, '1'],
+  );
 }
 
 /** Adds the nesting columns to a `folders` table created before they existed. */
@@ -859,6 +1031,14 @@ export const db = {
    * plugin is in use is the only honest way to tell "never chosen" apart from
    * "chosen off". Trashed rows count — a plugin whose only sheet you deleted
    * yesterday is still one you use.
+   *
+   * Sample content the app placed itself is excluded, by both id prefixes. Use
+   * means the user reached for it, and neither the welcome samples nor the dev
+   * seed is evidence of that — they are there before anyone has decided
+   * anything. Counting them would switch Sheets and Resumes on for every new
+   * install, which is not just a wrong default: the welcome sheet's own cells
+   * explain how to enable Sheets, and they would be describing a toggle that was
+   * already on because the sheet describing it exists.
    */
   async pluginTypesInUse(): Promise<string[]> {
     const database = await getDb();
@@ -866,9 +1046,12 @@ export const db = {
       // `folders.kind` is qualified because the second branch also *outputs* a
       // column called `kind`; SQLite resolves the WHERE against the table either
       // way, but the unqualified version reads like it filters on the alias.
-      `SELECT DISTINCT plugin_type AS kind FROM notes WHERE plugin_type IS NOT NULL
+      `SELECT DISTINCT plugin_type AS kind FROM notes
+         WHERE plugin_type IS NOT NULL AND id NOT LIKE ? AND id NOT LIKE ?
        UNION
-       SELECT DISTINCT 'project' AS kind FROM folders WHERE folders.kind = 'project'`,
+       SELECT DISTINCT 'project' AS kind FROM folders
+         WHERE folders.kind = 'project' AND id NOT LIKE ? AND id NOT LIKE ?`,
+      [`${WELCOME_PREFIX}%`, `${DEV_SEED_PREFIX}%`, `${WELCOME_PREFIX}%`, `${DEV_SEED_PREFIX}%`],
     );
     return rows.map((r) => r.kind).filter((k): k is string => !!k);
   },
@@ -1015,12 +1198,25 @@ export const db = {
 
   // ---- File attachment sync (bytes live in S3; see lib/sync/files.ts) ----
 
-  /** Live file blocks whose bytes haven't been uploaded yet (no remote_key). */
+  /**
+   * Live file blocks whose bytes haven't been uploaded yet (no remote_key).
+   *
+   * The dev-seed exclusion is here too, and this is the second of exactly two
+   * ways anything leaves the device — bytes go straight to S3 (see
+   * `lib/sync/files.ts`) rather than through the delta payload, so `getDirty`'s
+   * guard doesn't reach them and `dirty` isn't even consulted. The seed writes
+   * no copa blocks today, so this excludes nothing yet; it is here so that
+   * "seeded rows never leave the device" is true of the codebase rather than
+   * true of one table, and so adding a demo attachment later stays a content
+   * change instead of quietly becoming an upload to the real bucket.
+   */
   async getCopaUploads(): Promise<{ id: string; fileUri: string; mimeType: string | null }[]> {
     const database = await getDb();
     const rows = await database.getAllAsync<{ id: string; file_uri: string; mime_type: string | null }>(
       `SELECT id, file_uri, mime_type FROM copa_items
-       WHERE file_uri IS NOT NULL AND remote_key IS NULL AND deleted_at IS NULL`,
+       WHERE file_uri IS NOT NULL AND remote_key IS NULL AND deleted_at IS NULL
+         AND id NOT LIKE ?`,
+      [`${DEV_SEED_PREFIX}%`],
     );
     return rows.map((r) => ({ id: r.id, fileUri: r.file_uri, mimeType: r.mime_type }));
   },
@@ -1308,41 +1504,83 @@ export const db = {
 
   // ---- Sync support ----
 
-  /** All rows with un-pushed local changes, in the backend's wire shape. */
+  /**
+   * All rows with un-pushed local changes, in the backend's wire shape.
+   *
+   * Every query also excludes the dev-seed id prefix, and this is the one place
+   * that keeps `__DEV__` sample content off the network. It is deliberately here
+   * rather than at the places that *set* `dirty`, because there are many of
+   * those and they are all reachable: the column defaults to 1, every per-row
+   * mutator sets it, `markAllDirty` sets it in bulk on first sign-in, and sync
+   * fires on app foreground whether or not anyone has signed in. This query is
+   * the only thing that turns a dirty row into a request body, so a row filtered
+   * out here cannot leave the device by any route — including one added later by
+   * someone who has never heard of the seed.
+   *
+   * The predicate is not compiled out of release builds. It costs an index-free
+   * `NOT LIKE` on an already-tiny result set, and a prefix that can never occur
+   * in real data (ids are `<kind>-<timestamp>-<random>`) is a cheaper thing to
+   * carry than a branch that makes the two builds push different rows.
+   */
   async getDirty(): Promise<SyncPayload> {
     const database = await getDb();
-    const [folders, notes, copa_items, issues, finance_sheets, resume_versions] =
+    const skipSeed = `${DEV_SEED_PREFIX}%`;
+    const [folders, notes, copa_items, issues, finance_sheets, resume_versions, user_settings] =
       await Promise.all([
       database.getAllAsync<FolderSync>(
         `SELECT id, name, parent_id, favorite, created_at, updated_at, deleted_at,
                 trashed_with_folder_id, kind, config
-         FROM folders WHERE dirty = 1`,
+         FROM folders WHERE dirty = 1 AND id NOT LIKE ?`,
+        [skipSeed],
       ),
       database.getAllAsync<NoteSync>(
         `SELECT id, title, body, folder_id, favorite, shared, published, created_at, updated_at,
                 deleted_at, trashed_with_folder_id, plugin_type, plugin_config
-         FROM notes WHERE dirty = 1`,
+         FROM notes WHERE dirty = 1 AND id NOT LIKE ?`,
+        [skipSeed],
       ),
       database.getAllAsync<CopaSync>(
         `SELECT id, label, content, favorite, created_at, updated_at, deleted_at,
                 file_name, mime_type, file_size, remote_key
-         FROM copa_items WHERE dirty = 1`,
+         FROM copa_items WHERE dirty = 1 AND id NOT LIKE ?`,
+        [skipSeed],
       ),
       database.getAllAsync<IssueSync>(
         `SELECT id, note_id, type_ids, title, description, done, attrs, gh_number, position,
                 created_at, updated_at, deleted_at
-         FROM issues WHERE dirty = 1`,
+         FROM issues WHERE dirty = 1 AND id NOT LIKE ?`,
+        [skipSeed],
       ),
       database.getAllAsync<FinanceSheetSync>(
+        // A sheet's row id *is* its note's id, so the note's prefix covers it.
         `SELECT id, data, created_at, updated_at, deleted_at
-         FROM finance_sheets WHERE dirty = 1`,
+         FROM finance_sheets WHERE dirty = 1 AND id NOT LIKE ?`,
+        [skipSeed],
       ),
       database.getAllAsync<ResumeVersionSync>(
+        // Filtered on `note_id`, not on the version's own id — the one query
+        // here that can't use the row's own key. A version is never seeded: it
+        // is written by the app, by `vid()`, as `ver-<timestamp>-<random>`, so
+        // it never carries the prefix no matter which resume it belongs to.
+        // Matching on `id` therefore excluded nothing at all, while looking
+        // exactly like a guard. And this is not hypothetical: opening the
+        // seeded resume compiles it, and the first successful compile snapshots
+        // the source as its original version (`recordFirstCompile` in
+        // `app/(home)/resume/[id].tsx`). That row is dirty by schema default, so
+        // it would have pushed the sample LaTeX to the account — an orphan, its
+        // parent note correctly held back, and unreachable by "Clear" afterwards
+        // since a hard delete sends no tombstone.
         `SELECT id, note_id, label, source, created_at, updated_at, deleted_at
-         FROM resume_versions WHERE dirty = 1`,
+         FROM resume_versions WHERE dirty = 1 AND note_id NOT LIKE ?`,
+        [skipSeed],
+      ),
+      database.getAllAsync<UserSettingSync>(
+        `SELECT id, value, created_at, updated_at, deleted_at
+         FROM user_settings WHERE dirty = 1 AND id NOT LIKE ?`,
+        [skipSeed],
       ),
     ]);
-    return { folders, notes, copa_items, issues, finance_sheets, resume_versions };
+    return { folders, notes, copa_items, issues, finance_sheets, resume_versions, user_settings };
   },
 
   /**
@@ -1387,6 +1625,12 @@ export const db = {
         await database.runAsync(
           'UPDATE resume_versions SET dirty = 0 WHERE id = ? AND updated_at = ?',
           [v.id, v.updated_at],
+        );
+      }
+      for (const s of payload.user_settings ?? []) {
+        await database.runAsync(
+          'UPDATE user_settings SET dirty = 0 WHERE id = ? AND updated_at = ?',
+          [s.id, s.updated_at],
         );
       }
     });
@@ -1580,6 +1824,21 @@ export const db = {
         );
         changed += r.changes;
       }
+      // `?? []` as above — this is now the newest table, so it is the one a
+      // client is most likely to have while the server it is talking to doesn't.
+      for (const s of payload.user_settings ?? []) {
+        const r = await database.runAsync(
+          `INSERT INTO user_settings
+             (id, value, created_at, updated_at, deleted_at, dirty)
+           VALUES (?, ?, ?, ?, ?, 0)
+           ON CONFLICT(id) DO UPDATE SET
+             value = excluded.value, created_at = excluded.created_at,
+             updated_at = excluded.updated_at, deleted_at = excluded.deleted_at, dirty = 0
+           WHERE excluded.updated_at >= user_settings.updated_at`,
+          [s.id, s.value, s.created_at, s.updated_at, s.deleted_at],
+        );
+        changed += r.changes;
+      }
     });
     return changed;
   },
@@ -1587,6 +1846,15 @@ export const db = {
   /**
    * Marks every row dirty so the next sync re-pushes the whole local dataset.
    * Used on first sign-in to claim anonymous notes into the account.
+   *
+   * `user_settings` is in the list on purpose, even though a preference is a
+   * singleton where a note is not. It means an anonymous device's theme is
+   * claimed the same way its notes are, and the server's `updated_at` guard then
+   * settles it: the more recently chosen value wins, whichever side it came
+   * from. Holding preferences back instead would make first sign-in the one
+   * moment in the app where a local change is silently discarded, and a theme
+   * picked five minutes ago is a better guess at what someone wants than one
+   * picked on another device last year.
    */
   async markAllDirty(): Promise<void> {
     const database = await getDb();
@@ -1594,14 +1862,21 @@ export const db = {
     // clean, so signing in never claims them into the account and they stay
     // local to this one device for ever, with nothing on screen to say so.
     await database.execAsync(
-      'UPDATE folders SET dirty = 1; UPDATE notes SET dirty = 1; UPDATE copa_items SET dirty = 1; UPDATE issues SET dirty = 1; UPDATE finance_sheets SET dirty = 1; UPDATE resume_versions SET dirty = 1;',
+      'UPDATE folders SET dirty = 1; UPDATE notes SET dirty = 1; UPDATE copa_items SET dirty = 1; UPDATE issues SET dirty = 1; UPDATE finance_sheets SET dirty = 1; UPDATE resume_versions SET dirty = 1; UPDATE user_settings SET dirty = 1;',
     );
   },
 
   /**
-   * Removes all notes/folders/copa rows (not settings). Used on sign-out and
-   * when switching accounts, so one account's data never bleeds into another on
-   * the same device. The cursor is reset separately by the caller.
+   * Removes every synced row — including account-scoped preferences, and still
+   * excluding the device-local `settings` table. Used on sign-out and when
+   * switching accounts, so one account's data never bleeds into another on the
+   * same device. The cursor is reset separately by the caller.
+   *
+   * Preferences have to go with the notes now that they are account-scoped: left
+   * behind, the next person to sign in on this device would be looking at the
+   * previous account's theme with no way to tell where it came from. What stays
+   * is `settings`, which holds the device key, the sync cursor and `synced_uid`
+   * — facts about the device, which signing out does not change.
    */
   async clearAllData(): Promise<void> {
     const database = await getDb();
@@ -1609,7 +1884,7 @@ export const db = {
     // previous account's rows survive sign-out and show up under whoever signs
     // in next on this device.
     await database.execAsync(
-      'DELETE FROM folders; DELETE FROM notes; DELETE FROM copa_items; DELETE FROM issues; DELETE FROM finance_sheets; DELETE FROM resume_versions;',
+      'DELETE FROM folders; DELETE FROM notes; DELETE FROM copa_items; DELETE FROM issues; DELETE FROM finance_sheets; DELETE FROM resume_versions; DELETE FROM user_settings;',
     );
   },
 
@@ -1648,6 +1923,72 @@ export const db = {
     await database.runAsync(
       'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
       [key, value],
+    );
+  },
+
+  /**
+   * Read an account-scoped preference (null if unset or soft-deleted).
+   *
+   * The `deleted_at IS NULL` filter is what makes "unset" survive a round trip:
+   * a preference cleared on another device arrives as a tombstone rather than a
+   * missing row, and without the filter the caller would read the dead value.
+   */
+  async getUserSetting(key: string): Promise<string | null> {
+    const database = await getDb();
+    const row = await database.getFirstAsync<{ value: string }>(
+      'SELECT value FROM user_settings WHERE id = ? AND deleted_at IS NULL',
+      [key],
+    );
+    return row?.value ?? null;
+  },
+
+  /**
+   * Upsert an account-scoped preference and queue it for the next push.
+   *
+   * `updated_at` is stamped here because it is what every conflict between two
+   * devices is decided on, server-side and locally — a write that left it alone
+   * would be quietly unable to win one. `deleted_at` is cleared so re-setting a
+   * preference someone deleted elsewhere brings it back rather than writing a
+   * value that `getUserSetting` then refuses to read.
+   */
+  async setUserSetting(key: string, value: string): Promise<void> {
+    dbCrumb('setUserSetting', { key });
+    const database = await getDb();
+    const now = Date.now();
+    await database.runAsync(
+      `INSERT INTO user_settings (id, value, created_at, updated_at, deleted_at, dirty)
+       VALUES (?, ?, ?, ?, NULL, 1)
+       ON CONFLICT(id) DO UPDATE SET
+         value = excluded.value, updated_at = excluded.updated_at,
+         deleted_at = NULL, dirty = 1`,
+      [key, value, now, now],
+    );
+  },
+
+  // ---- Dev sample content ----
+  //
+  // Exposed on `db` (rather than called straight from the screen) so the writes
+  // go through the same serialization chain as everything else — unlike the
+  // launch seed, these run with the app up and a sync possibly mid-flight.
+
+  /**
+   * Inserts the sample content now, and re-arms the launch seed if it had been
+   * cleared. Existing rows are left as they are, so this restores what's missing
+   * rather than resetting what you've been editing.
+   */
+  async seedDevContent(): Promise<void> {
+    const database = await getDb();
+    await database.runAsync('DELETE FROM settings WHERE key = ?', [DEV_SEED_CLEARED_FLAG]);
+    await runDevSeed(database);
+  },
+
+  /** Removes the sample content and stops the next launch from seeding it back. */
+  async clearDevContent(): Promise<void> {
+    const database = await getDb();
+    await clearDevSeed(database);
+    await database.runAsync(
+      'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+      [DEV_SEED_CLEARED_FLAG, '1'],
     );
   },
 };
@@ -1717,6 +2058,9 @@ const WRITE_METHODS = [
   'clearAllData',
   'setCursor',
   'setSetting',
+  'setUserSetting',
+  'seedDevContent',
+  'clearDevContent',
 ] as const;
 
 for (const name of WRITE_METHODS) {

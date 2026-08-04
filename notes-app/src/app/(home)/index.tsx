@@ -1,5 +1,6 @@
 import { LinearGradient } from 'expo-linear-gradient';
-import { useState } from 'react';
+import { useFocusEffect } from 'expo-router';
+import { useCallback, useState } from 'react';
 import { FlatList, Platform, RefreshControl, StyleSheet, View } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, { runOnJS } from 'react-native-reanimated';
@@ -12,8 +13,9 @@ import { SearchBar, SEARCH_BAR_HEIGHT } from '@/components/search-bar';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Spacing } from '@/constants/theme';
-import { GRID_COLUMNS, gridEdgePadding, trailingSpacers, useGridColumnWidth } from '@/lib/grid';
+import { trailingSpacers, useGridColumns, useGridColumnWidth, useGridEdgePadding } from '@/lib/grid';
 import { pinnedFirst } from '@/lib/pinned';
+import { rankMatches } from '@/lib/search';
 import { useScreenFadeStyle } from '@/hooks/use-screen-fade';
 import { useScrollToTop } from '@/hooks/use-scroll-to-top';
 import { useSyncRefresh } from '@/hooks/use-sync-refresh';
@@ -31,14 +33,65 @@ type GridItem =
 const OPEN_DISTANCE = 60;
 const OPEN_VELOCITY = 500;
 
+/**
+ * Web: drop the query string a deep link left behind on the home address.
+ *
+ * A screen opened by URL — a reload on `/note/x`, a shared link — gets home
+ * synthesized beneath it by `unstable_settings.anchor` (see `_layout.tsx`).
+ * Popping to it lands on `/?id=note-…`: the right screen wearing the previous
+ * one's address. Nothing here reads `id`, so that URL still works; it is simply
+ * the wrong one to leave for someone to copy or bookmark.
+ *
+ * Two things about the shape of this, both learned the hard way by an earlier
+ * attempt (`1f9ce8b`, reverted in `ae3c244`) that did the same job in a bare
+ * render-time effect and fixed nothing:
+ *
+ * **On focus, not on render.** `HomeScreen` stays mounted underneath every
+ * screen this stack pushes, and it re-renders whenever the notes store changes
+ * — which is every keystroke of a folder rename, from a screen that is not this
+ * one. An unscoped version therefore reached out and stripped the query of
+ * whatever route *was* showing, and `/folder/x?created=1` is a real one: that
+ * flag is what lets an abandoned empty folder delete itself. Focus is the only
+ * moment at which "the current URL" is reliably ours to edit.
+ *
+ * **A tick later, not now.** The router writes the address after this: its
+ * `history.replace` is queued as a microtask from the navigation container's
+ * own effect, and React flushes a child's effects before its parent's. Reading
+ * `location.search` synchronously here reads the URL from *before* the write,
+ * finds it clean, and returns — then the id lands, with no further render to
+ * catch it. A macrotask runs after every microtask queued this turn, so this
+ * sees the address the user will actually be left looking at.
+ *
+ * `replaceState` rather than a router call, because home is already the screen
+ * we are on and navigating again to tidy an address would remount the grid and
+ * lose its scroll position. Guarded by `Platform.OS` rather than split into a
+ * `.web` file — a native/web pair drifting out of sync has broken app launch
+ * here before.
+ */
+function useCleanHomeUrl() {
+  useFocusEffect(
+    useCallback(() => {
+      if (Platform.OS !== 'web' || typeof window === 'undefined') return;
+      const timer = setTimeout(() => {
+        if (!window.location.search) return;
+        window.history.replaceState(window.history.state, '', window.location.pathname);
+      }, 0);
+      return () => clearTimeout(timer);
+    }, []),
+  );
+}
+
 export default function HomeScreen() {
+  useCleanHomeUrl();
   const { folders, notes, getRootNotes, getRootFolders } = useNotes();
   const tabBarInset = useTabBarInset();
   const insets = useSafeAreaInsets();
   const theme = useTheme();
   const { openSidebar } = useSidebar();
   const { refreshing, onRefresh } = useSyncRefresh();
+  const columns = useGridColumns();
   const columnWidth = useGridColumnWidth();
+  const edgePadding = useGridEdgePadding();
   const { scrollProps, scrolled, scrollToTop } = useScrollToTop<FlatList<GridItem>>();
   const [query, setQuery] = useState('');
   // Web has no native stack transition; fade/slide the screen in when it gains
@@ -50,36 +103,57 @@ export default function HomeScreen() {
   const barTop = insets.top + Spacing.two;
   const contentTop = barTop + SEARCH_BAR_HEIGHT + Spacing.three;
 
-  const q = query.trim().toLowerCase();
+  const q = query.trim();
   const searching = q.length > 0;
 
-  // Default view: home-screen folders, then notes that live on the home screen.
-  // While searching, match folders by name and notes by title/body across the
-  // whole tree, so results aren't limited to the home screen.
-  const matchedFolders = searching
-    ? folders.filter((folder) => folder.name.toLowerCase().includes(q))
-    : getRootFolders();
-  const matchedNotes = searching
-    ? notes.filter(
-        (note) => note.title.toLowerCase().includes(q) || note.body.toLowerCase().includes(q),
-      )
-    : getRootNotes();
+  // Everything a search can reach: every folder by name, every note by title and
+  // body, across the whole tree rather than just the home screen. Folders and
+  // notes are ranked as one list — split into two ranked lists, the weakest
+  // folder match would still outrank the note the query names exactly.
+  const searchable = [
+    ...folders.map((folder) => ({
+      item: { type: 'folder' as const, id: folder.id, favorite: folder.favorite },
+      fields: { titles: [folder.name] },
+    })),
+    ...notes.map((note) => ({
+      item: { type: 'note' as const, id: note.id, favorite: note.favorite },
+      fields: { titles: [note.title], body: note.body },
+    })),
+  ];
 
+  // Default view: home-screen folders, then notes that live on the home screen.
   // Starred items pin to the very top as one band, folders and notes together —
   // a pin outranks the folders-above-notes grouping rather than reordering
   // inside it. Below the band that grouping is untouched, and because the sort
   // is stable both halves keep the feed's recency order.
-  const items: GridItem[] = pinnedFirst([
-    ...matchedFolders.map((folder) => ({
-      type: 'folder' as const,
-      id: folder.id,
-      favorite: folder.favorite,
-    })),
-    ...matchedNotes.map((note) => ({ type: 'note' as const, id: note.id, favorite: note.favorite })),
-  ]);
+  //
+  // Results are ordered by relevance instead, and deliberately *not* through
+  // `pinnedFirst`: floating every starred item above every match regardless of
+  // how well it matches is the opposite of what a query asks for. Stars still
+  // break ties inside `rankMatches`, so a starred item wins among equally good
+  // answers — it just can't jump ahead of a better one.
+  const items: GridItem[] = searching
+    ? rankMatches(
+        searchable,
+        q,
+        (entry) => entry.fields,
+        (entry) => entry.item.favorite,
+      ).map((entry) => entry.item)
+    : pinnedFirst([
+        ...getRootFolders().map((folder) => ({
+          type: 'folder' as const,
+          id: folder.id,
+          favorite: folder.favorite,
+        })),
+        ...getRootNotes().map((note) => ({
+          type: 'note' as const,
+          id: note.id,
+          favorite: note.favorite,
+        })),
+      ]);
   // A partial last row would stretch its cards to fill the width; transparent
   // spacers keep them at single-column width instead.
-  for (let i = 0; i < trailingSpacers(items.length); i++) {
+  for (let i = 0; i < trailingSpacers(items.length, columns); i++) {
     items.push({ type: 'spacer', id: `spacer-${i}` });
   }
 
@@ -102,11 +176,14 @@ export default function HomeScreen() {
           {...scrollProps}
           data={items}
           keyExtractor={(item) => `${item.type}-${item.id}`}
-          numColumns={GRID_COLUMNS}
+          numColumns={columns}
+          // The column count changes with the window on web, and React Native
+          // refuses to change numColumns in place — the list must remount.
+          key={columns}
           columnWrapperStyle={styles.row}
           contentContainerStyle={[
             styles.content,
-            gridEdgePadding,
+            edgePadding,
             { paddingTop: contentTop, paddingBottom: tabBarInset },
           ]}
           keyboardShouldPersistTaps="handled"
@@ -144,7 +221,9 @@ export default function HomeScreen() {
             const note = notes.find((n) => n.id === item.id)!;
             return (
               <View style={[styles.cardCell, { width: columnWidth }]}>
-                <NoteCard note={note} />
+                {/* While searching, the card shows the line it matched on
+                    instead of its opening paragraph. */}
+                <NoteCard note={note} query={searching ? q : undefined} />
               </View>
             );
           }}

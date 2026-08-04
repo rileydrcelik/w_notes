@@ -3,6 +3,7 @@ import { useRouter } from 'expo-router';
 import { Pressable, StyleSheet, View } from 'react-native';
 
 import { FavoriteStar } from '@/components/favorite-star';
+import { MatchSnippet } from '@/components/notes/match-snippet';
 import { SheetGlyph } from '@/components/notes/sheet-glyph';
 import { ACCENT as RESUME_ACCENT } from '@/components/resume/accent';
 import { ThemedText } from '@/components/themed-text';
@@ -12,12 +13,13 @@ import type { Folder, Note } from '@/data/notes';
 import { sentryTarget } from '@/lib/sentry-note';
 import { githubTarget } from '@/lib/github-note';
 import { isResumeNote, resumeSourceExcerpt, resumeTitle } from '@/lib/resume-note';
-import { useTileHeight } from '@/lib/grid';
+import { useCardPreviewLines, useTileHeight } from '@/lib/grid';
 import { projectConfig } from '@/lib/project';
 import { useContextMenu } from '@/hooks/use-context-menu';
 import { useDoubleTap } from '@/hooks/use-double-tap';
 import { useTheme } from '@/hooks/use-theme';
 import { htmlToPlainText } from '@/lib/html-text';
+import { matchSnippet } from '@/lib/search';
 import { useItemSelection } from '@/store/item-selection-store';
 import { useNotes } from '@/store/notes-store';
 
@@ -30,6 +32,15 @@ const FINANCE_ACCENT = '#2f9e6e';
 /** Accent for a long-pressed/right-clicked (selected) card. */
 const SELECT_ACCENT = '#7a89b8';
 const PREVIEW_TEXT = { fontSize: 14, lineHeight: 20, fontWeight: '500' } as const;
+/**
+ * Most lines of preview a card will show once the tile is tall enough for them.
+ * The actual count is derived from the tile height (see `useCardPreviewLines`),
+ * because the tile shrinks with the window and a fixed count clips inside it.
+ */
+const PREVIEW_MAX_LINES = 4;
+/** Type metrics of the resume card's monospace source excerpt (see `sourcePreview`). */
+const SOURCE_PREVIEW = { fontSize: 11, lineHeight: 16 } as const;
+const SOURCE_PREVIEW_MAX_LINES = 3;
 
 export function FolderCard({ folder }: { folder: Folder }) {
   if (folder.kind === 'project') return <ProjectFolderCard folder={folder} />;
@@ -136,7 +147,11 @@ function ProjectFolderCard({ folder }: { folder: Folder }) {
   );
 }
 
-export function NoteCard({ note }: { note: Note }) {
+/**
+ * `query` is the search this card is a result of, when it is one — see the
+ * native `cards.tsx` for what it's for. Keep the two signatures identical.
+ */
+export function NoteCard({ note, query }: { note: Note; query?: string }) {
   // Plugin notes render as distinct cards that open live content instead of the
   // text editor. Branch before any hooks so those cards keep their own hook order.
   if (note.pluginType === 'sentry') return <SentryNoteCard note={note} />;
@@ -145,7 +160,7 @@ export function NoteCard({ note }: { note: Note }) {
   // A resume's body is LaTeX source, so it must never reach TextNoteCard — that
   // would flatten raw LaTeX as if it were HTML.
   if (isResumeNote(note)) return <ResumeNoteCard note={note} />;
-  return <TextNoteCard note={note} />;
+  return <TextNoteCard note={note} query={query} />;
 }
 
 /**
@@ -189,7 +204,7 @@ function FinanceNoteCard({ note }: { note: Note }) {
   );
 }
 
-function TextNoteCard({ note }: { note: Note }) {
+function TextNoteCard({ note, query }: { note: Note; query?: string }) {
   const router = useRouter();
   const { toggleNoteFavorite } = useNotes();
   const { active, isSelected, toggle } = useItemSelection();
@@ -206,10 +221,20 @@ function TextNoteCard({ note }: { note: Note }) {
   // Right-click mirrors the mobile long-press (toggles selection).
   const contextMenuRef = useContextMenu(onSelectToggle);
   const tileHeight = useTileHeight();
+  const previewLines = useCardPreviewLines(
+    PREVIEW_TEXT.fontSize,
+    PREVIEW_TEXT.lineHeight,
+    PREVIEW_MAX_LINES,
+  );
 
   // No native rich-text renderer on web — flatten the HTML body to plain text
   // for the preview (same helper the copa list uses).
   const preview = note.body.trim().length > 0 ? htmlToPlainText(note.body) : '';
+
+  // While this card is a search result, the preview gives way to the excerpt
+  // that says why — see the native card. Null when the query isn't literally in
+  // the body, and the preview above stands.
+  const snippet = query ? matchSnippet(note.body, query) : null;
 
   return (
     <Pressable
@@ -224,15 +249,18 @@ function TextNoteCard({ note }: { note: Note }) {
           </ThemedText>
           {note.favorite && <FavoriteStar size={13} />}
         </View>
-        {preview.length > 0 && (
-          <ThemedText
-            numberOfLines={4}
-            ellipsizeMode="tail"
-            themeColor="textSecondary"
-            style={PREVIEW_TEXT}>
-            {preview}
-          </ThemedText>
-        )}
+        {previewLines > 0 &&
+          (snippet ? (
+            <MatchSnippet parts={snippet} numberOfLines={previewLines} style={PREVIEW_TEXT} />
+          ) : preview.length > 0 ? (
+            <ThemedText
+              numberOfLines={previewLines}
+              ellipsizeMode="tail"
+              themeColor="textSecondary"
+              style={PREVIEW_TEXT}>
+              {preview}
+            </ThemedText>
+          ) : null)}
       </ThemedView>
     </Pressable>
   );
@@ -297,6 +325,11 @@ function ResumeNoteCard({ note }: { note: Note }) {
 
   const contextMenuRef = useContextMenu(onSelectToggle);
   const tileHeight = useTileHeight();
+  const previewLines = useCardPreviewLines(
+    SOURCE_PREVIEW.fontSize,
+    SOURCE_PREVIEW.lineHeight,
+    SOURCE_PREVIEW_MAX_LINES,
+  );
 
   return (
     <Pressable
@@ -312,19 +345,20 @@ function ResumeNoteCard({ note }: { note: Note }) {
           </ThemedText>
           {note.favorite && <FavoriteStar size={13} />}
         </View>
-        {excerpt.length > 0 ? (
-          <ThemedText
-            themeColor="textSecondary"
-            numberOfLines={3}
-            ellipsizeMode="tail"
-            style={styles.sourcePreview}>
-            {excerpt}
-          </ThemedText>
-        ) : (
-          <ThemedText type="small" themeColor="textSecondary" numberOfLines={1}>
-            LaTeX resume
-          </ThemedText>
-        )}
+        {previewLines > 0 &&
+          (excerpt.length > 0 ? (
+            <ThemedText
+              themeColor="textSecondary"
+              numberOfLines={previewLines}
+              ellipsizeMode="tail"
+              style={styles.sourcePreview}>
+              {excerpt}
+            </ThemedText>
+          ) : (
+            <ThemedText type="small" themeColor="textSecondary" numberOfLines={1}>
+              LaTeX resume
+            </ThemedText>
+          ))}
       </ThemedView>
     </Pressable>
   );
@@ -442,8 +476,7 @@ const styles = StyleSheet.create({
   // LaTeX source excerpt on a resume card — monospace, so it reads as code.
   sourcePreview: {
     fontFamily: Fonts.mono,
-    fontSize: 11,
-    lineHeight: 16,
+    ...SOURCE_PREVIEW,
     minWidth: 0,
   },
   titleText: {

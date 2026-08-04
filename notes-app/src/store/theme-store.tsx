@@ -12,11 +12,16 @@ import { useColorScheme as useDeviceColorScheme } from 'react-native';
 
 import { lerpPalette, type Palette } from '@/constants/theme';
 import { db } from '@/lib/db';
+import { THEME_SETTING_KEY } from '@/lib/theme-migrate';
 import { isThemeKey, resolveTheme, type Scheme, type ThemeKey } from '@/lib/theme-resolve';
-import { subscribeSynced } from '@/lib/sync/sync-engine';
+import { requestSync, subscribeSynced } from '@/lib/sync/sync-engine';
 
-/** Settings key the chosen theme is persisted under in SQLite. */
-const THEME_KEY = 'themeKey';
+/**
+ * Key the chosen theme is persisted under, in the **synced** `user_settings`
+ * table — so a theme is a property of the account and follows it onto every
+ * device, rather than being re-picked on each one.
+ */
+const THEME_KEY = THEME_SETTING_KEY;
 
 // The key union, its guard and the palette lookup live in lib/theme-resolve, so
 // they can be unit-tested without dragging SQLite in. Re-exported here because
@@ -25,6 +30,13 @@ export type { ThemeKey, Scheme } from '@/lib/theme-resolve';
 
 /** How long a theme change takes to crossfade, in ms. */
 const TRANSITION_MS = 320;
+
+/**
+ * Debounce before a theme change is pushed. Short, like copa's: a theme is a
+ * one-tap change someone may well be watching land on a second device, so it
+ * shouldn't wait out the typing-length default.
+ */
+const SYNC_DEBOUNCE_MS = 200;
 
 /** Ease-in-out so the crossfade accelerates then settles. */
 const easeInOut = (t: number): number =>
@@ -71,13 +83,21 @@ export function AppThemeProvider({ children }: { children: ReactNode }) {
   // setting that failed while it was a follower (which otherwise left the theme
   // stuck on the default). Re-reads snap (no animation) and are a no-op when the
   // value is unchanged, so this stays quiet during normal syncs.
+  //
+  // Now that the theme is account-scoped this also has to run *downwards*: a
+  // missing row means 'system', not "leave whatever is on screen". Sign-out and
+  // account-switch clear the row and then emit exactly this refresh, so the
+  // read-only-if-found version left the previous account's theme rendered until
+  // something happened to overwrite it — the next person to sign in on the
+  // device inherited a look that was never theirs.
   useEffect(() => {
     let cancelled = false;
     const hydrate = () => {
       db
-        .getSetting(THEME_KEY)
+        .getUserSetting(THEME_KEY)
         .then((saved) => {
-          if (!cancelled && saved && isThemeKey(saved)) setThemeKeyState(saved);
+          if (cancelled) return;
+          setThemeKeyState(saved && isThemeKey(saved) ? saved : 'system');
         })
         .catch((e) => console.warn('[theme] failed to load saved theme:', e));
     };
@@ -120,11 +140,16 @@ export function AppThemeProvider({ children }: { children: ReactNode }) {
     };
   }, [target]);
 
-  // Update state immediately (optimistic) and persist through to SQLite.
+  // Update state immediately (optimistic), persist to SQLite, and nudge sync so
+  // the choice reaches the account's other devices without waiting for the lazy
+  // poll. A short debounce rather than none coalesces a burst of taps while
+  // someone is trying themes on, pushing only where they settled.
   const setThemeKey = useCallback((key: ThemeKey) => {
     animateNext.current = true;
     setThemeKeyState(key);
-    db.setSetting(THEME_KEY, key).catch((e) => console.warn('[theme] failed to save theme:', e));
+    db.setUserSetting(THEME_KEY, key)
+      .then(() => requestSync(SYNC_DEBOUNCE_MS))
+      .catch((e) => console.warn('[theme] failed to save theme:', e));
   }, []);
 
   const value = useMemo<ThemePref>(

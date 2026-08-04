@@ -100,6 +100,19 @@ class ResumeVersionIn(_Syncable):
     source: str = ""
 
 
+class UserSettingIn(_Syncable):
+    """One account-scoped preference. `id` is the preference name.
+
+    As with `ResumeVersionIn`, nothing here is nullable-for-preservation because
+    the whole table is new — **a column added later must go in
+    `_PRESERVE_IF_NULL` in `routers/sync.py`**, or an older client that cannot
+    send it will null it out on every device.
+    """
+
+    # Opaque to the server: it stores and returns whatever the client wrote.
+    value: str = ""
+
+
 class PushRequest(BaseModel):
     """A batch of local changes the client wants the server to absorb.
 
@@ -115,6 +128,7 @@ class PushRequest(BaseModel):
     issues: list[IssueIn] = []
     finance_sheets: list[FinanceSheetIn] = []
     resume_versions: list[ResumeVersionIn] = []
+    user_settings: list[UserSettingIn] = []
 
 
 class PushResponse(BaseModel):
@@ -131,4 +145,5 @@ class PullResponse(BaseModel):
     issues: list[IssueIn] = []
     finance_sheets: list[FinanceSheetIn] = []
     resume_versions: list[ResumeVersionIn] = []
+    user_settings: list[UserSettingIn] = []
     server_seq: int

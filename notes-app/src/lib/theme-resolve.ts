@@ -16,7 +16,14 @@ import { Colors, type Palette } from '@/constants/theme';
  * Solarized variants could be chosen outright but their plain counterpart
  * couldn't.
  */
-export type ThemeKey = 'system' | 'light' | 'dark' | 'solarized' | 'solarizedDark' | 'mocha';
+export type ThemeKey =
+  | 'system'
+  | 'light'
+  | 'dark'
+  | 'solarized'
+  | 'solarizedDark'
+  | 'midnight'
+  | 'mocha';
 
 /** The light/dark axis some chrome still branches on (blur tint, status bar). */
 export type Scheme = 'light' | 'dark';
@@ -27,11 +34,17 @@ export const THEME_KEYS: ThemeKey[] = [
   'dark',
   'solarized',
   'solarizedDark',
+  'midnight',
   'mocha',
 ];
 
 export const isThemeKey = (value: string): value is ThemeKey =>
   (THEME_KEYS as string[]).includes(value);
+
+// The pre-rename `mocha` -> `midnight` rewrite lives in `lib/theme-migrate`,
+// which imports nothing so `lib/db` can run it at open time. Re-exported here
+// because this is the module the rest of the app reads theme keys from.
+export { migrateThemeKey, THEME_RENAME_FLAG } from '@/lib/theme-migrate';
 
 /**
  * Resolve a chosen theme key (plus the device scheme) to a concrete look.
@@ -47,6 +60,7 @@ export function resolveTheme(
 ): { scheme: Scheme; colors: Palette } {
   if (themeKey === 'solarized') return { scheme: 'light', colors: Colors.solarizedLight };
   if (themeKey === 'solarizedDark') return { scheme: 'dark', colors: Colors.solarizedDark };
+  if (themeKey === 'midnight') return { scheme: 'dark', colors: Colors.midnight };
   if (themeKey === 'mocha') return { scheme: 'dark', colors: Colors.mocha };
   if (themeKey === 'dark') return { scheme: 'dark', colors: Colors.dark };
   if (themeKey === 'light') return { scheme: 'light', colors: Colors.light };

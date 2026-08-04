@@ -18,6 +18,7 @@ import { Spacing } from '@/constants/theme';
 import type { Folder, Note } from '@/data/notes';
 import { useTheme } from '@/hooks/use-theme';
 import { folderHref, isListableNote, noteHref, noteIcon } from '@/lib/item-route';
+import { matchesQuery } from '@/lib/search';
 import { useNotes } from '@/store/notes-store';
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
@@ -74,15 +75,19 @@ export function RightSidebar({ open, onClose }: { open: boolean; onClose: () => 
       { key: 'trash', label: 'Trash', icon: 'trash-2', count: trash.length, path: '/trash' },
     ];
 
-  const q = query.trim().toLowerCase();
+  const q = query.trim();
   const searching = q.length > 0;
+  // The tree is ordered structurally, so this view wants the boolean rather than
+  // the score — but it's the same matcher the ranked views use, which is the
+  // point: one place decides what "matches" means (see `lib/search.ts`).
   const noteMatches = (title: string, body: string) =>
-    title.toLowerCase().includes(q) || body.toLowerCase().includes(q);
+    matchesQuery({ titles: [title], body }, q);
+  const nameMatches = (name: string) => matchesQuery({ titles: [name] }, q);
 
   // A folder is relevant while searching if its own name matches, it holds a
   // matching note, or anything beneath it in the tree qualifies.
   const folderMatchesSearch = (folder: Folder): boolean =>
-    folder.name.toLowerCase().includes(q) ||
+    nameMatches(folder.name) ||
     notesIn(folder.id).some((note) => noteMatches(note.title, note.body)) ||
     getSubfolders(folder.id).some(folderMatchesSearch);
 
@@ -127,7 +132,7 @@ export function RightSidebar({ open, onClose }: { open: boolean; onClose: () => 
     // listed that machinery as if the user had written it, so it opens its own
     // screen instead — the same thing its card on the home screen does.
     const isProject = folder.kind === 'project';
-    const nameMatch = searching && folder.name.toLowerCase().includes(q);
+    const nameMatch = searching && nameMatches(folder.name);
     // While searching (unless this folder's own name matched) narrow to the
     // matching notes and the subfolders whose branch contains a match.
     const childNotes =

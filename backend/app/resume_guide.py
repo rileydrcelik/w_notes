@@ -131,8 +131,11 @@ never to write one that tries for both.
 
 - **Reverse chronological.** Most recent first, throughout. Never mix in a
   skills-bucket or functional layout; the two formats do not combine.
-- **Exactly one page.** Not "about a page" — one. A second page is read as a
-  first page with something missing off the end of it.
+- **Exactly one page — and a full one.** Not "about a page", and not most of
+  one. A second page is read as a first page with something missing off the end
+  of it; a page that stops two thirds of the way down is read as someone who ran
+  out of things to say. Both break this rule. Only the first is ever noticed,
+  which is why the second is the easier mistake to make.
 - **One column**, top to bottom. No sidebars, no tables laying out content, no
   text boxes, no photograph, no rating bars or skill percentage meters, no icons
   standing in for words.

@@ -61,6 +61,16 @@ export default defineConfig({
       EXPO_PUBLIC_API_URL: '',
       // No error reporting from a test run.
       EXPO_PUBLIC_SENTRY_DSN: '',
+      // No sample content of any kind. These tests drive Metro, so `__DEV__` is
+      // true and `lib/dev-seed.ts` would put two dozen notes, four folders, a
+      // sheet and a resume in front of every test. `lib/welcome-content.ts`
+      // would add its guide and Samples folder on top, and that one is ordinary
+      // production behaviour rather than a dev convenience — but it lands on the
+      // same trigger, an empty library, which is precisely the state every test
+      // here starts from. Either way it is a fixture nobody wrote and every
+      // future assertion would have to account for. A smoke suite for a
+      // local-first app should start empty.
+      EXPO_PUBLIC_SEED_CONTENT: '0',
     },
   },
 });

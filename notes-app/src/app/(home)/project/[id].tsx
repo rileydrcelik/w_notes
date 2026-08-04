@@ -21,7 +21,7 @@ import { SwipeBackView } from '@/components/swipe-back-view';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { hexToRgba, Spacing } from '@/constants/theme';
-import { GRID_COLUMNS, gridEdgePadding, trailingSpacers, useGridColumnWidth, useTileHeight } from '@/lib/grid';
+import { trailingSpacers, useGridColumns, useGridColumnWidth, useGridEdgePadding, useTileHeight } from '@/lib/grid';
 import { useContextMenu } from '@/hooks/use-context-menu';
 import { useScrollToTop } from '@/hooks/use-scroll-to-top';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
@@ -140,7 +140,9 @@ export default function ProjectScreen() {
   const theme = useTheme();
   const insets = useSafeAreaInsets();
   const tabBarInset = useTabBarInset();
+  const columns = useGridColumns();
   const columnWidth = useGridColumnWidth();
+  const edgePadding = useGridEdgePadding();
   const { getFolder, getNotesInFolder, getSubfolders, updateFolder, createIssueTypeNote } =
     useNotes();
   const { issues, hydrated, createIssue, updateIssue } = useIssues();
@@ -252,7 +254,7 @@ export default function ProjectScreen() {
     ...subfolders.map((sub) => ({ kind: 'folder' as const, folder: sub })),
     ...otherNotes.map((note) => ({ kind: 'note' as const, note })),
   ];
-  for (let i = 0; i < trailingSpacers(items.length); i++) items.push({ kind: 'spacer' });
+  for (let i = 0; i < trailingSpacers(items.length, columns); i++) items.push({ kind: 'spacer' });
 
   const headerTop = insets.top + Spacing.four;
   const { scrollProps, scrolled, scrollToTop } = useScrollToTop<FlatList<GridItem>>();
@@ -282,7 +284,10 @@ export default function ProjectScreen() {
                 ? item.folder.id
                 : `spacer-${index}`
           }
-          numColumns={GRID_COLUMNS}
+          numColumns={columns}
+          // The column count changes with the window on web, and React Native
+          // refuses to change numColumns in place — the list must remount.
+          key={columns}
           columnWrapperStyle={styles.row}
           refreshControl={
             config?.repo ? (
@@ -296,7 +301,7 @@ export default function ProjectScreen() {
           }
           contentContainerStyle={[
             styles.content,
-            gridEdgePadding,
+            edgePadding,
             { paddingTop: headerTop, paddingBottom: tabBarInset },
           ]}
           ListHeaderComponent={

@@ -35,6 +35,8 @@ type ScrollTarget = {
  * <FlatList {...scrollProps} … />
  * <ScrollToTopButton visible={scrolled} onPress={scrollToTop} />
  * ```
+ *
+ * `listRef` is the same container, for a screen that needs to drive it itself.
  */
 export function useScrollToTop<T extends ScrollTarget>() {
   const ref = useRef<T | null>(null);
@@ -42,12 +44,39 @@ export function useScrollToTop<T extends ScrollTarget>() {
   // Mirrors `scrolled` so the listener can tell whether the threshold was
   // actually crossed without depending on (and being rebuilt by) the state.
   const scrolledRef = useRef(false);
+  // The last container this hook was attached to, kept across the detach that
+  // precedes a remount — see `attach`, which needs to compare against it after
+  // React has already cleared `ref`.
+  const attached = useRef<T | null>(null);
 
   const setScrolledOnce = useCallback((next: boolean) => {
     if (next === scrolledRef.current) return;
     scrolledRef.current = next;
     setScrolled(next);
   }, []);
+
+  /**
+   * Holds the container, and resets on a *replacement* of it.
+   *
+   * The grid lists are keyed by their column count, because React Native
+   * refuses an in-place `numColumns` change — so crossing a resize breakpoint
+   * destroys the list and recreates it at offset 0. This state lives in the
+   * parent and survives that untouched, which left the button floating over a
+   * list already at the top with no scroll event coming to correct it. A new
+   * node arriving where an old one was is the one signal that says it happened,
+   * whatever the cause, so no screen has to remember to report it.
+   */
+  const attach = useCallback(
+    (node: T | null) => {
+      ref.current = node;
+      // The detach half of a remount: keep `attached` so the node that follows
+      // can be recognised as a different one.
+      if (!node) return;
+      if (attached.current && attached.current !== node) setScrolledOnce(false);
+      attached.current = node;
+    },
+    [setScrolledOnce],
+  );
 
   const onScroll = useCallback(
     (event: NativeSyntheticEvent<NativeScrollEvent>) => {
@@ -69,7 +98,9 @@ export function useScrollToTop<T extends ScrollTarget>() {
 
   return {
     /** Spread onto the FlatList / ScrollView. */
-    scrollProps: { ref, onScroll, scrollEventThrottle: THROTTLE },
+    scrollProps: { ref: attach, onScroll, scrollEventThrottle: THROTTLE },
+    /** The attached container, for a screen that scrolls it for its own reasons. */
+    listRef: ref,
     /** True once the content is scrolled far enough to offer a jump back up. */
     scrolled,
     scrollToTop,

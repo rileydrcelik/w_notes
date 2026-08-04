@@ -7,11 +7,13 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ConfirmDialog } from '@/components/confirm-dialog';
 import { BottomFade } from '@/components/edge-fade';
 import { ScrollToTopButton } from '@/components/scroll-to-top';
+import { SearchBar } from '@/components/search-bar';
 import { SwipeBackView } from '@/components/swipe-back-view';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Spacing } from '@/constants/theme';
-import { GRID_COLUMNS, gridEdgePadding, trailingSpacers, useGridColumnWidth, useTileHeight } from '@/lib/grid';
+import { trailingSpacers, useGridColumns, useGridColumnWidth, useGridEdgePadding, useTileHeight } from '@/lib/grid';
+import { rankMatches } from '@/lib/search';
 import { useScrollToTop } from '@/hooks/use-scroll-to-top';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
 import { useTheme } from '@/hooks/use-theme';
@@ -37,12 +39,33 @@ export default function TrashScreen() {
   const tabBarInset = useTabBarInset();
   const insets = useSafeAreaInsets();
   const tileHeight = useTileHeight();
+  const columns = useGridColumns();
   const columnWidth = useGridColumnWidth();
+  const edgePadding = useGridEdgePadding();
   const { scrollProps, scrolled, scrollToTop } = useScrollToTop<FlatList<GridItem>>();
   const [restoreTarget, setRestoreTarget] = useState<TrashEntry | null>(null);
+  const [query, setQuery] = useState('');
+  const q = query.trim();
+  const searching = q.length > 0;
 
-  const items: GridItem[] = trash.map((entry) => ({ kind: 'entry' as const, entry }));
-  for (let i = 0; i < trailingSpacers(items.length); i++) items.push({ kind: 'spacer' });
+  // A trashed folder carries its whole subtree, and what you remember is
+  // usually the note rather than the folder it happened to sit in — so a folder
+  // entry matches on its descendants' names too. Names only: trash is "where did
+  // the thing I deleted go", which is a question about titles.
+  const entryFields = (entry: TrashEntry) =>
+    entry.kind === 'note'
+      ? { titles: [entry.note.title], body: entry.note.body }
+      : {
+          titles: [
+            entry.folder.name,
+            ...entry.folders.map((folder) => folder.name),
+            ...entry.notes.map((note) => note.title),
+          ],
+        };
+
+  const matched = searching ? rankMatches(trash, q, entryFields) : trash;
+  const items: GridItem[] = matched.map((entry) => ({ kind: 'entry' as const, entry }));
+  for (let i = 0; i < trailingSpacers(items.length, columns); i++) items.push({ kind: 'spacer' });
 
   const restoreName =
     restoreTarget?.kind === 'note' ? restoreTarget.note.title : restoreTarget?.folder.name;
@@ -60,17 +83,30 @@ export default function TrashScreen() {
           {...scrollProps}
           data={items}
           keyExtractor={(it, index) => (it.kind === 'entry' ? it.entry.id : `spacer-${index}`)}
-          numColumns={GRID_COLUMNS}
+          numColumns={columns}
+          // The column count changes with the window on web, and React Native
+          // refuses to change numColumns in place — the list must remount.
+          key={columns}
           columnWrapperStyle={styles.row}
           contentContainerStyle={[
             styles.content,
-            gridEdgePadding,
+            edgePadding,
             { paddingTop: insets.top + Spacing.two, paddingBottom: tabBarInset },
           ]}
-          ListHeaderComponent={<ThemedText type="subtitle" style={styles.title}>Trash</ThemedText>}
+          ListHeaderComponent={
+            <View>
+              <ThemedText type="subtitle" style={styles.title}>
+                Trash
+              </ThemedText>
+              {/* Only offered when there is something to filter. */}
+              {trash.length > 0 && (
+                <SearchBar value={query} onChangeText={setQuery} placeholder="Search trash" />
+              )}
+            </View>
+          }
           ListEmptyComponent={
             <ThemedText themeColor="textSecondary" style={styles.empty}>
-              Trash is empty.
+              {searching ? `Nothing in the trash matches “${q}”.` : 'Trash is empty.'}
             </ThemedText>
           }
           renderItem={({ item }) => {

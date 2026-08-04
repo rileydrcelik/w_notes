@@ -303,3 +303,41 @@ class ResumeVersion(Base):
         Index("idx_resume_versions_user_seq", "user_id", "server_seq"),
         Index("idx_resume_versions_user_note", "user_id", "note_id"),
     )
+
+
+class UserSetting(Base):
+    """One account-scoped preference, e.g. the chosen theme.
+
+    ``id`` *is* the preference name (``themeKey``), so this is a key-value store
+    that syncs: a second preference costs a row rather than a migration, and the
+    server never needs to know what any of them mean. ``value`` is opaque text
+    the client owns.
+
+    Not to be confused with the client's device-local ``settings`` table, which
+    holds the sync cursor and device key. Those describe a device's relationship
+    to the server and would be incoherent to share between devices; these
+    describe the person, and are the point of the exercise.
+
+    A preference is a singleton, so every write to one is a conflict with the
+    last: this is plain last-writer-wins on ``updated_at``, and the loser is a
+    theme rather than anyone's writing.
+    """
+
+    __tablename__ = "user_settings"
+
+    user_id: Mapped[str] = mapped_column(
+        String, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+
+    value: Mapped[str] = mapped_column(Text, nullable=False, default="")
+
+    created_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    updated_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    deleted_at: Mapped[int | None] = mapped_column(BigInteger)
+
+    server_seq: Mapped[int] = mapped_column(
+        BigInteger, server_default=SERVER_SEQ_DEFAULT, nullable=False
+    )
+
+    __table_args__ = (Index("idx_user_settings_user_seq", "user_id", "server_seq"),)

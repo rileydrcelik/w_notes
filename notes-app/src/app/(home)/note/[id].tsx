@@ -41,7 +41,7 @@ export default function NoteScreen() {
   // Measured height of the sticky title block, so the fade gradient sits right
   // beneath it regardless of how many lines the title wraps to.
   const [titleHeight, setTitleHeight] = useState(0);
-  const { scrollProps, scrolled, scrollToTop } = useScrollToTop<ScrollView>();
+  const { scrollProps, listRef, scrolled, scrollToTop } = useScrollToTop<ScrollView>();
 
   // How much of the scroll frame the keyboard is covering. Android only: the
   // window is edge-to-edge there, so the keyboard overlaps the frame instead of
@@ -92,7 +92,7 @@ export default function NoteScreen() {
     // plus a little room so the caret isn't flush against the keyboard.
     const y = e.nativeEvent.layout.height - visible + Spacing.six;
     if (y <= 0) return;
-    scrollProps.ref.current?.scrollTo({ y, animated: true });
+    listRef.current?.scrollTo({ y, animated: true });
   };
 
   const note = getNote(id);
