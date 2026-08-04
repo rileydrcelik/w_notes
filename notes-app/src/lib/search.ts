@@ -81,6 +81,14 @@ export type SearchFields = {
 };
 
 /**
+ * A flattened body, in the two forms this module needs it: `lower` to match
+ * against, `text` to show. Both are kept because a snippet quotes the note back
+ * to the reader, and lower-casing what it quotes would be a visible lie about
+ * what the note says.
+ */
+type FlatBody = { text: string; lower: string };
+
+/**
  * Flattened bodies, keyed by the HTML they came from.
  *
  * The sidebar re-tests the same note once per ancestor folder as it prunes the
@@ -92,16 +100,21 @@ export type SearchFields = {
  * short-lived and an LRU's bookkeeping would cost more than the occasional
  * re-flatten it saves.
  */
-const bodyCache = new Map<string, string>();
+const bodyCache = new Map<string, FlatBody>();
 const BODY_CACHE_LIMIT = 200;
 
-function bodyText(html: string): string {
+function flatBody(html: string): FlatBody {
   const hit = bodyCache.get(html);
   if (hit !== undefined) return hit;
-  const text = htmlToPlainText(html).toLowerCase();
+  const text = htmlToPlainText(html);
+  const flat = { text, lower: text.toLowerCase() };
   if (bodyCache.size >= BODY_CACHE_LIMIT) bodyCache.clear();
-  bodyCache.set(html, text);
-  return text;
+  bodyCache.set(html, flat);
+  return flat;
+}
+
+function bodyText(html: string): string {
+  return flatBody(html).lower;
 }
 
 /**
@@ -202,6 +215,11 @@ function scoreTerm(fields: SearchFields, term: string): number {
   return at >= 0 ? Math.max(best, BODY_SUBSTRING + positionBonus(at)) : best;
 }
 
+/** The words a query is made of, lower-cased. Empty for a blank query. */
+function queryTerms(query: string): string[] {
+  return query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+}
+
 /**
  * How well one thing matches a query. Zero means it doesn't; higher is better.
  * Only the ordering of scores is meaningful — never the absolute number.
@@ -213,7 +231,7 @@ function scoreTerm(fields: SearchFields, term: string): number {
  * single-term query so the two rank consistently against each other.
  */
 export function scoreMatch(fields: SearchFields, query: string): number {
-  const terms = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const terms = queryTerms(query);
   if (terms.length === 0) return NO_MATCH;
 
   let total = 0;
@@ -261,4 +279,134 @@ export function rankMatches<T>(
   });
 
   return scored.map((entry) => entry.item);
+}
+
+/**
+ * One run of snippet text, flagged when it is part of what the query matched.
+ * A snippet is a list of these so a card can emphasise the matched words in
+ * place rather than showing the reader a paragraph and leaving them to find it.
+ */
+export type SnippetPart = { text: string; match: boolean };
+
+/**
+ * Characters of the note kept ahead of the match. Enough for the phrase to have
+ * a run-up — a match flush against the left edge reads as the start of the note,
+ * which it usually isn't.
+ */
+const SNIPPET_LEAD = 24;
+
+/** Characters a snippet may show, before its ellipses. About four narrow lines. */
+const SNIPPET_LENGTH = 140;
+
+/** Merge overlapping/touching ranges, which two terms sharing letters produce. */
+function mergeRanges(ranges: [number, number][]): [number, number][] {
+  const sorted = [...ranges].sort((a, b) => a[0] - b[0]);
+  const merged: [number, number][] = [];
+  for (const [start, end] of sorted) {
+    const last = merged[merged.length - 1];
+    if (last && start <= last[1]) last[1] = Math.max(last[1], end);
+    else merged.push([start, end]);
+  }
+  return merged;
+}
+
+/**
+ * A window of a note's body around what the query matched, with the matched
+ * words marked.
+ *
+ * Ranking put the note in the list; this says *why* it's there. A body-only hit
+ * — the query appears in paragraph nine and nowhere in the title — otherwise
+ * renders an ordinary card showing an opening paragraph with no trace of what
+ * was searched for, and the reader has to open every result to find out which
+ * one they meant.
+ *
+ * Returns `null` when no term is literally in the body, which is the case for a
+ * title match and for a fuzzy one. That's deliberate: the caller falls back to
+ * the note's normal preview, so a card never invents a reason it can't point at.
+ * It means the snippet is only ever shown when it is true.
+ *
+ * Only the *first* match sets the window, and every occurrence inside that
+ * window is marked. Chasing the best occurrence would need a second scoring
+ * pass, and for a card-sized excerpt the earliest hit is as good an answer as
+ * any — it is the one a reader scanning from the top would find first.
+ */
+export function matchSnippet(
+  body: string,
+  query: string,
+  length: number = SNIPPET_LENGTH,
+): SnippetPart[] | null {
+  const terms = queryTerms(query);
+  if (terms.length === 0 || !body) return null;
+
+  const { text, lower } = flatBody(body);
+  if (!text) return null;
+
+  // Earliest literal hit of any term; its own end matters too, so the window
+  // can never be trimmed back through the very match it exists to show.
+  let first = -1;
+  let firstEnd = -1;
+  for (const term of terms) {
+    const at = lower.indexOf(term);
+    if (at >= 0 && (first < 0 || at < first)) {
+      first = at;
+      firstEnd = at + term.length;
+    }
+  }
+  if (first < 0) return null;
+
+  // Snap the window's edges to word boundaries: half a word at either end reads
+  // as a typo rather than as an excerpt.
+  let from = Math.max(0, first - SNIPPET_LEAD);
+  if (from > 0) {
+    const gap = text.slice(from, first).search(/\s/);
+    if (gap >= 0) from += gap + 1;
+  }
+
+  let to = Math.min(text.length, from + length);
+  if (to < text.length) {
+    const cut = text.slice(0, to).search(/\s\S*$/);
+    // Only back up to a boundary that still leaves the match whole. A narrow
+    // window can land mid-match, and trimming to the last space would then cut
+    // away the very words the snippet exists to show — a trailing part-word is
+    // the lesser evil. `>=` so a boundary sitting exactly at the end of the
+    // match counts as leaving it whole.
+    if (cut >= firstEnd) to = cut;
+  }
+
+  const ranges: [number, number][] = [];
+  for (const term of terms) {
+    let at = lower.indexOf(term, from);
+    while (at >= 0 && at + term.length <= to) {
+      ranges.push([at - from, at - from + term.length]);
+      at = lower.indexOf(term, at + term.length);
+    }
+  }
+
+  // Blocks became newlines when the body was flattened; a snippet is one run of
+  // prose, so they read as spaces here. Substituted one-for-one, which is what
+  // keeps the offsets above pointing at the same characters.
+  const window = text.slice(from, to).replace(/\n/g, ' ');
+  const head = from > 0 ? '…' : '';
+  const tail = to < text.length ? '…' : '';
+
+  const parts: SnippetPart[] = [];
+  let at = 0;
+  for (const [start, end] of mergeRanges(ranges)) {
+    if (start > at) parts.push({ text: window.slice(at, start), match: false });
+    parts.push({ text: window.slice(start, end), match: true });
+    at = end;
+  }
+  if (at < window.length) parts.push({ text: window.slice(at), match: false });
+
+  if (head) {
+    if (parts[0].match) parts.unshift({ text: head, match: false });
+    else parts[0] = { text: head + parts[0].text, match: false };
+  }
+  if (tail) {
+    const last = parts[parts.length - 1];
+    if (last.match) parts.push({ text: tail, match: false });
+    else parts[parts.length - 1] = { text: last.text + tail, match: false };
+  }
+
+  return parts;
 }

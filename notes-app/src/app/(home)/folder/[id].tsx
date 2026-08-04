@@ -167,7 +167,9 @@ export default function FolderScreen() {
             }
             return (
               <View style={[styles.cardCell, { width: columnWidth }]}>
-                <NoteCard note={item.note} />
+                {/* While searching, the card shows the line it matched on
+                    instead of its opening paragraph. */}
+                <NoteCard note={item.note} query={searching ? q : undefined} />
               </View>
             );
           }}

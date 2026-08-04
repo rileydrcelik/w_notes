@@ -14,7 +14,14 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { matchesQuery, rankMatches, scoreMatch, NO_MATCH } from '@/lib/search';
+import {
+  matchSnippet,
+  matchesQuery,
+  rankMatches,
+  scoreMatch,
+  NO_MATCH,
+  type SnippetPart,
+} from '@/lib/search';
 
 /** A note body as the rich editor actually stores it. */
 const html = (...blocks: string[]) => blocks.join('');
@@ -244,5 +251,114 @@ describe('rankMatches', () => {
       titles: [item.label, item.fileName],
     }));
     expect(ranked.map((item) => item.id)).toEqual(['file']);
+  });
+});
+
+describe('match snippet', () => {
+  /** The text a snippet shows, as a reader would see it. */
+  const shown = (parts: SnippetPart[] | null) => (parts ?? []).map((part) => part.text).join('');
+  /** Just the runs the snippet marks as matched. */
+  const marked = (parts: SnippetPart[] | null) =>
+    (parts ?? []).filter((part) => part.match).map((part) => part.text);
+
+  it('shows the words around a hit buried in the body', () => {
+    // The whole point: this note is in the results because of a sentence far
+    // below the fold, and its ordinary preview would show none of it.
+    const body = html(
+      '<p>Opening paragraph about nothing in particular at all.</p>',
+      '<p>Then, much later, the quarterly tax deadline is the 15th.</p>',
+    );
+    const snippet = matchSnippet(body, 'deadline');
+    expect(marked(snippet)).toEqual(['deadline']);
+    expect(shown(snippet)).toContain('quarterly tax deadline is the 15th');
+  });
+
+  it('says nothing when the body does not contain the query', () => {
+    // A title hit already shows the reader why the card is there, and a fuzzy
+    // one has no literal text to point at. Inventing an excerpt for either
+    // would put words in the note's mouth, so both fall back to the preview.
+    const body = html('<p>Milk, eggs, bread.</p>');
+    expect(matchSnippet(body, 'groceries')).toBeNull();
+    expect(matchSnippet(body, 'grocries')).toBeNull();
+    expect(matchSnippet('', 'milk')).toBeNull();
+    expect(matchSnippet(body, '   ')).toBeNull();
+  });
+
+  it('quotes the note in its own case', () => {
+    // Matching is case-insensitive; the excerpt is a quotation, and a
+    // lower-cased one would misreport what the note says.
+    const snippet = matchSnippet(html('<p>The Tax Deadline moved.</p>'), 'tax deadline');
+    expect(shown(snippet)).toContain('Tax Deadline');
+    // Two runs, not one: terms are matched independently and need not be
+    // adjacent, so the space between them is ordinary text that happens to sit
+    // between two hits.
+    expect(marked(snippet)).toEqual(['Tax', 'Deadline']);
+  });
+
+  it('reads through the markup, like the matching does', () => {
+    // Same bug as the rest of this file: the stored body is `Q<strong>3</strong>`,
+    // so a snippet taken from the raw HTML would neither find the match nor be
+    // readable if it did.
+    const snippet = matchSnippet(html('<p>Q<strong>3</strong> revenue is up</p>'), 'q3');
+    expect(shown(snippet)).toBe('Q3 revenue is up');
+    expect(marked(snippet)).toEqual(['Q3']);
+  });
+
+  it('marks every occurrence it shows, and every term of the query', () => {
+    // A reader scanning the excerpt shouldn't have to wonder why one instance
+    // of the word is lit and the next one isn't.
+    const body = html('<p>tax season means tax forms and a tax bill</p>');
+    expect(marked(matchSnippet(body, 'tax'))).toEqual(['tax', 'tax', 'tax']);
+    expect(marked(matchSnippet(body, 'tax bill'))).toEqual(['tax', 'tax', 'tax', 'bill']);
+  });
+
+  it('marks overlapping terms once rather than twice', () => {
+    // "tax" and "ax" both hit the same letters; two ranges over one word would
+    // slice it into fragments and render it as three separate runs.
+    const snippet = matchSnippet(html('<p>the tax form</p>'), 'tax ax');
+    expect(marked(snippet)).toEqual(['tax']);
+    expect(shown(snippet)).toBe('the tax form');
+  });
+
+  it('ellipsizes what it cut, and cuts on word boundaries', () => {
+    const body = html(
+      `<p>${'padding word '.repeat(12)}the quarterly deadline arrives ${'trailing word '.repeat(12)}</p>`,
+    );
+    const snippet = matchSnippet(body, 'deadline');
+    const text = shown(snippet);
+    expect(text.startsWith('…')).toBe(true);
+    expect(text.endsWith('…')).toBe(true);
+    // No half-words at either edge: every word between the ellipses is whole.
+    expect(text.replace(/^…|…$/g, '').split(' ')).not.toContain('');
+    for (const word of text.replace(/^…|…$/g, '').trim().split(' ')) {
+      expect(['padding', 'word', 'the', 'quarterly', 'deadline', 'arrives', 'trailing']).toContain(word);
+    }
+  });
+
+  it('does not ellipsize a body that fits whole', () => {
+    // The ellipsis means "there is more here"; on a short note there isn't, and
+    // a decorative one would be a lie about the note's length.
+    expect(shown(matchSnippet(html('<p>a short tax note</p>'), 'tax'))).toBe('a short tax note');
+  });
+
+  it('reads a multi-block body as one run of prose', () => {
+    // Blocks are lines in the flattened body; a card shows a single excerpt, so
+    // they have to arrive as spaces — and one-for-one, or every offset after
+    // the first line would point at the wrong character.
+    const snippet = matchSnippet(html('<p>First line</p>', '<p>tax second line</p>'), 'tax');
+    expect(shown(snippet)).toBe('First line tax second line');
+    expect(marked(snippet)).toEqual(['tax']);
+  });
+
+  it('keeps the match inside the window however narrow it is', () => {
+    // The window is measured from a point *before* the match, and its far edge
+    // is then pulled back to a word boundary — so a narrow one can land inside
+    // the match and trim away the very words it exists to show. A range of
+    // widths, because the failure only appears at those that put the last
+    // boundary short of the match's end.
+    const body = html(`<p>${'padding word '.repeat(12)}deadline${' trailing word'.repeat(12)}</p>`);
+    for (const width of [26, 30, 34, 40, 60, 90]) {
+      expect(marked(matchSnippet(body, 'deadline', width))).toEqual(['deadline']);
+    }
   });
 });

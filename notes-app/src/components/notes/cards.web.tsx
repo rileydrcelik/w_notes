@@ -3,6 +3,7 @@ import { useRouter } from 'expo-router';
 import { Pressable, StyleSheet, View } from 'react-native';
 
 import { FavoriteStar } from '@/components/favorite-star';
+import { MatchSnippet } from '@/components/notes/match-snippet';
 import { SheetGlyph } from '@/components/notes/sheet-glyph';
 import { ACCENT as RESUME_ACCENT } from '@/components/resume/accent';
 import { ThemedText } from '@/components/themed-text';
@@ -18,6 +19,7 @@ import { useContextMenu } from '@/hooks/use-context-menu';
 import { useDoubleTap } from '@/hooks/use-double-tap';
 import { useTheme } from '@/hooks/use-theme';
 import { htmlToPlainText } from '@/lib/html-text';
+import { matchSnippet } from '@/lib/search';
 import { useItemSelection } from '@/store/item-selection-store';
 import { useNotes } from '@/store/notes-store';
 
@@ -145,7 +147,11 @@ function ProjectFolderCard({ folder }: { folder: Folder }) {
   );
 }
 
-export function NoteCard({ note }: { note: Note }) {
+/**
+ * `query` is the search this card is a result of, when it is one — see the
+ * native `cards.tsx` for what it's for. Keep the two signatures identical.
+ */
+export function NoteCard({ note, query }: { note: Note; query?: string }) {
   // Plugin notes render as distinct cards that open live content instead of the
   // text editor. Branch before any hooks so those cards keep their own hook order.
   if (note.pluginType === 'sentry') return <SentryNoteCard note={note} />;
@@ -154,7 +160,7 @@ export function NoteCard({ note }: { note: Note }) {
   // A resume's body is LaTeX source, so it must never reach TextNoteCard — that
   // would flatten raw LaTeX as if it were HTML.
   if (isResumeNote(note)) return <ResumeNoteCard note={note} />;
-  return <TextNoteCard note={note} />;
+  return <TextNoteCard note={note} query={query} />;
 }
 
 /**
@@ -198,7 +204,7 @@ function FinanceNoteCard({ note }: { note: Note }) {
   );
 }
 
-function TextNoteCard({ note }: { note: Note }) {
+function TextNoteCard({ note, query }: { note: Note; query?: string }) {
   const router = useRouter();
   const { toggleNoteFavorite } = useNotes();
   const { active, isSelected, toggle } = useItemSelection();
@@ -225,6 +231,11 @@ function TextNoteCard({ note }: { note: Note }) {
   // for the preview (same helper the copa list uses).
   const preview = note.body.trim().length > 0 ? htmlToPlainText(note.body) : '';
 
+  // While this card is a search result, the preview gives way to the excerpt
+  // that says why — see the native card. Null when the query isn't literally in
+  // the body, and the preview above stands.
+  const snippet = query ? matchSnippet(note.body, query) : null;
+
   return (
     <Pressable
       ref={contextMenuRef}
@@ -238,15 +249,18 @@ function TextNoteCard({ note }: { note: Note }) {
           </ThemedText>
           {note.favorite && <FavoriteStar size={13} />}
         </View>
-        {preview.length > 0 && previewLines > 0 && (
-          <ThemedText
-            numberOfLines={previewLines}
-            ellipsizeMode="tail"
-            themeColor="textSecondary"
-            style={PREVIEW_TEXT}>
-            {preview}
-          </ThemedText>
-        )}
+        {previewLines > 0 &&
+          (snippet ? (
+            <MatchSnippet parts={snippet} numberOfLines={previewLines} style={PREVIEW_TEXT} />
+          ) : preview.length > 0 ? (
+            <ThemedText
+              numberOfLines={previewLines}
+              ellipsizeMode="tail"
+              themeColor="textSecondary"
+              style={PREVIEW_TEXT}>
+              {preview}
+            </ThemedText>
+          ) : null)}
       </ThemedView>
     </Pressable>
   );

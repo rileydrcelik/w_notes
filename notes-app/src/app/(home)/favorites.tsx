@@ -104,7 +104,12 @@ export default function FavoritesScreen() {
             }
             return (
               <View style={[styles.cardCell, { width: columnWidth }]}>
-                <NoteCard note={favoriteNotes.find((n) => n.id === item.id)!} />
+                {/* While searching, the card shows the line it matched on
+                    instead of its opening paragraph. */}
+                <NoteCard
+                  note={favoriteNotes.find((n) => n.id === item.id)!}
+                  query={searching ? q : undefined}
+                />
               </View>
             );
           }}

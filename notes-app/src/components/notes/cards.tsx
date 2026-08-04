@@ -5,6 +5,7 @@ import { Pressable, StyleSheet, View } from 'react-native';
 import { EnrichedText, type EnrichedTextHtmlStyle } from 'react-native-enriched';
 
 import { FavoriteStar } from '@/components/favorite-star';
+import { MatchSnippet } from '@/components/notes/match-snippet';
 import { SheetGlyph } from '@/components/notes/sheet-glyph';
 import { ACCENT as RESUME_ACCENT } from '@/components/resume/accent';
 import { ThemedText } from '@/components/themed-text';
@@ -16,6 +17,7 @@ import { githubTarget } from '@/lib/github-note';
 import { isResumeNote, resumeSourceExcerpt, resumeTitle } from '@/lib/resume-note';
 import { useCardPreviewLines, useTileHeight } from '@/lib/grid';
 import { projectConfig } from '@/lib/project';
+import { matchSnippet } from '@/lib/search';
 import { useDoubleTap } from '@/hooks/use-double-tap';
 import { useTheme } from '@/hooks/use-theme';
 import { useItemSelection } from '@/store/item-selection-store';
@@ -158,7 +160,14 @@ function ProjectFolderCard({ folder }: { folder: Folder }) {
   );
 }
 
-export function NoteCard({ note }: { note: Note }) {
+/**
+ * `query` is the search this card is a result of, when it is one. It reaches
+ * the card so a body-only hit can show the line it matched on (see
+ * `MatchSnippet`); a browsing feed passes nothing and the card is unchanged.
+ * Only the plain text card uses it — a plugin card previews a live resource
+ * rather than the body the search read, and a resume's body is LaTeX.
+ */
+export function NoteCard({ note, query }: { note: Note; query?: string }) {
   // Plugin notes render as distinct cards that open live content instead of the
   // text editor. Branch before any hooks so those cards keep their own hook order.
   if (note.pluginType === 'sentry') return <SentryNoteCard note={note} />;
@@ -167,7 +176,7 @@ export function NoteCard({ note }: { note: Note }) {
   // A resume's body is LaTeX source, so it must never reach TextNoteCard — that
   // would hand raw LaTeX to the rich-text renderer.
   if (isResumeNote(note)) return <ResumeNoteCard note={note} />;
-  return <TextNoteCard note={note} />;
+  return <TextNoteCard note={note} query={query} />;
 }
 
 /**
@@ -207,7 +216,7 @@ function FinanceNoteCard({ note }: { note: Note }) {
   );
 }
 
-function TextNoteCard({ note }: { note: Note }) {
+function TextNoteCard({ note, query }: { note: Note; query?: string }) {
   const router = useRouter();
   const { toggleNoteFavorite } = useNotes();
   const { active, isSelected, toggle } = useItemSelection();
@@ -233,6 +242,15 @@ function TextNoteCard({ note }: { note: Note }) {
     PREVIEW_MAX_LINES,
   );
 
+  // The excerpt that says why this card is in a result list. Null when the
+  // query isn't in the body — a title or fuzzy match — and the ordinary preview
+  // stands. Losing the rich formatting for the length of a search is the point:
+  // relevance is what the reader is asking for while they're typing.
+  const snippet = useMemo(
+    () => (query ? matchSnippet(note.body, query) : null),
+    [note.body, query],
+  );
+
   return (
     <Pressable
       style={({ pressed }) => [styles.cardWrapper, { height: tileHeight }, pressed && styles.pressed]}
@@ -245,15 +263,18 @@ function TextNoteCard({ note }: { note: Note }) {
           </ThemedText>
           {note.favorite && <FavoriteStar size={13} />}
         </View>
-        {note.body.trim().length > 0 && previewLines > 0 && (
-          <EnrichedText
-            numberOfLines={previewLines}
-            ellipsizeMode="tail"
-            style={textStyle}
-            htmlStyle={html}>
-            {note.body}
-          </EnrichedText>
-        )}
+        {previewLines > 0 &&
+          (snippet ? (
+            <MatchSnippet parts={snippet} numberOfLines={previewLines} style={PREVIEW_TEXT} />
+          ) : note.body.trim().length > 0 ? (
+            <EnrichedText
+              numberOfLines={previewLines}
+              ellipsizeMode="tail"
+              style={textStyle}
+              htmlStyle={html}>
+              {note.body}
+            </EnrichedText>
+          ) : null)}
       </ThemedView>
     </Pressable>
   );
