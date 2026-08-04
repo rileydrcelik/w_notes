@@ -350,6 +350,18 @@ describe('match snippet', () => {
     expect(marked(snippet)).toEqual(['tax']);
   });
 
+  it('shows nothing rather than an excerpt that highlights nothing', () => {
+    // Two ways the window can close before it reaches the match: a term longer
+    // than the window, and a caller asking for a length that can't hold one.
+    // Both used to return a "snippet" with no marked run — an excerpt claiming
+    // to say why the card matched while pointing at nothing — and the second
+    // built that from an empty list of parts and threw.
+    const long = 'z'.repeat(200);
+    expect(matchSnippet(html(`<p>a note containing ${long} in it</p>`), long)).toBeNull();
+    expect(matchSnippet(html('<p>the tax form</p>'), 'tax', 0)).toBeNull();
+    expect(matchSnippet(html('<p>the tax form</p>'), 'tax', -5)).toBeNull();
+  });
+
   it('keeps the match inside the window however narrow it is', () => {
     // The window is measured from a point *before* the match, and its far edge
     // is then pulled back to a word boundary — so a narrow one can land inside

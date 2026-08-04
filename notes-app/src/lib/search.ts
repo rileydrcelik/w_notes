@@ -398,6 +398,14 @@ export function matchSnippet(
   }
   if (at < window.length) parts.push({ text: window.slice(at), match: false });
 
+  // Nothing marked means the window closed before it reached the match — a
+  // query term longer than the window itself, or a caller asking for a length
+  // too small to hold one. Either way there is no reason left to point at, so
+  // this falls back to the ordinary preview rather than showing an excerpt that
+  // highlights nothing, which is the same promise the no-literal-hit case makes
+  // above. It also keeps the ellipsis splicing below off an empty list.
+  if (!parts.some((part) => part.match)) return null;
+
   if (head) {
     if (parts[0].match) parts.unshift({ text: head, match: false });
     else parts[0] = { text: head + parts[0].text, match: false };
