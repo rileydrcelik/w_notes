@@ -1,5 +1,6 @@
 import { LinearGradient } from 'expo-linear-gradient';
-import { useState } from 'react';
+import { useFocusEffect } from 'expo-router';
+import { useCallback, useState } from 'react';
 import { FlatList, Platform, RefreshControl, StyleSheet, View } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, { runOnJS } from 'react-native-reanimated';
@@ -32,7 +33,56 @@ type GridItem =
 const OPEN_DISTANCE = 60;
 const OPEN_VELOCITY = 500;
 
+/**
+ * Web: drop the query string a deep link left behind on the home address.
+ *
+ * A screen opened by URL — a reload on `/note/x`, a shared link — gets home
+ * synthesized beneath it by `unstable_settings.anchor` (see `_layout.tsx`).
+ * Popping to it lands on `/?id=note-…`: the right screen wearing the previous
+ * one's address. Nothing here reads `id`, so that URL still works; it is simply
+ * the wrong one to leave for someone to copy or bookmark.
+ *
+ * Two things about the shape of this, both learned the hard way by an earlier
+ * attempt (`1f9ce8b`, reverted in `ae3c244`) that did the same job in a bare
+ * render-time effect and fixed nothing:
+ *
+ * **On focus, not on render.** `HomeScreen` stays mounted underneath every
+ * screen this stack pushes, and it re-renders whenever the notes store changes
+ * — which is every keystroke of a folder rename, from a screen that is not this
+ * one. An unscoped version therefore reached out and stripped the query of
+ * whatever route *was* showing, and `/folder/x?created=1` is a real one: that
+ * flag is what lets an abandoned empty folder delete itself. Focus is the only
+ * moment at which "the current URL" is reliably ours to edit.
+ *
+ * **A tick later, not now.** The router writes the address after this: its
+ * `history.replace` is queued as a microtask from the navigation container's
+ * own effect, and React flushes a child's effects before its parent's. Reading
+ * `location.search` synchronously here reads the URL from *before* the write,
+ * finds it clean, and returns — then the id lands, with no further render to
+ * catch it. A macrotask runs after every microtask queued this turn, so this
+ * sees the address the user will actually be left looking at.
+ *
+ * `replaceState` rather than a router call, because home is already the screen
+ * we are on and navigating again to tidy an address would remount the grid and
+ * lose its scroll position. Guarded by `Platform.OS` rather than split into a
+ * `.web` file — a native/web pair drifting out of sync has broken app launch
+ * here before.
+ */
+function useCleanHomeUrl() {
+  useFocusEffect(
+    useCallback(() => {
+      if (Platform.OS !== 'web' || typeof window === 'undefined') return;
+      const timer = setTimeout(() => {
+        if (!window.location.search) return;
+        window.history.replaceState(window.history.state, '', window.location.pathname);
+      }, 0);
+      return () => clearTimeout(timer);
+    }, []),
+  );
+}
+
 export default function HomeScreen() {
+  useCleanHomeUrl();
   const { folders, notes, getRootNotes, getRootFolders } = useNotes();
   const tabBarInset = useTabBarInset();
   const insets = useSafeAreaInsets();
@@ -171,7 +221,9 @@ export default function HomeScreen() {
             const note = notes.find((n) => n.id === item.id)!;
             return (
               <View style={[styles.cardCell, { width: columnWidth }]}>
-                <NoteCard note={note} />
+                {/* While searching, the card shows the line it matched on
+                    instead of its opening paragraph. */}
+                <NoteCard note={note} query={searching ? q : undefined} />
               </View>
             );
           }}
