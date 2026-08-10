@@ -1,0 +1,4 @@
+# Patch files are applied by patch-package against LF sources in node_modules.
+# Letting git hand a Windows checkout CRLF copies makes the hunks stop matching,
+# so the fix silently fails to apply on a fresh clone. Keep them LF everywhere.
+*.patch text eol=lf

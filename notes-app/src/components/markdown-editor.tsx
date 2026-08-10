@@ -100,6 +100,10 @@ export function MarkdownEditor({
   // rewrites the body — the signal can't tell that damage apart from a note
   // legitimately written about HTML — but it does mean the corruption stops
   // being silent, and gives us the frequency this needs to be judged on.
+  //
+  // The Android half of that now degrades to the clipboard's plain-text
+  // flavour instead of inserting markup (same patch), so this should only
+  // still fire from iOS. Keep it until a build confirms that.
   const reportedCorruption = useRef(false);
   const watchForEscapedMarkup = (next: string) => {
     if (reportedCorruption.current) return;
@@ -135,6 +139,15 @@ export function MarkdownEditor({
       // parser rejects those — on iOS it throws and falls back to showing the raw
       // tags as text. The normalizer canonicalizes them into the editor's tag
       // subset (`<ul><li>`, `<b>`, `<codeblock>`, …) so lists & co. render.
+      //
+      // Asking for it isn't quite enough on its own: the library skipped the
+      // normalizer for anything already wrapped in `<html>…</html>`, reading
+      // that shape as proof the markup was its own. A whole HTML document
+      // pasted from another app looks identical, and the parser underneath
+      // opens blocks by bare tag name — so a foreign `<li class="…">` opened
+      // nothing and a pasted list landed as one unbroken run of text. Fixed on
+      // both platforms in `patches/react-native-enriched+0.7.0.patch`; because
+      // that's native code, it only reaches a device through a new build.
       useHtmlNormalizer
       // Android: apply size updates synchronously so a newline (which grows the
       // input) doesn't flicker the layout and bounce the caret back up.

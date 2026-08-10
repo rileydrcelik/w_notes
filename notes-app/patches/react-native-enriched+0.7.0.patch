@@ -1,0 +1,244 @@
+diff --git a/node_modules/react-native-enriched/android/src/main/java/com/swmansion/enriched/textinput/EnrichedTextInputView.kt b/node_modules/react-native-enriched/android/src/main/java/com/swmansion/enriched/textinput/EnrichedTextInputView.kt
+index fe74a7f..2cdc011 100644
+--- a/node_modules/react-native-enriched/android/src/main/java/com/swmansion/enriched/textinput/EnrichedTextInputView.kt
++++ b/node_modules/react-native-enriched/android/src/main/java/com/swmansion/enriched/textinput/EnrichedTextInputView.kt
+@@ -345,8 +345,15 @@ class EnrichedTextInputView :
+     val pastedSpannable: Spannable =
+       when {
+         item.htmlText != null -> {
+-          val parsed = parseText(item.htmlText)
+-          (parsed as? Spannable) ?: return
++          // A failed parse must never reach the buffer as literal markup. The
++          // raw tags would be inserted as text and serialized straight back
++          // out, leaving the note permanently displaying "<li>". Degrade to
++          // the clipboard's plain-text flavour instead: it loses the styling
++          // but keeps the words and the line breaks between them.
++          val parsed = parsePastedHtml(item.htmlText) as? Spannable
++          parsed
++            ?: item.text?.let { SpannableString(it.toString()) }
++            ?: return
+         }
+ 
+         item.text != null -> {
+@@ -389,6 +396,39 @@ class EnrichedTextInputView :
+     }
+   }
+ 
++  /**
++   * Parse HTML arriving from the clipboard, or null if it can't be read.
++   *
++   * Unlike [parseText] this always normalizes first. The wrapper-shape check
++   * below is a fine guess for content this view set on itself, but it is not
++   * evidence about a *paste*: a complete HTML document from any other app is
++   * also "<html>…</html>", and handing that to the strict parser — which opens
++   * blocks by bare tag name — means a foreign <li class="…"> opens no list
++   * item and the whole list arrives as one unbroken run of text.
++   *
++   * Kept off [parseText] deliberately, so loading a note is byte-for-byte the
++   * path it has always been and only pasted content changes behaviour.
++   */
++  private fun parsePastedHtml(html: String): CharSequence? {
++    if (useHtmlNormalizer) {
++      val normalized = GumboNormalizer.normalizeHtml(html)
++      if (normalized != null) {
++        try {
++          return EnrichedParser.fromHtml(normalized, htmlStyle, spannableFactory).trimEnd('\n')
++        } catch (e: Exception) {
++          Log.e(TAG, "Error parsing normalized pasted HTML: ${e.message}")
++        }
++      }
++    }
++
++    return try {
++      EnrichedParser.fromHtml(html, htmlStyle, spannableFactory).trimEnd('\n')
++    } catch (e: Exception) {
++      Log.e(TAG, "Error parsing pasted HTML: ${e.message}")
++      null
++    }
++  }
++
+   private fun parseText(text: CharSequence): CharSequence {
+     val isInternalHtml = text.startsWith("<html>") && text.endsWith("</html>")
+ 
+diff --git a/node_modules/react-native-enriched/cpp/parser/GumboNormalizer.c b/node_modules/react-native-enriched/cpp/parser/GumboNormalizer.c
+index c4ece83..372e37f 100644
+--- a/node_modules/react-native-enriched/cpp/parser/GumboNormalizer.c
++++ b/node_modules/react-native-enriched/cpp/parser/GumboNormalizer.c
+@@ -460,8 +460,25 @@ static void walk_node(GumboNode *node, buffer_t *out);
+ 
+ static void flatten_bq_node(GumboNode *node, buffer_t *ib, buffer_t *out);
+ 
++/* True when the run holds nothing but whitespace. Serialized bodies put a
++   newline between block tags, and HTML parses each of those into a text node
++   sitting between the two blocks. Wrapping one in <p> turns insignificant
++   layout whitespace into a real empty paragraph — a visible blank line at
++   every block boundary, which then gets saved back into the note. */
++static bool buffer_is_blank(const buffer_t *b) {
++  for (size_t i = 0; i < b->len; i++) {
++    if (!isspace((unsigned char)b->data[i]))
++      return false;
++  }
++  return true;
++}
++
+ static void flush_inline_p(buffer_t *ib, buffer_t *out) {
+   if (ib->len > 0) {
++    if (buffer_is_blank(ib)) {
++      buffer_clear(ib);
++      return;
++    }
+     buffer_append_str(out, "<p>");
+     buffer_append(out, ib->data, ib->len);
+     buffer_append_str(out, "</p>");
+diff --git a/node_modules/react-native-enriched/ios/enrichedInputTextView/EnrichedInputTextView/EnrichedInputTextView.mm b/node_modules/react-native-enriched/ios/enrichedInputTextView/EnrichedInputTextView/EnrichedInputTextView.mm
+index 6d19c56..e5023b7 100644
+--- a/node_modules/react-native-enriched/ios/enrichedInputTextView/EnrichedInputTextView/EnrichedInputTextView.mm
++++ b/node_modules/react-native-enriched/ios/enrichedInputTextView/EnrichedInputTextView/EnrichedInputTextView.mm
+@@ -150,7 +150,7 @@
+ 
+     // validate the html
+     NSString *initiallyProcessedHtml =
+-        [typedInput->parser initiallyProcessHtml:htmlString];
++        [typedInput->parser initiallyProcessPastedHtml:htmlString];
+ 
+     if (initiallyProcessedHtml != nullptr) {
+       // valid html, let's apply it
+diff --git a/node_modules/react-native-enriched/ios/htmlParser/HtmlParser.h b/node_modules/react-native-enriched/ios/htmlParser/HtmlParser.h
+index c079cce..10408bd 100644
+--- a/node_modules/react-native-enriched/ios/htmlParser/HtmlParser.h
++++ b/node_modules/react-native-enriched/ios/htmlParser/HtmlParser.h
+@@ -5,6 +5,12 @@
+ @interface HtmlParser : NSObject
+ + (NSString *_Nullable)initiallyProcessHtml:(NSString *_Nonnull)html
+                           useHtmlNormalizer:(BOOL)useHtmlNormalizer;
++/* `forceNormalizer` skips the "wrapped in <html> means we wrote it" shortcut.
++   Pass YES for clipboard content: a whole HTML document from another app has
++   that same shape, and taking the shortcut collapses foreign lists. */
+++ (NSString *_Nullable)initiallyProcessHtml:(NSString *_Nonnull)html
++                          useHtmlNormalizer:(BOOL)useHtmlNormalizer
++                            forceNormalizer:(BOOL)forceNormalizer;
+ + (NSArray *_Nonnull)getTextAndStylesFromHtml:(NSString *_Nonnull)fixedHtml;
+ + (NSString *_Nonnull)parseToHtmlFromRange:(NSRange)range
+                                       host:(id<EnrichedViewHost>)host;
+diff --git a/node_modules/react-native-enriched/ios/htmlParser/HtmlParser.mm b/node_modules/react-native-enriched/ios/htmlParser/HtmlParser.mm
+index f315add..fbba30b 100644
+--- a/node_modules/react-native-enriched/ios/htmlParser/HtmlParser.mm
++++ b/node_modules/react-native-enriched/ios/htmlParser/HtmlParser.mm
+@@ -203,8 +203,17 @@
+ 
+ + (NSString *_Nullable)initiallyProcessHtml:(NSString *_Nonnull)html
+                           useHtmlNormalizer:(BOOL)useHtmlNormalizer {
++  return [self initiallyProcessHtml:html
++                  useHtmlNormalizer:useHtmlNormalizer
++                    forceNormalizer:NO];
++}
++
+++ (NSString *_Nullable)initiallyProcessHtml:(NSString *_Nonnull)html
++                          useHtmlNormalizer:(BOOL)useHtmlNormalizer
++                            forceNormalizer:(BOOL)forceNormalizer {
+   NSString *htmlWithoutSpaces = [self stripExtraWhiteSpacesAndNewlines:html];
+   NSString *fixedHtml = nullptr;
++  BOOL wasNormalized = NO;
+ 
+   if (htmlWithoutSpaces.length >= 13) {
+     NSString *firstSix =
+@@ -212,7 +221,22 @@
+     NSString *lastSeven = [htmlWithoutSpaces
+         substringWithRange:NSMakeRange(htmlWithoutSpaces.length - 7, 7)];
+ 
+-    if ([firstSix isEqualToString:@"<html>"] &&
++    // Clipboard content: normalize whatever the wrapper looks like. The check
++    // below reads an <html>…</html> wrapper as proof this editor serialized
++    // the markup itself, which holds for its own stored bodies but not for a
++    // paste — a complete document from another app is shaped identically, and
++    // the scanner further down marks block boundaries by literal tag match
++    // ("<li>", "<p>"), so a foreign <li class="…"> opened no list item and a
++    // pasted list arrived as one unbroken run of text.
++    if (forceNormalizer && useHtmlNormalizer) {
++      NSString *normalized = [self normalizeExternalHtml:htmlWithoutSpaces];
++      if (normalized != nil) {
++        fixedHtml = normalized;
++        wasNormalized = YES;
++      }
++    }
++
++    if (!wasNormalized && [firstSix isEqualToString:@"<html>"] &&
+         [lastSeven isEqualToString:@"</html>"]) {
+       // remove html tags, might be with newlines or without them
+       fixedHtml = [htmlWithoutSpaces copy];
+@@ -226,7 +250,7 @@
+                                                        withString:@""];
+       fixedHtml = [fixedHtml stringByReplacingOccurrencesOfString:@"</html>"
+                                                        withString:@""];
+-    } else if (useHtmlNormalizer) {
++    } else if (!wasNormalized && useHtmlNormalizer) {
+       // External HTML (from Google Docs, Word, web pages, etc.)
+       // Run through the Gumbo-based normalizer to convert arbitrary HTML
+       // into our canonical tag subset.
+@@ -237,21 +261,24 @@
+     }
+ 
+     // Additionally, try getting the content from between body tags if there are
+-    // some:
+-
+-    // Firstly make sure there are no newlines between them.
+-    fixedHtml = [fixedHtml stringByReplacingOccurrencesOfString:@"<body>\n"
+-                                                     withString:@"<body>"];
+-    fixedHtml = [fixedHtml stringByReplacingOccurrencesOfString:@"\n</body>"
+-                                                     withString:@"</body>"];
+-    // Then, if there actually are body tags, use the content between them.
+-    NSRange openingBodyRange = [htmlWithoutSpaces rangeOfString:@"<body>"];
+-    NSRange closingBodyRange = [htmlWithoutSpaces rangeOfString:@"</body>"];
+-    if (openingBodyRange.length != 0 && closingBodyRange.length != 0) {
+-      NSInteger newStart = openingBodyRange.location + 6;
+-      NSInteger newEnd = closingBodyRange.location - 1;
+-      fixedHtml = [htmlWithoutSpaces
+-          substringWithRange:NSMakeRange(newStart, newEnd - newStart + 1)];
++    // some. Skipped once the normalizer has run: it has already unwrapped
++    // <head>/<body> for us, and this reads the *raw* string, so it would put
++    // the un-normalized markup straight back.
++    if (!wasNormalized) {
++      // Firstly make sure there are no newlines between them.
++      fixedHtml = [fixedHtml stringByReplacingOccurrencesOfString:@"<body>\n"
++                                                       withString:@"<body>"];
++      fixedHtml = [fixedHtml stringByReplacingOccurrencesOfString:@"\n</body>"
++                                                       withString:@"</body>"];
++      // Then, if there actually are body tags, use the content between them.
++      NSRange openingBodyRange = [htmlWithoutSpaces rangeOfString:@"<body>"];
++      NSRange closingBodyRange = [htmlWithoutSpaces rangeOfString:@"</body>"];
++      if (openingBodyRange.length != 0 && closingBodyRange.length != 0) {
++        NSInteger newStart = openingBodyRange.location + 6;
++        NSInteger newEnd = closingBodyRange.location - 1;
++        fixedHtml = [htmlWithoutSpaces
++            substringWithRange:NSMakeRange(newStart, newEnd - newStart + 1)];
++      }
+     }
+   }
+ 
+diff --git a/node_modules/react-native-enriched/ios/inputHtmlParser/InputHtmlParser.h b/node_modules/react-native-enriched/ios/inputHtmlParser/InputHtmlParser.h
+index 1de59e5..437d0ec 100644
+--- a/node_modules/react-native-enriched/ios/inputHtmlParser/InputHtmlParser.h
++++ b/node_modules/react-native-enriched/ios/inputHtmlParser/InputHtmlParser.h
+@@ -7,4 +7,7 @@
+ - (void)replaceFromHtml:(NSString *_Nonnull)html range:(NSRange)range;
+ - (void)insertFromHtml:(NSString *_Nonnull)html location:(NSInteger)location;
+ - (NSString *_Nullable)initiallyProcessHtml:(NSString *_Nonnull)html;
++/* Same, for clipboard content: always normalizes rather than trusting an
++   <html> wrapper to mean this editor produced the markup. */
++- (NSString *_Nullable)initiallyProcessPastedHtml:(NSString *_Nonnull)html;
+ @end
+diff --git a/node_modules/react-native-enriched/ios/inputHtmlParser/InputHtmlParser.mm b/node_modules/react-native-enriched/ios/inputHtmlParser/InputHtmlParser.mm
+index f7ca534..89a51f9 100644
+--- a/node_modules/react-native-enriched/ios/inputHtmlParser/InputHtmlParser.mm
++++ b/node_modules/react-native-enriched/ios/inputHtmlParser/InputHtmlParser.mm
+@@ -194,4 +194,10 @@
+                         useHtmlNormalizer:_input->useHtmlNormalizer];
+ }
+ 
++- (NSString *_Nullable)initiallyProcessPastedHtml:(NSString *_Nonnull)html {
++  return [HtmlParser initiallyProcessHtml:html
++                        useHtmlNormalizer:_input->useHtmlNormalizer
++                          forceNormalizer:YES];
++}
++
+ @end
