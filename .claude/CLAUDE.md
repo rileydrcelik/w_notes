@@ -42,15 +42,19 @@
   for filters (`StateFilterBar` in `app/(home)/github/[id].tsx`), 40px squircle
   icon buttons for secondary actions (`components/scroll-to-top.tsx`). Radii come
   from the `Spacing` scale, not hand-picked numbers.
-- no scrollbars on web, anywhere. `global.css` hides them app-wide — a bar is
-  browser chrome that cuts a hard edge through surfaces meant to read as
-  floating glass, and it's styled differently per platform, so one screen ends
-  up looking like two designs. Don't re-enable one for a single surface, and
-  don't reach for a `scrollbarWidth`/`overflow` style to suppress one either;
-  it's already gone. Scrolling itself is untouched. When a surface really does
-  need to say more content lies below, design the signal — a fade over the
-  bottom edge (see the form in `components/resume/resume-entry-modal.tsx`), a
-  half-visible next row — rather than bringing a bar back.
+- no scrollbars, anywhere, on either platform. A bar is chrome that cuts a hard
+  edge through surfaces meant to read as floating glass, and it's styled
+  differently per platform, so one screen ends up looking like two designs. Web
+  is handled for you: `global.css` hides them app-wide, so don't re-enable one
+  for a single surface and don't reach for a `scrollbarWidth`/`overflow` style
+  to suppress one either — it's already gone. Native draws its own indicator per
+  container, so every `ScrollView`/`FlatList` spreads `noScrollbar` from
+  `lib/scroll-style.ts`; `useScrollToTop`'s `scrollProps` already carries it, so
+  a list wired to the back-to-top button needs nothing. Scrolling itself is
+  untouched. When a surface really does need to say more content lies below,
+  design the signal — a fade over the bottom edge (see the form in
+  `components/resume/resume-entry-modal.tsx`), a half-visible next row — rather
+  than bringing a bar back.
 
 ## TESTING
 CI (`.github/workflows/tests.yml`) runs pytest, vitest and the Playwright e2e

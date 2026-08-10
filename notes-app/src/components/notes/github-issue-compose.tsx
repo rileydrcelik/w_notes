@@ -26,6 +26,7 @@ import { hexToRgba, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import { apiFetch } from '@/lib/sync/api';
 import type { CreatedIssue, IssueLabel as Label } from '@/lib/github-note';
+import { noScrollbar } from '@/lib/scroll-style';
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
@@ -197,6 +198,7 @@ export function GithubIssueCompose({
                     field once read as a field that wasn't there. */}
                 <View style={styles.scrollWrap}>
                   <ScrollView
+                    {...noScrollbar}
                     style={styles.form}
                     contentContainerStyle={styles.formContent}
                     keyboardShouldPersistTaps="handled">

@@ -53,6 +53,7 @@ import { resolveAddLabel, resolveEditLabel } from '@/lib/resume-versions';
 import { ACCENT, ACCENT_FILL } from '@/components/resume/accent';
 import { SHEET_MAX_WIDTH, SHEET_TOP_GAP } from '@/components/resume/sheet';
 import { noFocusOutline } from '@/lib/web-style';
+import { noScrollbar } from '@/lib/scroll-style';
 
 
 
@@ -411,7 +412,7 @@ export function ResumeEntryModal({
                       <ScrollView
                         style={styles.previewScroll}
                         contentContainerStyle={styles.previewContent}
-                        showsVerticalScrollIndicator={false}>
+                        {...noScrollbar}>
                         {stage.editing ? (
                           <TextInput
                             value={stage.latex}
@@ -495,13 +496,15 @@ export function ResumeEntryModal({
                   <>
                     {/* This form is taller than its sheet and always will be, so
                         something has to say there is more below — without it,
-                        Description read as a field that didn't exist. On web the
-                        fade is that something and the only one, since
-                        `global.css` hides scrollbars app-wide; native keeps its
-                        transient indicator on top of the fade. The fade is
-                        carrying the message, which is why it isn't optional. */}
+                        Description read as a field that didn't exist. The fade
+                        is that something, and on both platforms it's the only
+                        one: `global.css` hides the bar on web and
+                        {@link noScrollbar} hides the indicator on native. The
+                        fade is carrying the message, which is why it isn't
+                        optional. */}
                     <View style={styles.scrollWrap}>
                       <ScrollView
+                        {...noScrollbar}
                         style={styles.formScroll}
                         contentContainerStyle={styles.form}
                         keyboardShouldPersistTaps="handled">

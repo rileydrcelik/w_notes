@@ -30,6 +30,7 @@ import {
 import { Sentry } from '@/lib/sentry';
 import { useIssues } from '@/store/issues-store';
 import { useNotes } from '@/store/notes-store';
+import { noScrollbar } from '@/lib/scroll-style';
 
 const ACCENT = '#16a394';
 const GITHUB_ACCENT = '#8250df';
@@ -191,6 +192,7 @@ export default function NewIssueScreen() {
       <ThemedView style={styles.container}>
         <Stack.Screen options={{ headerShown: false }} />
         <ScrollView
+          {...noScrollbar}
           contentContainerStyle={[styles.content, { paddingTop: headerTop, paddingBottom: tabBarInset }]}
           keyboardShouldPersistTaps="handled">
           <View style={styles.headerTitleRow}>

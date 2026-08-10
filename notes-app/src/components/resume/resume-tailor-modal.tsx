@@ -44,6 +44,7 @@ import { DiffView } from '@/components/resume/diff-view';
 import { looksLikeUrl, readJobPosting } from '@/lib/latex/job-posting';
 import { emptyTailorDraft, type TailorDraft } from '@/lib/latex/tailor';
 import { noFocusOutline } from '@/lib/web-style';
+import { noScrollbar } from '@/lib/scroll-style';
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
@@ -268,7 +269,7 @@ export function ResumeTailorModal({
                   <ScrollView
                     style={styles.scroll}
                     contentContainerStyle={styles.scrollContent}
-                    showsVerticalScrollIndicator={false}
+                    {...noScrollbar}
                     keyboardShouldPersistTaps="handled">
                     {stage.state === 'failed' && (
                       <View

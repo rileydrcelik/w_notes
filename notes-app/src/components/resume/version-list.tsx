@@ -39,6 +39,7 @@ import type { ResumeVersion } from '@/data/notes';
 import { SHEET_MAX_WIDTH, SHEET_TOP_GAP } from '@/components/resume/sheet';
 import { describeAge, matchesVersionSearch } from '@/lib/resume-versions';
 import { noFocusOutline } from '@/lib/web-style';
+import { noScrollbar } from '@/lib/scroll-style';
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
@@ -138,7 +139,7 @@ export function VersionList({
                 <ScrollView
                   style={styles.scroll}
                   contentContainerStyle={styles.scrollContent}
-                  showsVerticalScrollIndicator={false}>
+                  {...noScrollbar}>
                   {shown.map((version) => {
                     // Marked rather than disabled: this is the document you're
                     // looking at, so restoring it is a no-op, but greying out the

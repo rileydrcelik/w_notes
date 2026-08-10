@@ -272,8 +272,7 @@ export default function NoteScreen() {
               // Collapse it in view mode.
               { paddingBottom: editing ? height : tabBarInset },
             ]}
-            keyboardShouldPersistTaps="handled"
-            showsVerticalScrollIndicator={false}>
+            keyboardShouldPersistTaps="handled">
             {/* The wrapper is what gets measured: its height is the body's, with
                 none of the ScrollView's editing padding in it. */}
             <View onLayout={onEditorLayout}>

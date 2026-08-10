@@ -38,6 +38,7 @@ import { useTheme } from '@/hooks/use-theme';
 import { htmlToPlainText } from '@/lib/html-text';
 import { noFocusOutline } from '@/lib/web-style';
 import { useCopa } from '@/store/copa-store';
+import { noScrollbar } from '@/lib/scroll-style';
 
 export default function CopaBlockScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -225,7 +226,7 @@ export default function CopaBlockScreen() {
             { paddingBottom: editing ? height : tabBarInset },
           ]}
           keyboardShouldPersistTaps="handled"
-          showsVerticalScrollIndicator={false}>
+          {...noScrollbar}>
           {item.fileUri ? (
             <FilePreview item={item} />
           ) : (

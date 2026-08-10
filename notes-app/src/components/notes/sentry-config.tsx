@@ -15,6 +15,7 @@ import { hexToRgba, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import { apiFetch } from '@/lib/sync/api';
 import type { SentryTarget } from '@/lib/sentry-note';
+import { noScrollbar } from '@/lib/scroll-style';
 
 const ACCENT = '#7553FF';
 const ERROR = '#f55459';
@@ -86,6 +87,7 @@ export function SentryConfig({
 
   return (
     <ScrollView
+      {...noScrollbar}
       contentContainerStyle={[styles.content, { paddingTop, paddingBottom }]}
       keyboardShouldPersistTaps="handled">
       <View style={styles.header}>

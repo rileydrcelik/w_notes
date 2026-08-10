@@ -9,6 +9,7 @@ import { ThemedText } from '@/components/themed-text';
 import { hexToRgba, Spacing, TabBar } from '@/constants/theme';
 import { useTabBarBottom } from '@/hooks/use-tab-bar-inset';
 import { useTheme } from '@/hooks/use-theme';
+import { noScrollbar } from '@/lib/scroll-style';
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
@@ -90,7 +91,7 @@ export function MarkdownHelp() {
                 Type these in the body to format it.
               </ThemedText>
 
-              <ScrollView style={styles.list} showsVerticalScrollIndicator={false}>
+              <ScrollView style={styles.list} {...noScrollbar}>
                 {CHEATSHEET.map((row) => (
                   <View key={row.syntax} style={styles.row}>
                     <ThemedText

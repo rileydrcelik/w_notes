@@ -15,6 +15,7 @@ import { ThemedView } from '@/components/themed-view';
 import { hexToRgba, Italic, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import { apiFetch } from '@/lib/sync/api';
+import { noScrollbar } from '@/lib/scroll-style';
 
 const ACCENT = '#16a394';
 const ERROR = '#f85149';
@@ -75,6 +76,7 @@ export function ProjectConfig({
 
   return (
     <ScrollView
+      {...noScrollbar}
       contentContainerStyle={[styles.content, { paddingTop, paddingBottom }]}
       keyboardShouldPersistTaps="handled">
       <View style={styles.header}>

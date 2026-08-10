@@ -1,6 +1,8 @@
 import { useCallback, useRef, useState } from 'react';
 import type { NativeScrollEvent, NativeSyntheticEvent } from 'react-native';
 
+import { noScrollbar } from '@/lib/scroll-style';
+
 /**
  * How far down (px) the user must scroll before the "back to top" button shows.
  * Roughly one grid row / a couple of paragraphs — far enough that the button
@@ -26,9 +28,9 @@ type ScrollTarget = {
  * user has scrolled far enough for the button to be worth showing, and jumps
  * back to the top when it's pressed.
  *
- * Spread `scrollProps` onto the list (it carries the ref and the scroll
- * listener) and pass `scrolled`/`scrollToTop` to the button. The generic names
- * the container so its own ref type stays intact:
+ * Spread `scrollProps` onto the list (it carries the ref, the scroll listener
+ * and {@link noScrollbar}) and pass `scrolled`/`scrollToTop` to the button. The
+ * generic names the container so its own ref type stays intact:
  *
  * ```tsx
  * const { scrollProps, scrolled, scrollToTop } = useScrollToTop<FlatList<Item>>();
@@ -98,7 +100,7 @@ export function useScrollToTop<T extends ScrollTarget>() {
 
   return {
     /** Spread onto the FlatList / ScrollView. */
-    scrollProps: { ref: attach, onScroll, scrollEventThrottle: THROTTLE },
+    scrollProps: { ref: attach, onScroll, scrollEventThrottle: THROTTLE, ...noScrollbar },
     /** The attached container, for a screen that scrolls it for its own reasons. */
     listRef: ref,
     /** True once the content is scrolled far enough to offer a jump back up. */

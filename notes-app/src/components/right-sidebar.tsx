@@ -20,6 +20,7 @@ import { useTheme } from '@/hooks/use-theme';
 import { folderHref, isListableNote, noteHref, noteIcon } from '@/lib/item-route';
 import { matchesQuery } from '@/lib/search';
 import { useNotes } from '@/store/notes-store';
+import { noScrollbar } from '@/lib/scroll-style';
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
@@ -274,7 +275,7 @@ export function RightSidebar({ open, onClose }: { open: boolean; onClose: () => 
                     styles.notesContent,
                     { paddingBottom: insets.bottom + Spacing.two },
                   ]}
-                  showsVerticalScrollIndicator={false}>
+                  {...noScrollbar}>
                   {visibleRootFolders.map((folder) => renderFolder(folder, 0))}
 
                   {visibleRootNotes.map((note) => (

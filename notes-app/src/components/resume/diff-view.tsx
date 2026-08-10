@@ -22,6 +22,7 @@ import {
   diffLines,
   foldCommentToggles,
 } from '@/lib/latex/diff';
+import { noScrollbar } from '@/lib/scroll-style';
 
 /**
  * Tints for added and removed lines.
@@ -71,7 +72,7 @@ export function DiffView({
       <ScrollView
         style={style}
         contentContainerStyle={contentContainerStyle}
-        showsVerticalScrollIndicator={false}>
+        {...noScrollbar}>
         {rows.map((row, index) =>
           row.kind === 'gap' ? (
             <ThemedText

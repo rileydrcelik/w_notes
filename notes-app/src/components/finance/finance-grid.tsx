@@ -43,6 +43,7 @@ import {
   type Selection,
   type Sheet,
 } from '@/lib/finance/sheet';
+import { noScrollbar } from '@/lib/scroll-style';
 
 /**
  * Ring around the cell being typed into. The same blue the app already uses for
@@ -595,7 +596,7 @@ export function FinanceGrid({ sheet, onChange, selection, onSelectionChange }: P
     <Animated.ScrollView
       horizontal
       scrollEnabled={!dragging}
-      showsHorizontalScrollIndicator={false}
+      {...noScrollbar}
       onScroll={onHorizontalScroll}
       scrollEventThrottle={16}
       // Both scrollers need this, not just the inner one: either would
@@ -630,7 +631,7 @@ export function FinanceGrid({ sheet, onChange, selection, onSelectionChange }: P
 
         <ScrollView
           scrollEnabled={!dragging}
-          showsVerticalScrollIndicator={false}
+          {...noScrollbar}
           onScroll={measureOrigin}
           scrollEventThrottle={16}
           keyboardShouldPersistTaps="handled">

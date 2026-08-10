@@ -59,6 +59,7 @@ import { useAutofixSelection } from '@/store/autofix-selection-store';
 import { useGithubSelection, type CloseReason } from '@/store/github-selection-store';
 import { useTaskSelection } from '@/store/task-selection-store';
 import { useItemSelection } from '@/store/item-selection-store';
+import { noScrollbar } from '@/lib/scroll-style';
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
@@ -1572,7 +1573,7 @@ function AutofixHelp({ open, onClose }: { open: boolean; onClose: () => void }) 
               <ScrollView
                 style={styles.helpScroll}
                 contentContainerStyle={styles.helpSteps}
-                showsVerticalScrollIndicator={false}>
+                {...noScrollbar}>
                 {steps.map((step, i) => (
                   <View key={step.title} style={styles.helpStep}>
                     <View style={styles.helpStepNum}>

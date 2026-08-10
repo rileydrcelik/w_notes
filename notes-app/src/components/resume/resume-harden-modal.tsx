@@ -46,6 +46,7 @@ import { SHEET_MAX_WIDTH, SHEET_TOP_GAP } from '@/components/resume/sheet';
 import { DiffView } from '@/components/resume/diff-view';
 import { emptyHardenDraft, MAX_ROLE_CHARS, type HardenDraft } from '@/lib/latex/harden';
 import { noFocusOutline } from '@/lib/web-style';
+import { noScrollbar } from '@/lib/scroll-style';
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
@@ -230,7 +231,7 @@ export function ResumeHardenModal({
                   <ScrollView
                     style={styles.scroll}
                     contentContainerStyle={styles.scrollContent}
-                    showsVerticalScrollIndicator={false}
+                    {...noScrollbar}
                     keyboardShouldPersistTaps="handled">
                     {stage.state === 'failed' && (
                       <View

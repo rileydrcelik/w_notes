@@ -129,6 +129,7 @@ import { noFocusOutline } from '@/lib/web-style';
 import { ACCENT } from '@/components/resume/accent';
 import { SHEET_MAX_WIDTH } from '@/components/resume/sheet';
 import { useNotes } from '@/store/notes-store';
+import { noScrollbar } from '@/lib/scroll-style';
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
@@ -888,7 +889,7 @@ export default function ResumeScreen() {
       <ScrollView
         {...previewScroll.scrollProps}
         contentContainerStyle={[styles.previewContent, { paddingBottom: bottomInset }]}
-        showsVerticalScrollIndicator={false}>
+        {...noScrollbar}>
         {/* Stacked, the page *is* the read view, so tapping it starts an edit
             the way tapping a note's body does. Split, the source is already
             beside it and the page is just a page — clicking it should select or

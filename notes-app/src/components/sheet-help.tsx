@@ -19,6 +19,7 @@ import { GlassSurface } from '@/components/glass-surface';
 import { ThemedText } from '@/components/themed-text';
 import { Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
+import { noScrollbar } from '@/lib/scroll-style';
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
@@ -116,7 +117,7 @@ export function SheetHelp({ open, onClose }: Props) {
             so B2 is the second column, second row.
           </ThemedText>
 
-          <ScrollView style={styles.list} showsVerticalScrollIndicator={false}>
+          <ScrollView style={styles.list} {...noScrollbar}>
             {section('SYNTAX', FORMULAS)}
             {section('WHEN SOMETHING IS WRONG', ERRORS)}
           </ScrollView>

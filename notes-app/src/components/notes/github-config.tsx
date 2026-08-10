@@ -17,6 +17,7 @@ import { hexToRgba, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import { apiFetch } from '@/lib/sync/api';
 import type { GithubTarget } from '@/lib/github-note';
+import { noScrollbar } from '@/lib/scroll-style';
 
 const ACCENT = '#8250df';
 const ERROR = '#f85149';
@@ -102,6 +103,7 @@ export function GithubConfig({
 
   return (
     <ScrollView
+      {...noScrollbar}
       contentContainerStyle={[styles.content, { paddingTop, paddingBottom }]}
       keyboardShouldPersistTaps="handled">
       <View style={styles.header}>

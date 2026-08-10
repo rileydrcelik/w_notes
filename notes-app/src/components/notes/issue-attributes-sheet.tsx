@@ -29,6 +29,7 @@ import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
 import { useTheme } from '@/hooks/use-theme';
 import type { IssueAttrValue } from '@/data/notes';
 import type { AttrDef } from '@/lib/project';
+import { noScrollbar } from '@/lib/scroll-style';
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 const ACCENT = '#16a394';
@@ -157,7 +158,10 @@ export function IssueAttributesSheet({
                       scroll, so the cap has to read as "more below" rather than as
                       the end of the sheet — the custom attributes live down there. */}
                   <View style={styles.scrollWrap}>
-                    <ScrollView style={styles.body} keyboardShouldPersistTaps="handled">
+                    <ScrollView
+                      {...noScrollbar}
+                      style={styles.body}
+                      keyboardShouldPersistTaps="handled">
                       {single && (
                         <View style={styles.detailsSection}>
                           <ThemedText type="small" themeColor="textSecondary" style={styles.typesLabel}>

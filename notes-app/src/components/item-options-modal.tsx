@@ -29,6 +29,7 @@ import { parseTypeConfig, projectConfig, serializeTypeConfig, type AttrDef } fro
 import { Sentry } from '@/lib/sentry';
 import { useIssues } from '@/store/issues-store';
 import { useNotes } from '@/store/notes-store';
+import { noScrollbar } from '@/lib/scroll-style';
 
 type FeatherName = ComponentProps<typeof Feather>['name'];
 
@@ -537,7 +538,7 @@ function MoveSheet({ noteIds, onClose }: { noteIds: string[] | null; onClose: ()
               <ThemedText style={styles.sheetTitle}>
                 {ids.length > 1 ? `Move ${ids.length} notes to…` : 'Move to…'}
               </ThemedText>
-              <ScrollView style={styles.moveList} bounces={false}>
+              <ScrollView {...noScrollbar} style={styles.moveList} bounces={false}>
                 {destinations.map((dest) => {
                   const selected = dest.id === commonFolderId;
                   return (

@@ -30,6 +30,7 @@ import {
 } from '@/store/create-options-store';
 import { useEditorPrefs } from '@/store/editor-prefs-store';
 import { useThemePref, type ThemeKey } from '@/store/theme-store';
+import { noScrollbar } from '@/lib/scroll-style';
 
 // The shared app accent, imported rather than re-typed: a hand-copied hex here
 // is identical until the day someone adjusts the real one and this screen
@@ -69,7 +70,9 @@ export default function SettingsScreen() {
       <ThemedView style={styles.container}>
         <Stack.Screen options={{ headerShown: false }} />
         <SafeAreaView style={styles.safeArea} edges={['top']}>
-          <ScrollView contentContainerStyle={[styles.content, { paddingBottom: tabBarInset }]}>
+          <ScrollView
+            {...noScrollbar}
+            contentContainerStyle={[styles.content, { paddingBottom: tabBarInset }]}>
             {/* Centered, width-capped column so rows don't stretch edge-to-edge
                 on web's wide viewport (a no-op on narrower phone screens). */}
             <View style={styles.inner}>
