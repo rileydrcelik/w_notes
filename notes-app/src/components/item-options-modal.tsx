@@ -1,6 +1,6 @@
 import Feather from '@expo/vector-icons/Feather';
 import type { ComponentProps, ReactNode } from 'react';
-import { createContext, useCallback, useContext, useMemo, useState } from 'react';
+import { createContext, useCallback, useContext, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   Keyboard,
@@ -12,13 +12,14 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import { LinearGradient } from 'expo-linear-gradient';
 import Animated, { FadeIn, FadeOut, SlideInDown, SlideOutDown } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { ConfirmDialog } from '@/components/confirm-dialog';
 import { GlassSurface } from '@/components/glass-surface';
 import { ThemedText } from '@/components/themed-text';
-import { Spacing } from '@/constants/theme';
+import { hexToRgba, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import {
   githubSyncErrorMessage,
@@ -52,6 +53,19 @@ const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 const DESTRUCTIVE = '#e5484d';
 const FAVORITE = '#f5a623';
 const GITHUB_ACCENT = '#8250df';
+
+/**
+ * The move sheet's tint, shared by its glass and by the fade over its list.
+ *
+ * One constant because the two have to agree: the fade ends on the same colour
+ * the sheet already is, so it dissolves into the surface. Let them drift and the
+ * fade stops reading as "the list continues" and starts reading as a band drawn
+ * across the bottom of it.
+ */
+const SHEET_TINT_OPACITY = 0.85;
+
+/** How much of the list's last row the fade covers. */
+const MOVE_FADE_HEIGHT = 40;
 
 /**
  * Hosts the single long-press options sheet shared by every note and folder
@@ -517,6 +531,18 @@ function MoveSheet({ noteIds, onClose }: { noteIds: string[] | null; onClose: ()
     onClose();
   };
 
+  // Whether anything is still below the fold, which is what decides if the fade
+  // is telling the truth. Measured rather than counted: a row's height depends
+  // on the font scale, so "more than N folders" would be wrong on somebody's
+  // phone. Scroll position counts too — at the end of the list there is nothing
+  // left to promise, and a fade that stayed would just dim the last folder.
+  const [more, setMore] = useState(false);
+  const viewportH = useRef(0);
+  const contentH = useRef(0);
+  const scrollY = useRef(0);
+  const recomputeMore = () =>
+    setMore(contentH.current - viewportH.current - scrollY.current > 1);
+
   return (
     <View style={styles.overlay} pointerEvents={open ? 'box-none' : 'none'}>
       {open && (
@@ -534,31 +560,65 @@ function MoveSheet({ noteIds, onClose }: { noteIds: string[] | null; onClose: ()
             entering={SlideInDown.duration(260)}
             exiting={SlideOutDown.duration(220)}
             style={[styles.sheetHost, { paddingBottom: insets.bottom + Spacing.three }]}>
-            <GlassSurface intensity={75} tintOpacity={0.85} style={styles.sheet}>
+            <GlassSurface intensity={75} tintOpacity={SHEET_TINT_OPACITY} style={styles.sheet}>
               <ThemedText style={styles.sheetTitle}>
                 {ids.length > 1 ? `Move ${ids.length} notes to…` : 'Move to…'}
               </ThemedText>
-              <ScrollView {...noScrollbar} style={styles.moveList} bounces={false}>
-                {destinations.map((dest) => {
-                  const selected = dest.id === commonFolderId;
-                  return (
-                    <Pressable
-                      key={dest.id ?? 'home'}
-                      onPress={() => onPick(dest.id)}
-                      accessibilityRole="button"
-                      accessibilityLabel={dest.name}
-                      style={({ pressed }) => [styles.row, pressed && styles.pressed]}>
-                      <Feather name={dest.icon} size={20} color={colors.text} style={styles.rowIcon} />
-                      <ThemedText style={[styles.rowLabel, { color: colors.text }]} numberOfLines={1}>
-                        {dest.name}
-                      </ThemedText>
-                      {selected && (
-                        <Feather name="check" size={20} color={colors.textSecondary} style={styles.rowCheck} />
-                      )}
-                    </Pressable>
-                  );
-                })}
-              </ScrollView>
+              <View style={styles.moveListWrap}>
+                <ScrollView
+                  {...noScrollbar}
+                  style={styles.moveList}
+                  bounces={false}
+                  scrollEventThrottle={16}
+                  onLayout={(e) => {
+                    viewportH.current = e.nativeEvent.layout.height;
+                    recomputeMore();
+                  }}
+                  onContentSizeChange={(_w, h) => {
+                    contentH.current = h;
+                    recomputeMore();
+                  }}
+                  onScroll={(e) => {
+                    scrollY.current = e.nativeEvent.contentOffset.y;
+                    recomputeMore();
+                  }}>
+                  {destinations.map((dest) => {
+                    const selected = dest.id === commonFolderId;
+                    return (
+                      <Pressable
+                        key={dest.id ?? 'home'}
+                        onPress={() => onPick(dest.id)}
+                        accessibilityRole="button"
+                        accessibilityLabel={dest.name}
+                        style={({ pressed }) => [styles.row, pressed && styles.pressed]}>
+                        <Feather name={dest.icon} size={20} color={colors.text} style={styles.rowIcon} />
+                        <ThemedText style={[styles.rowLabel, { color: colors.text }]} numberOfLines={1}>
+                          {dest.name}
+                        </ThemedText>
+                        {selected && (
+                          <Feather name="check" size={20} color={colors.textSecondary} style={styles.rowCheck} />
+                        )}
+                      </Pressable>
+                    );
+                  })}
+                </ScrollView>
+                {/* The list is capped at `maxHeight`, and with the scrollbar gone
+                    on both platforms a long folder list would end in a hard cut
+                    that reads as the last folder. The fade says it continues.
+                    Only while it actually does — over a list that fits, or one
+                    scrolled to its end, it would dim the last folder for
+                    nothing. */}
+                {more && (
+                  <LinearGradient
+                    pointerEvents="none"
+                    colors={[
+                      hexToRgba(colors.backgroundElement, 0),
+                      hexToRgba(colors.backgroundElement, SHEET_TINT_OPACITY),
+                    ]}
+                    style={styles.moveListFade}
+                  />
+                )}
+              </View>
             </GlassSurface>
           </Animated.View>
         </>
@@ -610,8 +670,21 @@ const styles = StyleSheet.create({
     paddingTop: Spacing.two,
     paddingBottom: Spacing.one,
   },
-  moveList: {
+  // Holds the list and the fade sitting over its bottom edge, so the cap now
+  // lands here — the ScrollView fills it and the fade overlays it.
+  moveListWrap: {
     maxHeight: 280,
+  },
+  moveList: {
+    flexGrow: 0,
+    flexShrink: 1,
+  },
+  moveListFade: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    height: MOVE_FADE_HEIGHT,
   },
   row: {
     flexDirection: 'row',

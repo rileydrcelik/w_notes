@@ -39,6 +39,11 @@ import { noScrollbar } from '@/lib/scroll-style';
 // quietly keeps the old value.
 const ACCENT = Accent;
 
+// The red the app already says "this failed" in — the same value confirm-dialog,
+// item-options-modal and copa-options-modal use. One semantic deserves one
+// colour; a second red for the same meaning reads as a different kind of wrong.
+const DESTRUCTIVE = '#e5484d';
+
 // Plain before tinted, light before dark — so the list reads as the two plain
 // palettes and then the two that have a colour of their own.
 const THEME_OPTIONS: { key: ThemeKey; label: string; description: string }[] = [
@@ -514,7 +519,20 @@ function AiSection() {
         AI
       </ThemedText>
 
-      {state?.owner ? (
+      {/* Until the server answers, which of the three states applies is unknown
+          — and the field is the wrong guess for two of them. An operator's
+          account would watch a key box it must not use appear and then leave.
+          A spinner claims nothing and holds the row's shape while we find out. */}
+      {!state ? (
+        <ThemedView type="backgroundElement" style={styles.row}>
+          <View style={styles.rowText}>
+            <ThemedText type="small" themeColor="textSecondary">
+              Checking this account…
+            </ThemedText>
+          </View>
+          <ActivityIndicator size="small" color={ACCENT} />
+        </ThemedView>
+      ) : state.owner ? (
         <ThemedView type="backgroundElement" style={styles.row}>
           <View style={styles.rowText}>
             <ThemedText>Using this server’s key</ThemedText>
@@ -523,7 +541,7 @@ function AiSection() {
             </ThemedText>
           </View>
         </ThemedView>
-      ) : state && !state.canStore ? (
+      ) : !state.canStore ? (
         <ThemedView type="backgroundElement" style={styles.row}>
           <View style={styles.rowText}>
             <ThemedText>Not available</ThemedText>
@@ -542,7 +560,7 @@ function AiSection() {
                 : 'The resume can draft, tailor and harden itself with Claude. Those calls are billed to whoever’s key runs them, so they run on yours.'}
             </ThemedText>
 
-            <View style={styles.credField}>
+            <View style={styles.credFieldInline}>
               <TextInput
                 value={draft}
                 onChangeText={setDraft}
@@ -561,7 +579,7 @@ function AiSection() {
             </View>
 
             {error && (
-              <ThemedText type="small" style={{ color: '#d9534f' }}>
+              <ThemedText type="small" style={{ color: DESTRUCTIVE }}>
                 {error}
               </ThemedText>
             )}
@@ -578,7 +596,7 @@ function AiSection() {
                     borderColor: draft.trim() ? ACCENT : hexToRgba(theme.text, 0.12),
                     opacity: busy || !draft.trim() ? 0.5 : 1,
                   },
-                  pressed && { opacity: 0.7 },
+                  pressed && styles.pressed,
                 ]}>
                 {busy ? (
                   <ActivityIndicator size="small" color={ACCENT} />
@@ -596,7 +614,7 @@ function AiSection() {
                   style={({ pressed }) => [
                     styles.aiButton,
                     { borderColor: hexToRgba(theme.text, 0.12), opacity: busy ? 0.5 : 1 },
-                    pressed && { opacity: 0.7 },
+                    pressed && styles.pressed,
                   ]}>
                   <ThemedText type="small" themeColor="textSecondary">
                     Remove
@@ -720,6 +738,13 @@ const styles = StyleSheet.create({
   credField: {
     gap: Spacing.half,
     marginLeft: Spacing.three,
+  },
+  // `credField` without its indent. That indent aligns a CredentialField with
+  // the toggle row it hangs below; the AI key's field has no such row — it sits
+  // inside `rowText`, already flush with the card's padding — so inheriting the
+  // indent would jog the input right of its own label and buttons.
+  credFieldInline: {
+    gap: Spacing.half,
   },
   credLabel: {
     marginLeft: Spacing.one,
