@@ -252,6 +252,32 @@ async def test_a_key_sealed_under_a_lost_secret_reads_as_no_key(client, device, 
     assert response.status_code == 402
 
 
+@pytest.mark.parametrize("junk", ["not base64 at all!!", "kÃ©y-with-non-ascii-Ã¸", ""])
+async def test_a_ciphertext_column_that_isnt_fernet_output_reads_as_no_key(
+    client, device, engine, junk
+):
+    """Only `seal()` writes this column, so none of these should ever be in it.
+
+    But "unreadable stored credential" is a case the caller already handles, and
+    whether it *is* handled turns on which exception the decrypt happens to
+    raise. Fernet answers `InvalidToken` for the first and last of these, so they
+    were always fine; the non-ASCII one never reaches Fernet at all — it dies in
+    the `.encode("ascii")` before it — and that is the case this pins. A row
+    corrupted by anything other than key rotation must land where rotation does.
+    """
+    await client.put(AI_KEY, json={"key": GOOD_KEY}, headers=device)
+    token = device["Authorization"].split(" ", 1)[1]
+    async with engine.begin() as conn:
+        await conn.execute(
+            text("UPDATE users SET anthropic_key_ct = :ct WHERE device_key = :key"),
+            {"ct": junk, "key": token},
+        )
+
+    response = await client.post("/resume/entry", json=ENTRY_REQUEST, headers=device)
+
+    assert response.status_code == 402, response.text
+
+
 async def test_two_accounts_do_not_share_a_key(client, engine):
     """One column per user, and no cache keyed on anything but the user."""
     first = {"Authorization": f"Bearer {uuid.uuid4()}"}

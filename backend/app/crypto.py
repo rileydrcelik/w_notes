@@ -75,9 +75,20 @@ def open_sealed(ciphertext: str) -> str | None:
     A missing `app_secret_key` still raises, because that is a broken deploy
     rather than a broken row.
     """
+    # Built before the `try`, so a broken deploy still raises rather than being
+    # mistaken for an unreadable row.
+    cipher = _cipher()
     try:
-        return _cipher().decrypt(ciphertext.encode("ascii")).decode("utf-8")
-    except InvalidToken:
+        return cipher.decrypt(ciphertext.encode("ascii")).decode("utf-8")
+    except (InvalidToken, ValueError):
+        # `InvalidToken` covers what Fernet itself rejects — a token sealed under
+        # a key we no longer have, and malformed base64, which it folds into the
+        # same error. What it never sees is a column that isn't ASCII at all:
+        # that dies in `.encode("ascii")` one line earlier, as `UnicodeEncodeError`.
+        # `ValueError` is its base class, and also covers a decrypted payload
+        # that isn't UTF-8. Only `seal()` writes here so none of this should
+        # happen — but "unreadable credential" is a case the caller already
+        # handles, and a 500 is not.
         return None
 
 
