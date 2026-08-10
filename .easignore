@@ -1,0 +1,73 @@
+# .easignore — controls what gets uploaded to EAS Build.
+#
+# THIS FILE MUST LIVE AT THE REPO ROOT. EAS archives the whole git repository
+# and builds from the `notes-app` subdirectory, so the ignore file is read from
+# — and every pattern is matched against — the repo root, not notes-app/.
+# A copy inside notes-app/ is read by nothing; the August 2026 build failure
+# below is what that looks like.
+#
+# When present, this file REPLACES .gitignore for the EAS upload, so it must
+# list everything that should be excluded, including things git already ignores.
+# Verify a change with:
+#   cd notes-app && npx eas build:inspect -p android --stage archive --output <dir>
+
+# Native projects: this is a CNG/managed app. EAS runs `expo prebuild` on the
+# server to regenerate android/ and ios/ with correct Linux paths. Uploading the
+# local (Windows) native folders ships build output holding hardcoded D:\ paths;
+# Gradle then resolved a module to
+# `.../build/notes-app/android/D:/dev2/w_notes/notes-app/node_modules/...` and
+# the build died at configuration time.
+notes-app/android/
+notes-app/ios/
+
+# Dependencies (reinstalled on the builder)
+node_modules/
+
+# Expo / Metro / build output
+.expo/
+dist/
+web-build/
+expo-env.d.ts
+.metro-health-check*
+
+# Logs & debug
+*.log
+crash.txt
+npm-debug.*
+yarn-debug.*
+yarn-error.*
+maestro-artifacts/
+test-results/
+playwright-report/
+
+# Local env & secrets. Builds use remote (Expo-hosted) credentials, so the local
+# keystore and the credentials.json pointing at it never need to be uploaded.
+.env
+.env*.local
+credentials.json
+credentials/
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+*.pem
+
+# Editor / OS cruft
+.vscode/
+.DS_Store
+*.tsbuildinfo
+*.orig.*
+
+# Local tooling and agent worktrees (each worktree is a second checkout of this
+# same repo — uploading them doubles the archive)
+.claude/
+.githooks/
+local/
+example
+
+# Sibling projects: the Android app build reads none of these
+backend/
+terraform/
+logo/
+.github/
