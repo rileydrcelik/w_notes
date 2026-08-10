@@ -48,19 +48,18 @@ export function MatchSnippet({
 const styles = StyleSheet.create({
   hit: {
     // Both colours fixed, neither from the palette — which is what makes this
-    // legible on all six themes at once. The obvious version, `Accent` at low
-    // alpha over the card with the theme's own text on top, measures 3.18:1 on
-    // Solarized Light and 3.52:1 on Solarized Dark: under the 4.5:1 that 14px
-    // text needs, and on Solarized Dark *below the 4.52:1 of the ordinary
-    // preview text around it* — the emphasis would have made the words harder
-    // to read than the ones it was emphasising. The accent's luminance sits
-    // between those palettes' ink and paper, so no alpha fixes it; lowering it
-    // only fades the mark away.
+    // legible on every theme at once. The obvious version, `Accent` at low alpha
+    // over the card with the theme's own text on top, measures 3.18:1 on
+    // Solarized Light: under the 4.5:1 that 14px text needs, and near enough to
+    // the 3.40:1 of the ordinary preview text around it that the emphasis would
+    // have bought nothing — a mark no easier to read than the words it was
+    // marking. The accent's luminance sits between that palette's ink and paper,
+    // so no alpha fixes it; lowering it only fades the mark away.
     //
     // A fixed pair sidesteps the palette entirely: white on `AccentFill` is
     // 4.68:1 everywhere, which is the pairing that constant exists for, and the
-    // fill clears 3:1 against every card surface (3.05:1 at its closest, on
-    // Solarized Dark) so the mark is always visible as a shape too.
+    // fill clears 3:1 against every card surface (3.09:1 at its closest, on
+    // Midnight) so the mark is always visible as a shape too.
     //
     // No radius: Android ignores one on a nested Text, and a corner that rounds
     // on two platforms out of three is worse than a square one everywhere.

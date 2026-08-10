@@ -7,8 +7,8 @@
  * sites that pass a `Palette` around, but `Colors` itself is declared `as const`
  * with no explicit `Record<ThemeColor, Palette>` annotation, so nothing forces
  * a *sibling* palette's own object literal to match `light`'s shape — a typo'd
- * or missing key in `mocha` or `midnight` would compile today and only surface
- * as an `undefined` token wherever that palette gets used on screen.
+ * or missing key in `midnight` or `solarizedLight` would compile today and only
+ * surface as an `undefined` token wherever that palette gets used on screen.
  *
  * `theme-resolve.test.ts` covers `resolveTheme`/`migrateThemeKey`; this file
  * covers `Colors` itself, one level down.
@@ -53,11 +53,26 @@ describe('Colors palette shape', () => {
     }
   });
 
-  it('keeps mocha and midnight as genuinely different palettes, not aliases', () => {
-    // The rename's whole point: two distinct palettes now sit behind two
-    // distinct names. If either object were left pointing at the other (a
-    // copy-paste of the wrong literal), this would be the one place it shows
-    // up as an object-identity/content match rather than a wrong-looking screen.
-    expect(Colors.mocha).not.toEqual(Colors.midnight);
+  it('keeps every palette genuinely distinct, not an alias of another', () => {
+    // A palette added by copy-pasting a neighbour's literal and forgetting to
+    // change the hexes is a wrong-looking screen and nothing else — no error,
+    // no type failure. This is the one place it shows up as a content match.
+    // It replaces a narrower check on `mocha` vs `midnight`, which were the pair
+    // most at risk while one was the other's former name.
+    for (const a of PALETTE_NAMES) {
+      for (const b of PALETTE_NAMES) {
+        if (a === b) continue;
+        expect(Colors[a], `Colors.${a} vs Colors.${b}`).not.toEqual(Colors[b]);
+      }
+    }
+  });
+
+  it('keeps no palette behind a retired theme name', () => {
+    // Deleting a theme means deleting its palette too. Left in `Colors` it is
+    // dead weight that still passes every shape check above, and reads to the
+    // next person as a theme that exists but has lost its way into Settings.
+    for (const retired of ['mocha', 'solarizedDark']) {
+      expect(PALETTE_NAMES, `Colors.${retired}`).not.toContain(retired);
+    }
   });
 });

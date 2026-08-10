@@ -12,7 +12,7 @@ import { useColorScheme as useDeviceColorScheme } from 'react-native';
 
 import { lerpPalette, type Palette } from '@/constants/theme';
 import { db } from '@/lib/db';
-import { THEME_SETTING_KEY } from '@/lib/theme-migrate';
+import { migrateThemeKey, THEME_SETTING_KEY } from '@/lib/theme-migrate';
 import { isThemeKey, resolveTheme, type Scheme, type ThemeKey } from '@/lib/theme-resolve';
 import { requestSync, subscribeSynced } from '@/lib/sync/sync-engine';
 
@@ -90,6 +90,14 @@ export function AppThemeProvider({ children }: { children: ReactNode }) {
   // read-only-if-found version left the previous account's theme rendered until
   // something happened to overwrite it — the next person to sign in on the
   // device inherited a look that was never theirs.
+  //
+  // Retired keys are rewritten on the way in. `lib/db` already does this to the
+  // stored row at open, but that only settles what *this* device wrote: the
+  // theme is account-scoped, so a device still on an older build goes on pushing
+  // `mocha`, and a pull lands it here long after open. Without the rewrite the
+  // key would fail `isThemeKey` and read as 'system' — a phone quietly changing
+  // theme because a laptop hasn't updated. Safe to apply on every hydrate now
+  // that `migrateThemeKey` is idempotent; it was not, once (see theme-migrate).
   useEffect(() => {
     let cancelled = false;
     const hydrate = () => {
@@ -97,7 +105,8 @@ export function AppThemeProvider({ children }: { children: ReactNode }) {
         .getUserSetting(THEME_KEY)
         .then((saved) => {
           if (cancelled) return;
-          setThemeKeyState(saved && isThemeKey(saved) ? saved : 'system');
+          const key = saved ? migrateThemeKey(saved) : null;
+          setThemeKeyState(key && isThemeKey(key) ? key : 'system');
         })
         .catch((e) => console.warn('[theme] failed to load saved theme:', e));
     };

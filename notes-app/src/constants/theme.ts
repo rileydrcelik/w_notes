@@ -36,14 +36,14 @@ export const Colors = {
   },
   // Midnight — Catppuccin Mocha's palette. A soft violet-tinted dark rather than
   // a black one: the base is #1e1e2e, so surfaces read as raised by getting
-  // *lighter*, the same direction Solarized Dark works in. Element/selected come
-  // from the palette's own surface ramp; only `backgroundElementAlt` is
-  // interpolated, since Catppuccin defines no shade between base and surface0
-  // and every other palette here puts that step there.
+  // *lighter* rather than darker. Element/selected come from the palette's own
+  // surface ramp; only `backgroundElementAlt` is interpolated, since Catppuccin
+  // defines no shade between base and surface0 and every other palette here puts
+  // that step there.
   //
-  // Named `midnight` rather than `mocha` because the name now belongs to the
-  // brown palette below — upstream calls this one Mocha, but a violet theme
-  // wearing a coffee name left nothing to call the coffee one.
+  // Named `midnight`, not `mocha`, though upstream calls it Mocha: that name is
+  // retired here (see `lib/theme-migrate`), and a violet theme wearing a coffee
+  // name was what caused the confusion in the first place.
   midnight: {
     text: '#cdd6f4', // text
     background: '#1e1e2e', // base
@@ -52,37 +52,9 @@ export const Colors = {
     backgroundSelected: '#45475a', // surface1 — selection / pressed
     textSecondary: '#a6adc8', // subtext0
   },
-  // Mocha — a dark roast. The one warm-brown dark here: an espresso base under
-  // cream text, where Midnight is violet and Solarized Dark is teal. Surfaces
-  // are raised by getting lighter, same direction as the other two darks, and
-  // `backgroundElementAlt` is the midpoint of base and element, the step every
-  // palette in this file puts there.
-  //
-  // Measured against the shared `Accent`: 4.97:1 on the base and 3.91:1 on the
-  // raised surface, so the navbar's selected-tab colour clears the 3:1 that
-  // non-text UI wants on both. Body text is 13.19:1 and secondary text 4.91:1 at
-  // its worst (on `backgroundSelected`), both past 4.5:1.
-  mocha: {
-    text: '#ede0d1', // cream
-    background: '#221a15', // espresso
-    backgroundElement: '#392c23', // raised surfaces
-    backgroundElementAlt: '#2e231c', // midpoint of base and element, for alt cards
-    backgroundSelected: '#4a3a2e', // selection / pressed
-    textSecondary: '#c0ab95', // steamed milk
-  },
-  // Solarized Dark — the canonical mirror of the light variant. Deep teal base
-  // (base03/base02) with the brighter blue-grey body text (base1/base0).
-  solarizedDark: {
-    text: '#93a1a1', // base1 — primary content
-    background: '#002b36', // base03 — deepest surface
-    backgroundElement: '#073642', // base02 — raised surfaces
-    backgroundElementAlt: '#052f38', // a touch deeper, for alt cards
-    backgroundSelected: '#0a4452', // selection / pressed
-    textSecondary: '#839496', // base0 — secondary content
-  },
 } as const;
 
-/** The three palettes share the same keys; any of them is a full Palette. */
+/** Every palette shares the same keys; any of them is a full Palette. */
 export type ThemeColor = keyof typeof Colors.light;
 export type Palette = Record<ThemeColor, string>;
 

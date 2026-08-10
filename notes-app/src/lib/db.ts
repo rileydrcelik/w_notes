@@ -442,11 +442,15 @@ async function open(): Promise<SQLite.SQLiteDatabase> {
   await ensureFolderColumns(database);
   // Sync was added later still: backfill the columns it needs on older tables.
   await ensureSyncColumns(database);
-  // Move an existing theme choice into the synced table, renaming it if it was
-  // saved under the old meaning of `mocha`. Runs here, at open, because it must
-  // land before the theme store hydrates and before the first sync pull — see
-  // migrateThemeKey for why a second run would undo a deliberate choice.
+  // Move an existing theme choice into the synced table. Runs here, at open,
+  // because it must land before the theme store hydrates and before the first
+  // sync pull.
   await migrateThemeSetting(database);
+  // Then point a stored choice at a theme that still exists, for the two that
+  // were retired. Separate from the move above and unguarded by its flag: that
+  // one is a one-shot per device, this has to catch a row that has been sitting
+  // in `user_settings` since long before either theme was cut.
+  await retireRemovedThemes(database);
   await database.execAsync(`
     CREATE INDEX IF NOT EXISTS idx_folders_parent_id ON folders (parent_id);
     CREATE INDEX IF NOT EXISTS idx_notes_dirty ON notes (dirty);
@@ -531,18 +535,17 @@ async function seedDevContentIfWanted(database: SQLite.SQLiteDatabase): Promise<
 
 /**
  * One-time move of the theme preference from the device-local `settings` table
- * into the synced `user_settings` one, applying the `mocha` -> `midnight` rename
- * on the way through.
+ * into the synced `user_settings` one, rewriting a retired key on the way
+ * through.
  *
- * Two things have to be true and only this placement gives both. It must run
- * before the theme store reads the value, or the first render shows the old
- * meaning; and it must run before the first sync pull, or another device's
- * legitimate `mocha` (the brown one) arrives, gets treated as a pre-rename value
- * and is turned violet. Database open is the only point ahead of both.
+ * It has to run before the theme store reads the value, or the first render
+ * shows a theme the account has since replaced. Database open is the one point
+ * ahead of both that and the first sync pull.
  *
  * Guarded by a flag row rather than by "is the target empty", because the value
  * it writes is a plausible thing for the user to have chosen: re-running it
- * would keep rewriting a deliberate Mocha back to Midnight for ever.
+ * would keep overwriting whatever the account has settled on with whatever this
+ * device happened to have before it ever signed in.
  *
  * The row is left `dirty = 1` so the preference reaches the account on the next
  * push — a device that already had a theme keeps it and shares it, rather than
@@ -593,6 +596,38 @@ async function migrateThemeSetting(database: SQLite.SQLiteDatabase): Promise<voi
     'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
     [THEME_RENAME_FLAG, '1'],
   );
+}
+
+/**
+ * Point a stored theme at one that still exists, for the keys that were retired
+ * (see `migrateThemeKey`). Mocha and Solarized Dark were removed; a device
+ * sitting on either has a `user_settings` row naming a theme nothing answers to.
+ *
+ * Needs no flag row. `migrateThemeKey` is idempotent — no value it produces is
+ * itself retired — so this is a no-op from the second launch on, and there is
+ * nothing a repeat run could undo. That is exactly what the `mocha` ->
+ * `midnight` rename could not say for itself while Mocha was still choosable,
+ * which is why that one is flag-guarded and this one isn't.
+ *
+ * `updated_at` is deliberately left where it was. The rewrite doesn't change
+ * what the user chose, only what the app has left to call it, so it must not
+ * take the timestamp of a fresh decision — that would let a device that happens
+ * to launch today outrank a genuine theme change made on another device
+ * yesterday. `dirty = 1` still sends the corrected value up, so the account
+ * stops carrying a dead name; it just goes up wearing its real age.
+ */
+async function retireRemovedThemes(database: SQLite.SQLiteDatabase): Promise<void> {
+  const row = await database.getFirstAsync<{ value: string }>(
+    'SELECT value FROM user_settings WHERE id = ? AND deleted_at IS NULL',
+    [THEME_SETTING_KEY],
+  );
+  if (!row) return;
+  const migrated = migrateThemeKey(row.value);
+  if (migrated === row.value) return;
+  await database.runAsync('UPDATE user_settings SET value = ?, dirty = 1 WHERE id = ?', [
+    migrated,
+    THEME_SETTING_KEY,
+  ]);
 }
 
 /** Adds the nesting columns to a `folders` table created before they existed. */

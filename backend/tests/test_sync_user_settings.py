@@ -47,13 +47,13 @@ async def pull(client, headers, since: int = 0) -> dict:
 
 
 async def test_pushed_preference_comes_back_on_pull(client, device):
-    row = setting(id="themeKey", value="solarizedDark")
+    row = setting(id="themeKey", value="solarized")
 
     await push(client, device, user_settings=[row])
     pulled = await pull(client, device)
 
     assert [s["id"] for s in pulled["user_settings"]] == [row["id"]]
-    assert pulled["user_settings"][0]["value"] == "solarizedDark"
+    assert pulled["user_settings"][0]["value"] == "solarized"
 
 
 async def test_a_preference_only_push_still_advances_the_cursor(client, device):
@@ -88,7 +88,7 @@ async def test_newer_edit_wins_and_an_older_one_is_ignored(client, device):
     await push(client, device, user_settings=[row])
 
     # A stale push (older updated_at) arrives after the fact — must be ignored.
-    await push(client, device, user_settings=[{**row, "value": "mocha", "updated_at": 1_000}])
+    await push(client, device, user_settings=[{**row, "value": "dark", "updated_at": 1_000}])
 
     pulled = (await pull(client, device))["user_settings"]
     assert pulled[0]["value"] == "midnight"

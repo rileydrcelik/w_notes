@@ -37,16 +37,14 @@ import { noScrollbar } from '@/lib/scroll-style';
 // quietly keeps the old value.
 const ACCENT = Accent;
 
-// Plain before tinted, light before dark within each pair — so the list reads as
-// two families rather than four unrelated choices.
+// Plain before tinted, light before dark — so the list reads as the two plain
+// palettes and then the two that have a colour of their own.
 const THEME_OPTIONS: { key: ThemeKey; label: string; description: string }[] = [
   { key: 'system', label: 'System', description: 'Match your device' },
   { key: 'light', label: 'Light', description: 'White background, dark text' },
   { key: 'dark', label: 'Dark', description: 'Dark background, light text' },
   { key: 'solarized', label: 'Solarized Light', description: 'Warm, low-contrast paper' },
-  { key: 'solarizedDark', label: 'Solarized Dark', description: 'Deep teal, low-contrast' },
   { key: 'midnight', label: 'Midnight', description: 'Catppuccin — soft violet dark' },
-  { key: 'mocha', label: 'Mocha', description: 'Warm espresso brown, cream text' },
 ];
 
 export default function SettingsScreen() {
@@ -59,9 +57,7 @@ export default function SettingsScreen() {
     if (key === 'dark') return Colors.dark;
     if (key === 'light') return Colors.light;
     if (key === 'solarized') return Colors.solarizedLight;
-    if (key === 'solarizedDark') return Colors.solarizedDark;
     if (key === 'midnight') return Colors.midnight;
-    if (key === 'mocha') return Colors.mocha;
     return Colors[device === 'dark' ? 'dark' : 'light'];
   };
 

@@ -301,8 +301,8 @@ export function ResumeEntryModal({
 
   // `backgroundElementAlt`, not `backgroundElement`: the sheet's glass is already
   // a raised surface, so a field filled at the raised tone barely reads as a
-  // field at all. The alt tone is the deeper one in every palette — light, dark
-  // and both Solarized — which is what makes this one token rather than a
+  // field at all. The alt tone is the deeper one in every palette — light, dark,
+  // Solarized and Midnight — which is what makes this one token rather than a
   // hand-picked shade that only works on one of them.
   const fieldStyle = [
     styles.field,

@@ -18,9 +18,7 @@ const PINNED: { key: ThemeKey; scheme: 'light' | 'dark'; colors: (typeof Colors)
   { key: 'light', scheme: 'light', colors: Colors.light },
   { key: 'dark', scheme: 'dark', colors: Colors.dark },
   { key: 'solarized', scheme: 'light', colors: Colors.solarizedLight },
-  { key: 'solarizedDark', scheme: 'dark', colors: Colors.solarizedDark },
   { key: 'midnight', scheme: 'dark', colors: Colors.midnight },
-  { key: 'mocha', scheme: 'dark', colors: Colors.mocha },
 ];
 
 describe('resolveTheme', () => {
@@ -53,43 +51,59 @@ describe('resolveTheme', () => {
     );
   });
 
-  it('keeps the four dark themes distinct from one another', () => {
-    // They all resolve to scheme 'dark', so scheme alone can't tell them apart —
-    // the palette has to. Midnight and Mocha are the pair most at risk here:
-    // Mocha is the name Midnight used to carry, so a half-finished rename would
-    // leave both keys pointing at the same violet palette.
-    const darks = (['dark', 'solarizedDark', 'midnight', 'mocha'] as const).map(
+  it('keeps the dark themes distinct from one another', () => {
+    // They both resolve to scheme 'dark', so scheme alone can't tell them apart —
+    // the palette has to.
+    const darks = (['dark', 'midnight'] as const).map(
       (key) => resolveTheme(key, 'light').colors.background,
     );
-    expect(new Set(darks).size).toBe(4);
+    expect(new Set(darks).size).toBe(2);
   });
 
-  it('reads Mocha as the brown palette, not the violet one it used to name', () => {
-    expect(resolveTheme('mocha', 'light').colors).toEqual(Colors.mocha);
-    expect(resolveTheme('midnight', 'light').colors).toEqual(Colors.midnight);
-    // The brown is genuinely warm: red channel above blue on both base and text.
-    const { background, text } = resolveTheme('mocha', 'light').colors;
-    for (const hex of [background, text]) {
-      const [r, , b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
-      expect(r).toBeGreaterThan(b);
+  it('does not answer to a retired key', () => {
+    // `resolveTheme` falls through to `system` on anything it doesn't recognise,
+    // so a retired key left in the chain wouldn't error — it would go on quietly
+    // rendering the theme that was supposed to be gone. Cast because the union
+    // no longer admits these, which is the thing being checked.
+    for (const retired of ['mocha', 'solarizedDark'] as unknown as ThemeKey[]) {
+      expect(THEME_KEYS, retired).not.toContain(retired);
+      expect(resolveTheme(retired, 'dark'), retired).toEqual({
+        scheme: 'dark',
+        colors: Colors.dark,
+      });
     }
   });
 });
 
 describe('migrateThemeKey', () => {
-  it('rewrites a pre-rename Mocha to Midnight', () => {
-    // Without this, every device saved on Catppuccin turns brown on next launch.
+  it('sends each retired theme to a theme that still exists', () => {
+    // Both were darks. Landing them on 'system' instead — which is what an
+    // unrecognised key does — would show a light screen to someone who had
+    // deliberately asked for a dark one.
     expect(migrateThemeKey('mocha')).toBe('midnight');
+    expect(migrateThemeKey('solarizedDark')).toBe('dark');
   });
 
-  it('leaves every other key alone', () => {
-    for (const key of THEME_KEYS.filter((k) => k !== 'mocha')) {
+  it('leaves every surviving key alone', () => {
+    for (const key of THEME_KEYS) {
       expect(migrateThemeKey(key)).toBe(key);
     }
   });
 
+  it('is idempotent, which is what lets it run on every hydrate', () => {
+    // The store applies this to values arriving from sync, so it runs many times
+    // against the same key. While Mocha was still choosable a second pass turned
+    // a deliberate brown violet, and the rewrite had to be flag-guarded to once
+    // per device. Nothing it produces is retired any more — if that stops being
+    // true, this is where it shows.
+    for (const key of ['mocha', 'solarizedDark', ...THEME_KEYS]) {
+      const once = migrateThemeKey(key);
+      expect(migrateThemeKey(once), key).toBe(once);
+    }
+  });
+
   it('produces only keys the resolver actually knows', () => {
-    for (const key of THEME_KEYS) {
+    for (const key of ['mocha', 'solarizedDark', ...THEME_KEYS]) {
       const migrated = migrateThemeKey(key);
       expect(THEME_KEYS).toContain(migrated as ThemeKey);
     }
