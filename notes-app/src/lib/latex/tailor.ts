@@ -19,6 +19,7 @@
  */
 import type { LatexEngine } from '@/lib/latex/types';
 import { ApiError, apiFetch, syncConfigured } from '@/lib/sync/api';
+import { KEY_REQUIRED_MESSAGE } from '@/lib/ai-key';
 
 /** What the tailoring form collects. */
 export type TailorDraft = {
@@ -182,6 +183,10 @@ function serverDetail(e: unknown): string | null {
  * their document survived it.
  */
 function describeTailorFailure(message: string): string {
+  // Checked before every other status: this one is not a failure of the
+  // request but a statement about the account, and the remedy is a screen
+  // away rather than a retry.
+  if (message.includes('402')) return KEY_REQUIRED_MESSAGE;
   if (message.includes('429')) {
     return 'The server is writing as much as it can right now. Try again in a moment.';
   }

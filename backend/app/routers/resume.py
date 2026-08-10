@@ -17,9 +17,17 @@ article templates want ``\\textbf{} \\hfill dates``. An entry written in the
 wrong shape compiles and looks broken, which is worse than not compiling. So the
 source goes up as context and the instruction is "match what you see".
 
-The key lives in SSM and reaches the task as ``ANTHROPIC_API_KEY``. It is never
-shipped to the client — a key in an app bundle is a key anyone can read — which
-is the whole reason this endpoint exists rather than the app calling Anthropic
+**Whose key.** No endpoint here reads ``anthropic_api_key`` off the settings any
+more; each resolves one through ``app/ai_access.model_access``, which returns
+either the server's key (for the accounts in ``ai_owner_emails``) or the
+caller's own, stored encrypted against their user row. An account with neither
+gets a 402 telling it to add one. The reason is arithmetic: these calls run a
+frontier model over a whole resume, the tailor runs it several times per press,
+and this is an API anyone can sign into.
+
+A key still never reaches the client — not the server's, and not the caller's
+own once stored. A key in an app bundle is a key anyone can read, which is the
+whole reason these endpoints exist rather than the app calling Anthropic
 directly.
 
 **Context links.** A person can attach URLs — a GitHub repo, a project page, a
@@ -61,6 +69,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.config import get_settings
+from app.ai_access import model_access
 from app.deps import get_current_user
 from app.models import User
 # What a good resume is, written once. Every prompt here used to carry its own
@@ -866,15 +875,10 @@ class PostingResponse(BaseModel):
 @router.post("/job-posting", response_model=PostingResponse)
 async def read_job_posting(
     payload: PostingRequest,
-    _user: User = Depends(get_current_user),
+    user: User = Depends(get_current_user),
 ) -> PostingResponse:
     """Pull the company, role and requirements out of a linked job posting."""
-    settings = get_settings()
-    if not settings.anthropic_api_key:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="This server is not set up to read job postings.",
-        )
+    settings = model_access(user)
 
     links = _clean_links([payload.url])
     if not links:
@@ -1669,7 +1673,7 @@ async def _write_until_it_fits(
 @router.post("/tailor")
 async def tailor_resume(
     payload: TailorRequest,
-    _user: User = Depends(get_current_user),
+    user: User = Depends(get_current_user),
 ) -> TailorResponse:
     """Aim a resume at one job, and verify the result before handing it back.
 
@@ -1686,12 +1690,7 @@ async def tailor_resume(
     history — the untailored resume is one tap away — so between the two, the worst
     case is a tailored resume someone doesn't like rather than a resume they lost.
     """
-    settings = get_settings()
-    if not settings.anthropic_api_key:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="This server is not set up to tailor resumes.",
-        )
+    settings = model_access(user)
 
     if len(payload.source.encode("utf-8")) > _MAX_SOURCE_BYTES:
         raise HTTPException(
@@ -1816,7 +1815,7 @@ async def _tailor(settings, payload: TailorRequest) -> TailorResponse:
 @router.post("/harden")
 async def harden_resume(
     payload: HardenRequest,
-    _user: User = Depends(get_current_user),
+    user: User = Depends(get_current_user),
 ) -> HardenResponse:
     """Build the strongest one-page resume for a job title, with no posting.
 
@@ -1827,12 +1826,7 @@ async def harden_resume(
     never reaches the client. The client records a version before applying it, so
     the un-hardened resume stays one tap away.
     """
-    settings = get_settings()
-    if not settings.anthropic_api_key:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="This server is not set up to harden resumes.",
-        )
+    settings = model_access(user)
 
     if len(payload.source.encode("utf-8")) > _MAX_SOURCE_BYTES:
         raise HTTPException(
@@ -1963,17 +1957,10 @@ async def _harden(settings, payload: HardenRequest) -> HardenResponse:
 @router.post("/entry", response_model=EntryResponse)
 async def draft_entry(
     payload: EntryRequest,
-    _user: User = Depends(get_current_user),
+    user: User = Depends(get_current_user),
 ) -> EntryResponse:
     """Draft one resume entry in the document's own style."""
-    settings = get_settings()
-    if not settings.anthropic_api_key:
-        # Deploy problem, not a bad request — say which, the way the compile
-        # endpoint distinguishes "no TeX installed" from "bad document".
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="This server is not set up to write resume entries.",
-        )
+    settings = model_access(user)
 
     if len(payload.source.encode("utf-8")) > _MAX_SOURCE_BYTES:
         raise HTTPException(
@@ -2072,7 +2059,7 @@ async def draft_entry(
 @router.post("/edit", response_model=EditResponse)
 async def edit_entry(
     payload: EditRequest,
-    _user: User = Depends(get_current_user),
+    user: User = Depends(get_current_user),
 ) -> EditResponse:
     """Rewrite one entry, as a replacement this server has verified.
 
@@ -2089,12 +2076,7 @@ async def edit_entry(
     strings, and the client applies them with a literal single-occurrence
     replace (`replaceResumeEntry` in ``lib/latex/sections.ts``).
     """
-    settings = get_settings()
-    if not settings.anthropic_api_key:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="This server is not set up to edit resume entries.",
-        )
+    settings = model_access(user)
 
     if len(payload.source.encode("utf-8")) > _MAX_SOURCE_BYTES:
         raise HTTPException(

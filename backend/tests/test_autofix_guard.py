@@ -14,6 +14,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.config import get_settings
+from app.routers import sentry
 from app.routers.sentry import _resolve_repo
 
 AUTOFIX = "/sentry/autofix"
@@ -33,6 +34,25 @@ def autofix_configured(monkeypatch):
     monkeypatch.setattr(settings, "autofix_projects", OWN_PROJECTS, raising=False)
     yield settings
     get_settings.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def _past_the_owner_gate(monkeypatch):
+    """Let these tests reach the repo guard.
+
+    `/sentry/autofix` is owner-only now — the dispatch spends the operator's
+    money and lands a commit in the operator's repo, so a stranger is refused
+    before anything else happens (see `require_owner`). These tests authenticate
+    as anonymous device users, who can never be owners, so without this every
+    one of them would be turned away at the gate and stop proving anything about
+    routing.
+
+    Patched rather than seeded, for the same reason `test_resume.py` patches its
+    gate: whether the gate opens is `test_ai_access.py`'s subject, and a test
+    should fail for one reason. The *ordering* between the two guards is pinned
+    there too, by `test_autofix_is_refused_before_any_upstream_call`.
+    """
+    monkeypatch.setattr(sentry, "require_owner", lambda user, action: get_settings())
 
 
 def test_fallback_allowed_for_a_project_the_repo_holds(autofix_configured):

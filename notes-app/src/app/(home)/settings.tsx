@@ -1,6 +1,6 @@
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { Stack } from 'expo-router';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -20,8 +20,10 @@ import { ThemedView } from '@/components/themed-view';
 import { Accent, Colors, hexToRgba, Spacing, type Palette } from '@/constants/theme';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
 import { useTheme } from '@/hooks/use-theme';
+import { fetchAiKeyState, forgetAiKey, saveAiKey, type AiKeyState } from '@/lib/ai-key';
 import { useAuth } from '@/lib/auth/auth-context';
 import { db } from '@/lib/db';
+import { ApiError, syncConfigured } from '@/lib/sync/api';
 import { refreshFromDb } from '@/lib/sync/sync-engine';
 import {
   useCreateOptions,
@@ -120,6 +122,12 @@ export default function SettingsScreen() {
                 );
               })}
             </View>
+
+            {/* The resume's AI features run on Anthropic's API and are billed
+                per call, so an account brings its own key. Above the plugin
+                credentials because this one is not inert — it decides whether
+                those features work at all. */}
+            <AiSection />
 
             {/* Which plugin options appear in the navbar's create (+) menu, plus
                 (inert) credential fields stored on-device. */}
@@ -447,6 +455,162 @@ function DeveloperSection() {
 }
 
 /** A labelled text field for a stored (inert) create-option credential. */
+/**
+ * The account's Anthropic API key — the switch that turns the resume's AI
+ * features on.
+ *
+ * Unlike the plugin credentials below it, this one leaves the device: it is sent
+ * to the server, stored encrypted against the account, and never comes back. So
+ * this section can only ever show the last four characters, and "replace" means
+ * typing a whole key again rather than editing the one that's there. That is a
+ * property of the design rather than a shortcoming of the screen — a key the app
+ * could redisplay is a key the app is holding onto.
+ *
+ * Three states, and each says what to do next rather than only what is true:
+ * the operator's own account rides the server's key and needs nothing; a server
+ * with no encryption secret cannot accept a key at all, and says so instead of
+ * offering a field that silently fails; everyone else gets a field.
+ */
+function AiSection() {
+  const theme = useTheme();
+  const [state, setState] = useState<AiKeyState | null>(null);
+  const [draft, setDraft] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  // Signed-out / offline-only builds have no server to ask. Failing quietly to
+  // "no section" beats a row that reports an error nobody can act on.
+  const [reachable, setReachable] = useState(syncConfigured);
+
+  useEffect(() => {
+    if (!syncConfigured) return;
+    let cancelled = false;
+    fetchAiKeyState()
+      .then((next) => !cancelled && setState(next))
+      .catch(() => !cancelled && setReachable(false));
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  if (!reachable) return null;
+
+  const run = (work: () => Promise<AiKeyState>) => {
+    setBusy(true);
+    setError(null);
+    work()
+      .then((next) => {
+        setState(next);
+        setDraft('');
+      })
+      .catch((e) => setError(e instanceof ApiError && e.status === 400
+        ? 'That doesn’t look like an Anthropic key — they start with “sk-ant-”.'
+        : 'Could not save that key. Check your connection and try again.'))
+      .finally(() => setBusy(false));
+  };
+
+  return (
+    <>
+      <ThemedText type="small" themeColor="textSecondary" style={styles.sectionLabel}>
+        AI
+      </ThemedText>
+
+      {state?.owner ? (
+        <ThemedView type="backgroundElement" style={styles.row}>
+          <View style={styles.rowText}>
+            <ThemedText>Using this server’s key</ThemedText>
+            <ThemedText type="small" themeColor="textSecondary">
+              This account is the operator’s, so the resume’s AI features are already on.
+            </ThemedText>
+          </View>
+        </ThemedView>
+      ) : state && !state.canStore ? (
+        <ThemedView type="backgroundElement" style={styles.row}>
+          <View style={styles.rowText}>
+            <ThemedText>Not available</ThemedText>
+            <ThemedText type="small" themeColor="textSecondary">
+              This server isn’t set up to store API keys.
+            </ThemedText>
+          </View>
+        </ThemedView>
+      ) : (
+        <ThemedView type="backgroundElement" style={styles.row}>
+          <View style={styles.rowText}>
+            <ThemedText>Anthropic API key</ThemedText>
+            <ThemedText type="small" themeColor="textSecondary">
+              {state?.hint
+                ? `Saved, ending ${state.hint}. The resume’s writing, tailoring and hardening run on it — and are billed to it.`
+                : 'The resume can draft, tailor and harden itself with Claude. Those calls are billed to whoever’s key runs them, so they run on yours.'}
+            </ThemedText>
+
+            <View style={styles.credField}>
+              <TextInput
+                value={draft}
+                onChangeText={setDraft}
+                placeholder={state?.hint ? 'Enter a new key to replace it' : 'sk-ant-…'}
+                placeholderTextColor={theme.textSecondary}
+                autoCapitalize="none"
+                autoCorrect={false}
+                secureTextEntry
+                editable={!busy}
+                onSubmitEditing={() => draft.trim() && run(() => saveAiKey(draft))}
+                style={[
+                  styles.credInput,
+                  { color: theme.text, borderColor: hexToRgba(theme.text, 0.12) },
+                ]}
+              />
+            </View>
+
+            {error && (
+              <ThemedText type="small" style={{ color: '#d9534f' }}>
+                {error}
+              </ThemedText>
+            )}
+
+            <View style={styles.aiActions}>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Save API key"
+                disabled={busy || !draft.trim()}
+                onPress={() => run(() => saveAiKey(draft))}
+                style={({ pressed }) => [
+                  styles.aiButton,
+                  {
+                    borderColor: draft.trim() ? ACCENT : hexToRgba(theme.text, 0.12),
+                    opacity: busy || !draft.trim() ? 0.5 : 1,
+                  },
+                  pressed && { opacity: 0.7 },
+                ]}>
+                {busy ? (
+                  <ActivityIndicator size="small" color={ACCENT} />
+                ) : (
+                  <ThemedText type="small">Save</ThemedText>
+                )}
+              </Pressable>
+
+              {state?.hint && (
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="Remove API key"
+                  disabled={busy}
+                  onPress={() => run(forgetAiKey)}
+                  style={({ pressed }) => [
+                    styles.aiButton,
+                    { borderColor: hexToRgba(theme.text, 0.12), opacity: busy ? 0.5 : 1 },
+                    pressed && { opacity: 0.7 },
+                  ]}>
+                  <ThemedText type="small" themeColor="textSecondary">
+                    Remove
+                  </ThemedText>
+                </Pressable>
+              )}
+            </View>
+          </View>
+        </ThemedView>
+      )}
+    </>
+  );
+}
+
 function CredentialField({
   label,
   value,
@@ -537,6 +701,21 @@ const styles = StyleSheet.create({
   },
   optionGroup: {
     gap: Spacing.two,
+  },
+  aiActions: {
+    flexDirection: 'row',
+    gap: Spacing.two,
+    marginTop: Spacing.one,
+  },
+  // Squircle, not a pill, and the same 2px border the theme rows use — this
+  // is the app's existing secondary-action shape, only wide enough for a word.
+  aiButton: {
+    minWidth: 88,
+    height: 40,
+    borderRadius: Spacing.two,
+    borderWidth: 2,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   credField: {
     gap: Spacing.half,

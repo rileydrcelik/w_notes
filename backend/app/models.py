@@ -59,6 +59,17 @@ class User(Base):
     email: Mapped[str | None] = mapped_column(String, unique=True)
     # Reserved; Firebase owns credentials so we never store password hashes.
     password_hash: Mapped[str | None] = mapped_column(String)
+    # The account's own Anthropic API key, so the AI endpoints spend the
+    # caller's budget rather than the operator's. Fernet ciphertext — see
+    # `app/crypto.py`; the plaintext exists in this process for the length of one
+    # outbound call and is never returned to any client, not even the owner's.
+    #
+    # `..._hint` is the last four characters in the clear, which is all the UI
+    # needs to say *which* key is stored. It is a separate column rather than
+    # something derived at read time because deriving it means decrypting, and
+    # rendering a settings screen should not require the ability to spend money.
+    anthropic_key_ct: Mapped[str | None] = mapped_column(Text)
+    anthropic_key_hint: Mapped[str | None] = mapped_column(String)
     created_at: Mapped[object] = mapped_column(
         TIMESTAMP(timezone=True), server_default=func.now()
     )

@@ -27,6 +27,7 @@
  */
 import type { LatexEngine } from '@/lib/latex/types';
 import { ApiError, apiFetch, syncConfigured } from '@/lib/sync/api';
+import { KEY_REQUIRED_MESSAGE } from '@/lib/ai-key';
 
 /** What the hardening form collects. One field, and it is the job title. */
 export type HardenDraft = {
@@ -189,6 +190,10 @@ function serverDetail(e: unknown): string | null {
  * document survived it.
  */
 function describeHardenFailure(message: string): string {
+  // Checked before every other status: this one is not a failure of the
+  // request but a statement about the account, and the remedy is a screen
+  // away rather than a retry.
+  if (message.includes('402')) return KEY_REQUIRED_MESSAGE;
   if (message.includes('429')) {
     return 'The server is writing as much as it can right now. Try again in a moment.';
   }

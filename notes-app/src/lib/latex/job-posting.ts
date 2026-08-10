@@ -19,6 +19,7 @@
  * by the app — nothing on our side of the wire ever requests a URL a user typed.
  */
 import { ApiError, apiFetch, syncConfigured } from '@/lib/sync/api';
+import { KEY_REQUIRED_MESSAGE } from '@/lib/ai-key';
 
 /** What a posting gave up, ready to drop into the tailor's draft. */
 export type JobPosting = {
@@ -124,6 +125,10 @@ function detailOf(e: ApiError): string | null {
 }
 
 function describeFailure(message: string): string {
+  // Checked before every other status: this one is not a failure of the
+  // request but a statement about the account, and the remedy is a screen
+  // away rather than a retry.
+  if (message.includes('402')) return KEY_REQUIRED_MESSAGE;
   if (message.includes('429')) {
     return 'The server is reading as much as it can right now. Try again in a moment.';
   }

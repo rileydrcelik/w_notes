@@ -10,6 +10,7 @@
  */
 import type { LatexEngine } from '@/lib/latex/types';
 import { apiFetch, syncConfigured } from '@/lib/sync/api';
+import { KEY_REQUIRED_MESSAGE } from '@/lib/ai-key';
 
 /** What the adder's form collects. Everything but the title is optional. */
 export type ResumeEntryDraft = {
@@ -319,6 +320,10 @@ export async function requestEntryEdit(
  * flattening to one generic line the way `describeFailure` does.
  */
 function describeEditFailure(message: string): string {
+  // Checked before every other status: this one is not a failure of the
+  // request but a statement about the account, and the remedy is a screen
+  // away rather than a retry.
+  if (message.includes('402')) return KEY_REQUIRED_MESSAGE;
   if (message.includes('429')) {
     return 'The server is writing as many entries as it can. Try again in a moment.';
   }
@@ -339,6 +344,10 @@ function describeEditFailure(message: string): string {
 
 /** Turn an `ApiError`-ish message into something worth showing a person. */
 function describeFailure(message: string): string {
+  // Checked before every other status: this one is not a failure of the
+  // request but a statement about the account, and the remedy is a screen
+  // away rather than a retry.
+  if (message.includes('402')) return KEY_REQUIRED_MESSAGE;
   if (message.includes('429')) {
     return 'The server is writing as many entries as it can. Try again in a moment.';
   }

@@ -72,6 +72,28 @@ class Settings(BaseSettings):
     anthropic_model: str = "claude-sonnet-5"
     anthropic_timeout_seconds: float = 60.0
 
+    # Comma-separated account emails that may spend `anthropic_api_key` — the
+    # server's own key, and the server's own bill.
+    #
+    # Everyone else brings their own, stored per account (encrypted, see
+    # `app/crypto.py`) and used only for their own requests. That is the whole
+    # point of the split: these endpoints run a frontier model over a whole
+    # resume, several times per press for the tailor, and this is a multi-tenant
+    # API. Without the split, one person's enthusiasm is the operator's invoice.
+    #
+    # Matched against `users.email` exactly like `publisher_emails`, and for the
+    # same reason — the user id is a server-minted UUID nobody can look up.
+    # Empty => nobody rides free, including the operator, which is the safe
+    # default for a fork of this deployment.
+    ai_owner_emails: str = ""
+
+    # Fernet key (32 url-safe base64-encoded bytes) that encrypts the API keys
+    # users store here. SSM in a deployment, `.env` locally. Empty => users
+    # cannot save a key at all, and only `ai_owner_emails` accounts can use the
+    # AI endpoints. Generate with:
+    #     python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+    app_secret_key: str = ""
+
     # Firebase service-account credential used to verify ID tokens: either a path
     # to the JSON file (local dev) or the JSON content itself (deployed — injected
     # from a secrets manager). Empty => Firebase auth is disabled and only
@@ -137,6 +159,12 @@ class Settings(BaseSettings):
         publishing would be a miserable thing to debug.
         """
         return {e.strip().lower() for e in self.publisher_emails.split(",") if e.strip()}
+
+    @property
+    def ai_owner_email_set(self) -> set[str]:
+        """`ai_owner_emails` parsed, lower-cased on both sides — see
+        `publisher_email_set`, which this deliberately mirrors."""
+        return {e.strip().lower() for e in self.ai_owner_emails.split(",") if e.strip()}
 
     @property
     def publishing_enabled(self) -> bool:

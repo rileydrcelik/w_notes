@@ -193,3 +193,16 @@ variable "publisher_emails" {
   default     = ""
   description = "Comma-separated account emails allowed to publish, matched against users.email. This API is multi-tenant: without it, any account could put posts on the site owner's portfolio. Empty => nobody can publish."
 }
+
+variable "app_secret_key" {
+  type        = string
+  default     = ""
+  sensitive   = true
+  description = "Fernet key (32 url-safe base64 bytes) encrypting the Anthropic API keys users store on their own account. Generate with: python -c \"from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\". Empty => users cannot save a key, and only ai_owner_emails accounts can use the AI endpoints. Rotating this orphans every stored key: nobody loses content, but everyone re-enters their key."
+}
+
+variable "ai_owner_emails" {
+  type        = list(string)
+  default     = []
+  description = "Accounts allowed to spend the server's anthropic_api_key — i.e. the operator's own bill. Everyone else brings their own key. Matched against users.email, like publisher_emails. Empty => nobody rides free, which is the right default for a fork of this deployment."
+}

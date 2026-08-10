@@ -62,6 +62,17 @@ resource "aws_ssm_parameter" "anthropic_api_key" {
   value = var.anthropic_api_key
 }
 
+# APP_SECRET_KEY — encrypts the API keys users store against their own account
+# (backend/app/crypto.py). SecureString like every other credential here, but
+# note what makes this one different: it is the key that protects *other
+# people's* credentials, so losing it is not recoverable from a database backup.
+resource "aws_ssm_parameter" "app_secret_key" {
+  count = local.app_secret_enabled ? 1 : 0
+  name  = "/${local.name}/app-secret-key"
+  type  = "SecureString"
+  value = var.app_secret_key
+}
+
 # FIREBASE_CREDENTIALS — the service-account JSON; only created when provided.
 resource "aws_ssm_parameter" "firebase" {
   count = local.firebase_enabled ? 1 : 0

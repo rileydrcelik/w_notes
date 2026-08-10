@@ -26,6 +26,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.config import get_settings
+from app.ai_access import require_owner
 from app.deps import get_current_user
 from app.models import User
 
@@ -698,6 +699,12 @@ async def autofix(
     req: AutofixRequest = Body(...),
     user: User = Depends(get_current_user),
 ) -> AutofixResponse:
+    # Owner-only, and checked first: this is the expensive, irreversible one.
+    # It bills an agent run and, where autofix-ship is wired up, ends in an
+    # automatic merge and deploy of the operator's repo. No caller-supplied
+    # key can pay for that, so the answer is 403 rather than the resume
+    # endpoints' 402 — see `require_owner`.
+    require_owner(user, "Autofix")
     _require_token()  # need Sentry to gather context
     _require_github_token()  # and GitHub to dispatch
     # The note's repo, or the server default — but the fallback is only allowed
@@ -751,6 +758,10 @@ async def autofix_status(
     repo: str | None = Query(None, description="Target repo (owner/name); defaults to the server repo"),
     user: User = Depends(get_current_user),
 ) -> AutofixStatus:
+    # Same gate as the dispatch. Nobody but an owner can have started a run,
+    # so for anyone else this only reports on the operator's open pull
+    # requests — which is not theirs to read either.
+    require_owner(user, "Autofix")
     _require_github_token()
     repo = _resolve_repo(repo)
     branch = _branch_for(short_id)

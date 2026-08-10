@@ -20,6 +20,9 @@ locals {
   # The resume adder writes a new entry into a resume's LaTeX by asking Claude.
   # No key means that one endpoint 503s; everything else is unaffected.
   anthropic_enabled = var.anthropic_api_key != ""
+  # Users can only store their own keys when there is something to seal them
+  # with. Without it the AI features still work, but only for ai_owner_emails.
+  app_secret_enabled = var.app_secret_key != ""
 
   # Publishing needs a destination, a credential, and at least one authorized
   # publisher. Missing any of the three disables it, matching the app's own

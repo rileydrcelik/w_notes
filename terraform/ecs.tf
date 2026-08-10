@@ -32,6 +32,7 @@ locals {
     local.sentry_api_enabled ? [{ name = "SENTRY_API_TOKEN", valueFrom = aws_ssm_parameter.sentry_api_token[0].arn }] : [],
     local.autofix_enabled ? [{ name = "GITHUB_TOKEN", valueFrom = aws_ssm_parameter.github_token[0].arn }] : [],
     local.anthropic_enabled ? [{ name = "ANTHROPIC_API_KEY", valueFrom = aws_ssm_parameter.anthropic_api_key[0].arn }] : [],
+    local.app_secret_enabled ? [{ name = "APP_SECRET_KEY", valueFrom = aws_ssm_parameter.app_secret_key[0].arn }] : [],
     local.firebase_enabled ? [{ name = "FIREBASE_CREDENTIALS", valueFrom = aws_ssm_parameter.firebase[0].arn }] : [],
     local.publishing_enabled ? [{ name = "PORTFOLIO_INGEST_SECRET", valueFrom = aws_ssm_parameter.portfolio_ingest_secret[0].arn }] : [],
   )
@@ -78,6 +79,11 @@ resource "aws_ecs_task_definition" "api" {
         # be set or the app disables publishing entirely.
         { name = "PORTFOLIO_API_BASE", value = var.portfolio_api_base },
         { name = "PUBLISHER_EMAILS", value = var.publisher_emails },
+        # Accounts that spend the server's Anthropic key rather than their
+        # own. Everyone else is asked for a key of theirs before any of the
+        # resume AI endpoints will run — these calls are expensive enough
+        # that one enthusiastic stranger is a real invoice.
+        { name = "AI_OWNER_EMAILS", value = join(",", var.ai_owner_emails) },
       ]
 
       # Secret config, pulled from SSM Parameter Store by the execution role.

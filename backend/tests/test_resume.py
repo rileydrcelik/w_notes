@@ -26,6 +26,7 @@ import json
 
 import pytest
 
+from app import ai_access
 from app.config import get_settings
 from app.routers import latex, resume
 
@@ -161,11 +162,23 @@ def fake_anthropic(monkeypatch):
 
 @pytest.fixture
 def anthropic_key(monkeypatch):
-    """Give the endpoint a (fake) API key, the way `test_publish.py`'s
-    `publishing` fixture enables its feature — mutate the cached Settings
-    instance directly, then clear the cache so later tests get a fresh one."""
+    """Entitle the caller to reach the model, with a (fake) key.
+
+    Two halves since the endpoints stopped spending one server-wide key. The
+    settings mutation is the old one — `test_publish.py`'s `publishing` fixture
+    does the same thing, mutating the cached Settings and clearing the cache
+    after. The `stored_key` patch is the new half: these tests authenticate as
+    anonymous device users, who have no email and so can never be in
+    `ai_owner_emails`, and would otherwise be turned away at the gate with a 402
+    before any of them reached the thing they are actually testing.
+
+    Patching the gate here rather than seeding a real column is deliberate.
+    Whether the gate opens is `test_ai_access.py`'s subject; this file's subject
+    is what the endpoints do once it has, and a test should fail for one reason.
+    """
     settings = get_settings()
     monkeypatch.setattr(settings, "anthropic_api_key", "sk-ant-test-not-real", raising=False)
+    monkeypatch.setattr(ai_access, "stored_key", lambda user: "sk-ant-test-not-real")
     yield
     get_settings.cache_clear()
 
@@ -175,14 +188,20 @@ def anthropic_key(monkeypatch):
 # --------------------------------------------------------------------------
 
 
-async def test_returns_503_when_no_api_key_is_configured(client, device, monkeypatch):
-    """A deploy problem, not a bad request — the same distinction
-    `/latex/compile` draws for a missing TeX Live install.
+async def test_asks_an_ordinary_caller_for_a_key(client, device, monkeypatch):
+    """402, not 503, and the difference is who has to do something about it.
 
-    Explicit, rather than relying on the field's own empty-string default: the
-    real process environment this suite runs in may well have an
-    ANTHROPIC_API_KEY set for unrelated reasons, and this test must not depend
-    on it being absent.
+    This used to be a 503: there was one key, the server's, and its absence was
+    a deploy problem — the same distinction `/latex/compile` draws for a missing
+    TeX Live install. Now an ordinary account is *expected* not to have the
+    server's key, and the answer is "bring your own", which is a request the
+    caller can act on. 503 is still what an `ai_owner_emails` account gets when
+    the server key is genuinely missing; see `test_ai_access.py`.
+
+    The server key is cleared explicitly rather than relying on the field's
+    empty-string default: the real process environment this suite runs in may
+    well have an ANTHROPIC_API_KEY set for unrelated reasons, and this test must
+    not depend on it being absent.
     """
     settings = get_settings()
     monkeypatch.setattr(settings, "anthropic_api_key", "", raising=False)
@@ -190,7 +209,7 @@ async def test_returns_503_when_no_api_key_is_configured(client, device, monkeyp
         res = await _draft(client, device)
     finally:
         get_settings.cache_clear()
-    assert res.status_code == 503
+    assert res.status_code == 402
 
 
 async def test_returns_400_when_the_title_is_missing(client, device, anthropic_key):
@@ -488,11 +507,11 @@ async def _edit(client, device, **overrides):
     return await client.post(EDIT, json=_edit_payload(**overrides), headers=device)
 
 
-async def test_edit_returns_503_without_an_api_key(client, device, monkeypatch):
+async def test_edit_asks_an_ordinary_caller_for_a_key(client, device, monkeypatch):
     settings = get_settings()
     monkeypatch.setattr(settings, "anthropic_api_key", "", raising=False)
     res = await _edit(client, device)
-    assert res.status_code == 503
+    assert res.status_code == 402
     get_settings.cache_clear()
 
 
@@ -766,14 +785,14 @@ async def test_a_streamed_failure_still_carries_its_status_and_sentence(
     assert "unchanged" in error["detail"]
 
 
-async def test_tailor_returns_503_without_an_api_key(client, device, monkeypatch):
+async def test_tailor_asks_an_ordinary_caller_for_a_key(client, device, monkeypatch):
     settings = get_settings()
     monkeypatch.setattr(settings, "anthropic_api_key", "", raising=False)
     try:
         res = await _tailor(client, device)
     finally:
         get_settings.cache_clear()
-    assert res.status_code == 503
+    assert res.status_code == 402
 
 
 async def test_tailor_needs_a_role(client, device, anthropic_key):
@@ -975,14 +994,14 @@ async def _posting(client, device, url="https://boards.example.com/jobs/1"):
     return await client.post("/resume/job-posting", json={"url": url}, headers=device)
 
 
-async def test_posting_returns_503_without_an_api_key(client, device, monkeypatch):
+async def test_posting_asks_an_ordinary_caller_for_a_key(client, device, monkeypatch):
     settings = get_settings()
     monkeypatch.setattr(settings, "anthropic_api_key", "", raising=False)
     try:
         res = await _posting(client, device)
     finally:
         get_settings.cache_clear()
-    assert res.status_code == 503
+    assert res.status_code == 402
 
 
 async def test_posting_rejects_a_non_link_without_asking_the_model(
@@ -1429,14 +1448,14 @@ async def _harden(client, device, **overrides):
     return await client.post(HARDEN, json=body, headers=device)
 
 
-async def test_harden_returns_503_without_an_api_key(client, device, monkeypatch):
+async def test_harden_asks_an_ordinary_caller_for_a_key(client, device, monkeypatch):
     settings = get_settings()
     monkeypatch.setattr(settings, "anthropic_api_key", "", raising=False)
     try:
         res = await _harden(client, device)
     finally:
         get_settings.cache_clear()
-    assert res.status_code == 503
+    assert res.status_code == 402
 
 
 async def test_harden_needs_a_role(client, device, anthropic_key):

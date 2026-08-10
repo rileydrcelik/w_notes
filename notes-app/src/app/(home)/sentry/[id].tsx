@@ -34,7 +34,7 @@ import {
   type FixState,
 } from '@/lib/autofix-progress';
 import { db } from '@/lib/db';
-import { apiFetch } from '@/lib/sync/api';
+import { ApiError, apiFetch } from '@/lib/sync/api';
 import { sentryTarget, type SentryTarget } from '@/lib/sentry-note';
 import { SentryConfig } from '@/components/notes/sentry-config';
 import { useAutofixSelection } from '@/store/autofix-selection-store';
@@ -761,11 +761,17 @@ export default function SentryIssuesScreen() {
               },
             }));
           })
-          .catch(() => {
-            setFixStates((prev) => ({
-              ...prev,
-              [issueId]: { phase: 'error', message: 'Autofix failed to start' },
-            }));
+          .catch((e) => {
+            // 403 is the one refusal that isn't a fault: autofix dispatches an
+            // agent into *this server's* repository and merges what it writes,
+            // so it is limited to the operator. Saying "failed to start" there
+            // would send someone hunting for a problem to fix, when the answer
+            // is that the feature was never theirs to run.
+            const message =
+              e instanceof ApiError && e.status === 403
+                ? 'Autofix is limited to this server’s operator'
+                : 'Autofix failed to start';
+            setFixStates((prev) => ({ ...prev, [issueId]: { phase: 'error', message } }));
           });
       });
       clear();
