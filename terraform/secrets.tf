@@ -70,11 +70,13 @@ resource "aws_ssm_parameter" "anthropic_api_key" {
 # what makes this one different: it is the key that protects *other people's*
 # credentials, so losing it is not recoverable from a database backup.
 #
-# The per-user provider tokens were originally written against a second key of
-# their own (`credential_encryption_key`). They share this one instead — one key,
-# one module, one thing to rotate. It matters operationally as well as
-# aesthetically: this parameter is already applied and already wired into the
-# task definition, so per-user tokens shipped without a terraform change.
+# The per-user provider tokens were originally written on a branch that gave them
+# a second key of their own, generated here by terraform. No such resource exists
+# any more, and it never reached AWS — the branch was never applied. They share
+# this key instead: one key, one module, one thing to rotate. That matters
+# operationally as well as aesthetically, because this parameter is already
+# applied and already wired into the task definition, so per-user tokens shipped
+# without needing a terraform change at all.
 resource "aws_ssm_parameter" "app_secret_key" {
   count = local.app_secret_enabled ? 1 : 0
   name  = "/${local.name}/app-secret-key"
