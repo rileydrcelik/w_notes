@@ -24,7 +24,7 @@ import { fetchAiKeyState, forgetAiKey, saveAiKey, type AiKeyState } from '@/lib/
 import { useAuth } from '@/lib/auth/auth-context';
 import type { CredentialProvider } from '@/lib/credentials';
 import { db } from '@/lib/db';
-import { ApiError, syncConfigured } from '@/lib/sync/api';
+import { ApiError, apiErrorMessage, syncConfigured } from '@/lib/sync/api';
 import { refreshFromDb } from '@/lib/sync/sync-engine';
 import {
   useCreateOptions,
@@ -663,7 +663,11 @@ function TokenField({
       setEntry('');
       setEditing(false);
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Could not save token');
+      // The backend's own words first — "Token is empty", "Credential storage
+      // is not configured on this server". `e.message` is the bare status line
+      // ("422 Unprocessable Entity for /credentials/github"), which tells the
+      // one person who could act on it nothing they can act on.
+      setError(apiErrorMessage(e) ?? 'Could not save token');
     } finally {
       setBusy(false);
     }
@@ -677,7 +681,7 @@ function TokenField({
       setEntry('');
       setEditing(false);
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Could not remove token');
+      setError(apiErrorMessage(e) ?? 'Could not remove token');
     } finally {
       setBusy(false);
     }
