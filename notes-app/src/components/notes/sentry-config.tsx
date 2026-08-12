@@ -13,7 +13,7 @@ import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { hexToRgba, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
-import { apiFetch } from '@/lib/sync/api';
+import { apiErrorMessage, apiFetch } from '@/lib/sync/api';
 import type { SentryTarget } from '@/lib/sentry-note';
 import { noScrollbar } from '@/lib/scroll-style';
 
@@ -55,8 +55,8 @@ export function SentryConfig({
     try {
       const res = await apiFetch<ProjectListResponse>('/sentry/projects');
       setProjects(res.projects ?? []);
-    } catch {
-      setError('Could not load your Sentry projects. Check the backend is reachable.');
+    } catch (e) {
+      setError(apiErrorMessage(e) ?? 'Could not load your Sentry projects.');
     } finally {
       setLoading(false);
     }

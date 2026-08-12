@@ -8,12 +8,26 @@
  */
 import { Sentry } from '@/lib/sentry';
 import { AuthUnavailableError, getAuthToken } from '@/lib/auth/token';
+import { apiErrorMessage, detailFromBody } from './api-detail';
+import { fingerprintPath } from './fingerprint';
+
+export { apiErrorMessage, fingerprintPath };
 
 const BASE_URL = process.env.EXPO_PUBLIC_API_URL?.replace(/\/$/, '') ?? '';
 
 export const syncConfigured = !!BASE_URL;
 
 export class ApiError extends Error {
+  /**
+   * The backend's own explanation, pulled out of `{"detail": ...}`.
+   *
+   * Kept as a field rather than parsed at each call site so there is one answer
+   * to "what did the server actually say", and so a screen can show it without
+   * knowing FastAPI's error shape. Use `apiErrorMessage` to decide whether it is
+   * worth showing — not every status carries advice.
+   */
+  readonly detail?: string;
+
   constructor(
     message: string,
     readonly status: number,
@@ -21,6 +35,7 @@ export class ApiError extends Error {
   ) {
     super(message);
     this.name = 'ApiError';
+    this.detail = detailFromBody(body);
   }
 }
 
@@ -65,7 +80,18 @@ export async function apiFetch<T = unknown>(path: string, options: ApiOptions = 
     // Three outcomes reach here, and only one is worth reporting.
     if (e instanceof ApiError) {
       // The backend answered with a non-2xx. That's a real failure on our side.
-      Sentry.captureException(e, { tags: { source: 'sync-api', path } });
+      //
+      // Fingerprint by endpoint + status, not by the default stack trace. Every
+      // ApiError is constructed on the same line of this file, so Sentry's
+      // default grouping folded *every* backend failure — a 401 on /sync/push, a
+      // 504 on /sync/pull, a 502 from the Sentry proxy — into one issue. That
+      // issue then reads as a single bug that keeps "coming back" while it's
+      // really a queue of unrelated ones, and anything working from its latest
+      // event (a person or an autofix run) is handed the wrong error.
+      Sentry.captureException(e, {
+        tags: { source: 'sync-api', path, status: String(e.status) },
+        fingerprint: ['sync-api', String(e.status), fingerprintPath(path)],
+      });
     } else if (e instanceof AuthUnavailableError) {
       // An account's Firebase session isn't available yet (restoring on launch,
       // or dropped). Sync defers and retries; nothing is wrong.

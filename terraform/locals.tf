@@ -17,6 +17,10 @@ locals {
   # Autofix needs both a GitHub token (to dispatch/read PRs) and a target repo.
   autofix_enabled = var.github_token != "" && var.autofix_repo != ""
 
+  # A rotation is "in progress" for as long as the previous app secret key is
+  # still supplied. Unset it once every row has been re-sealed under the new one.
+  app_secret_rotation_in_progress = var.app_secret_key_old != ""
+
   # The resume adder writes a new entry into a resume's LaTeX by asking Claude.
   # No key means that one endpoint 503s; everything else is unaffected.
   anthropic_enabled = var.anthropic_api_key != ""

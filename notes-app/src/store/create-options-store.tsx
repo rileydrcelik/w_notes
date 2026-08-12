@@ -8,6 +8,14 @@ import {
   type ReactNode,
 } from 'react';
 
+import {
+  deleteCredential,
+  emptyCredentialStatus,
+  fetchCredentials,
+  saveCredential,
+  type CredentialProvider,
+  type CredentialStatus,
+} from '@/lib/credentials';
 import { db } from '@/lib/db';
 import { subscribeSynced } from '@/lib/sync/sync-engine';
 
@@ -22,8 +30,14 @@ import { subscribeSynced } from '@/lib/sync/sync-engine';
  * An unset key means "never chosen" rather than "off by request", and the two
  * are not always the same answer: a device that was already using a plugin when
  * this default changed gets it seeded on, once, from its own data — see
- * `TOGGLE_PLUGIN` and the hydrate below. The credential strings are stored but
- * not yet wired to auth (the server holds the real tokens).
+ * `TOGGLE_PLUGIN` and the hydrate below.
+ *
+ * **Provider tokens are not here.** They live server-side, encrypted, one per
+ * account (`lib/credentials.ts`), and this store holds only their *status* —
+ * saved or not, plus the last four characters. Keeping the token itself in the
+ * SQLite `settings` table would put a plaintext secret on every device, which
+ * is the thing storing it server-side exists to avoid. `githubRepo` is not a
+ * secret and stays local, as a per-device default.
  */
 const KEYS = {
   sentryEnabled: 'createOptions.sentryEnabled',
@@ -31,10 +45,15 @@ const KEYS = {
   taskManagerEnabled: 'createOptions.taskManagerEnabled',
   financeEnabled: 'createOptions.financeEnabled',
   resumeEnabled: 'createOptions.resumeEnabled',
-  sentryToken: 'createOptions.sentryToken',
-  githubToken: 'createOptions.githubToken',
   githubRepo: 'createOptions.githubRepo',
 } as const;
+
+/**
+ * Keys the inert credential UI used to write a token into, before tokens moved
+ * server-side. Cleared once on hydrate: they were never read by anything, but a
+ * device that stored one is holding a plaintext PAT for no reason.
+ */
+const LEGACY_TOKEN_KEYS = ['createOptions.sentryToken', 'createOptions.githubToken'];
 
 /**
  * Keys of the on/off plugin toggles.
@@ -49,8 +68,8 @@ export type CreateToggleKey =
   | 'taskManagerEnabled'
   | 'financeEnabled'
   | 'resumeEnabled';
-/** Keys of the (inert) stored credential strings. */
-export type CreateCredentialKey = 'sentryToken' | 'githubToken' | 'githubRepo';
+/** Keys of the locally stored (non-secret) create-option strings. */
+export type CreateCredentialKey = 'githubRepo';
 
 type CreateOptionsState = {
   sentryEnabled: boolean;
@@ -58,14 +77,21 @@ type CreateOptionsState = {
   taskManagerEnabled: boolean;
   financeEnabled: boolean;
   resumeEnabled: boolean;
-  sentryToken: string;
-  githubToken: string;
   githubRepo: string;
 };
 
 export type CreateOptions = CreateOptionsState & {
   setEnabled: (key: CreateToggleKey, value: boolean) => void;
   setCredential: (key: CreateCredentialKey, value: string) => void;
+  /** Server-held token status per provider. Never contains a token. */
+  credentials: Record<CredentialProvider, CredentialStatus>;
+  /** True until the first status fetch settles, so the UI can avoid claiming
+   *  "not saved" about a token it simply hasn't looked up yet. */
+  credentialsLoading: boolean;
+  /** Store a token for one provider. Rejects on failure so the field can report it. */
+  setToken: (provider: CredentialProvider, token: string) => Promise<void>;
+  /** Forget this account's token for one provider. */
+  clearToken: (provider: CredentialProvider) => Promise<void>;
 };
 
 const DEFAULTS: CreateOptionsState = {
@@ -74,8 +100,6 @@ const DEFAULTS: CreateOptionsState = {
   taskManagerEnabled: false,
   financeEnabled: false,
   resumeEnabled: false,
-  sentryToken: '',
-  githubToken: '',
   githubRepo: '',
 };
 
@@ -110,6 +134,42 @@ const CreateOptionsContext = createContext<CreateOptions | null>(null);
 
 export function CreateOptionsProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<CreateOptionsState>(DEFAULTS);
+  const [credentials, setCredentials] = useState(emptyCredentialStatus);
+  const [credentialsLoading, setCredentialsLoading] = useState(true);
+
+  // Token status comes from the server, not from SQLite — there is no local
+  // copy to hydrate. A failure here is left as "nothing saved" rather than
+  // surfaced: Settings should still open when the backend is unreachable, and
+  // the fields themselves report a real error when you try to save one.
+  //
+  // Written with `.then` rather than an awaited helper to match the hydrate
+  // below — an async function called from an effect sets state on a path the
+  // lint rule can't see past, and flags it as a cascading render.
+  useEffect(() => {
+    let cancelled = false;
+    fetchCredentials()
+      .then((c) => {
+        if (!cancelled) setCredentials(c);
+      })
+      .catch((e) => console.warn('[create-options] failed to load credential status:', e))
+      .finally(() => {
+        if (!cancelled) setCredentialsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // One-time cleanup of the plaintext tokens the old inert UI wrote. Nothing
+  // ever read them, so there is nothing to migrate — but leaving a PAT sitting
+  // in local SQLite would undo the point of moving tokens server-side.
+  useEffect(() => {
+    for (const key of LEGACY_TOKEN_KEYS) {
+      db.getSetting(key)
+        .then((v) => (v ? db.setSetting(key, '') : undefined))
+        .catch(() => {});
+    }
+  }, []);
 
   // Hydrate every saved value from SQLite; unset keys keep their default. Runs
   // on mount and on every data refresh, so a web tab that just took the DB over
@@ -173,9 +233,33 @@ export function CreateOptionsProvider({ children }: { children: ReactNode }) {
       .catch((e) => console.warn(`[create-options] failed to save ${key}:`, e));
   }, []);
 
+  const setToken = useCallback(
+    async (provider: CredentialProvider, token: string) => {
+      const status = await saveCredential(provider, token);
+      setCredentials((prev) => ({ ...prev, [provider]: status }));
+    },
+    [],
+  );
+
+  const clearToken = useCallback(async (provider: CredentialProvider) => {
+    await deleteCredential(provider);
+    setCredentials((prev) => ({
+      ...prev,
+      [provider]: { provider, saved: false, hint: '', updated_at: null },
+    }));
+  }, []);
+
   const value = useMemo<CreateOptions>(
-    () => ({ ...state, setEnabled, setCredential }),
-    [state, setEnabled, setCredential],
+    () => ({
+      ...state,
+      setEnabled,
+      setCredential,
+      credentials,
+      credentialsLoading,
+      setToken,
+      clearToken,
+    }),
+    [state, setEnabled, setCredential, credentials, credentialsLoading, setToken, clearToken],
   );
 
   return <CreateOptionsContext.Provider value={value}>{children}</CreateOptionsContext.Provider>;

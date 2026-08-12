@@ -16,9 +16,11 @@ dependencies = [
     "boto3>=1.35",
     "httpx>=0.27",
     "anthropic>=0.75",
-    # Fernet, for the user API keys in `app/crypto.py`. Already present as a
-    # firebase-admin transitive, and declared here anyway: a direct import on an
-    # undeclared package breaks the day that transitive chain changes shape.
+    # Fernet, for the user API keys and provider tokens in `app/crypto.py`.
+    # Already present as a firebase-admin transitive, and declared here anyway: a
+    # direct import on an undeclared package breaks the day that transitive chain
+    # changes shape, and here it would fail closed — taking the AI endpoints and
+    # the GitHub and Sentry plugins down with it.
     "cryptography>=43",
 ]
 

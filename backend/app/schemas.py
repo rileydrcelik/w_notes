@@ -147,3 +147,7 @@ class PullResponse(BaseModel):
     resume_versions: list[ResumeVersionIn] = []
     user_settings: list[UserSettingIn] = []
     server_seq: int
+    # True when this page stopped short of the server's high-water mark and the
+    # client should pull again from `server_seq`. Defaults False so a client that
+    # predates paging still reads a truthful "that's everything".
+    has_more: bool = False

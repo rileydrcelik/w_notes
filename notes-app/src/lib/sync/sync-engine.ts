@@ -21,7 +21,13 @@ import { downloadCopaFile, prepareLocalFiles, uploadCopaFile } from './files';
 
 const SYNCED_UID = 'synced_uid';
 
-type PullResponse = SyncPayload & { server_seq: number };
+type PullResponse = SyncPayload & { server_seq: number; has_more?: boolean };
+
+// Safety stop for the pull loop. Each page strictly advances the cursor, so this
+// can only be reached by a genuinely enormous backlog — in which case we stop,
+// keep what we applied, and let the next pass carry on from the saved cursor
+// rather than spinning here.
+const MAX_PULL_PAGES = 50;
 
 export type SyncResult =
   | { status: 'ok'; cursor: number; pushed: number; pulled: number }
@@ -146,11 +152,24 @@ async function runSync(): Promise<SyncResult> {
       await db.markSynced(dirty);
     }
 
-    // 2) Pull everything changed since our cursor and apply it locally.
-    const cursor = await db.getCursor();
-    const pulled = await apiFetch<PullResponse>(`/sync/pull?since=${cursor}`);
-    const changed = await db.applyServerRows(pulled);
-    await db.setCursor(pulled.server_seq);
+    // 2) Pull everything changed since our cursor and apply it locally. The
+    //    server answers in bounded pages; drain them, saving the cursor after
+    //    each one. Persisting per page is the point — a first sync that dies
+    //    halfway now resumes from where it got to instead of restarting, which
+    //    is what made a big backlog unsyncable: the whole thing had to land in a
+    //    single response or none of it counted.
+    let cursor = await db.getCursor();
+    let changed = 0;
+    for (let page = 0; page < MAX_PULL_PAGES; page += 1) {
+      const pulled = await apiFetch<PullResponse>(`/sync/pull?since=${cursor}`);
+      changed += await db.applyServerRows(pulled);
+      await db.setCursor(pulled.server_seq);
+      // Defend the loop rather than trust the server: a cursor that fails to
+      // advance would otherwise re-request the same page for ever.
+      const advanced = pulled.server_seq > cursor;
+      cursor = pulled.server_seq;
+      if (!pulled.has_more || !advanced) break;
+    }
 
     // 3) Download bytes for any file blocks we now know about but don't hold
     //    locally yet (e.g. created on another device).
@@ -160,7 +179,7 @@ async function runSync(): Promise<SyncResult> {
     // Anything moving in either direction means this device is mid-conversation
     // with another one; keep the poll tight (see poll.ts).
     if (pushed > 0 || changed > 0 || downloaded > 0) markActivity();
-    return { status: 'ok', cursor: pulled.server_seq, pushed, pulled: changed };
+    return { status: 'ok', cursor, pushed, pulled: changed };
   } catch (e) {
     // 501 = endpoints not wired (shouldn't happen now, but stays graceful).
     if (e instanceof ApiError && e.status === 501) {

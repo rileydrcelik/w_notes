@@ -35,7 +35,9 @@ resource "aws_ssm_parameter" "sentry_dsn" {
   value = var.sentry_dsn
 }
 
-# SENTRY_API_TOKEN — REST-API token for the /sentry issue proxy; only created
+# SENTRY_API_TOKEN — formerly the server-wide token behind the /sentry issue
+# proxy. Nothing reads it since the proxy started acting as the caller's own
+# token; retained so a rollback to an older image still finds it. Only created
 # when provided.
 resource "aws_ssm_parameter" "sentry_api_token" {
   count = local.sentry_api_enabled ? 1 : 0
@@ -62,15 +64,38 @@ resource "aws_ssm_parameter" "anthropic_api_key" {
   value = var.anthropic_api_key
 }
 
-# APP_SECRET_KEY — encrypts the API keys users store against their own account
-# (backend/app/crypto.py). SecureString like every other credential here, but
-# note what makes this one different: it is the key that protects *other
-# people's* credentials, so losing it is not recoverable from a database backup.
+# APP_SECRET_KEY — encrypts every credential users store against their own
+# account (backend/app/crypto.py): their Anthropic API key, and their GitHub and
+# Sentry provider tokens. SecureString like every other credential here, but note
+# what makes this one different: it is the key that protects *other people's*
+# credentials, so losing it is not recoverable from a database backup.
+#
+# The per-user provider tokens were originally written against a second key of
+# their own (`credential_encryption_key`). They share this one instead — one key,
+# one module, one thing to rotate. It matters operationally as well as
+# aesthetically: this parameter is already applied and already wired into the
+# task definition, so per-user tokens shipped without a terraform change.
 resource "aws_ssm_parameter" "app_secret_key" {
   count = local.app_secret_enabled ? 1 : 0
   name  = "/${local.name}/app-secret-key"
   type  = "SecureString"
   value = var.app_secret_key
+}
+
+# APP_SECRET_KEY_OLD — the previous key during a rotation; only created while one
+# is in flight, so the usual plan is empty.
+#
+# ⚠ Rotating `app_secret_key` without this makes every stored credential
+# undecryptable at once — every user's AI key and both provider tokens — and the
+# sealed columns are the only copy. To rotate deliberately: put the current value
+# in `app_secret_key_old`, set the new one in `app_secret_key`, apply. Reads try
+# the current key and fall back to the old, and each row re-seals under the new
+# key the next time it is written. Drop the old value once they all have.
+resource "aws_ssm_parameter" "app_secret_key_old" {
+  count = local.app_secret_rotation_in_progress ? 1 : 0
+  name  = "/${local.name}/app-secret-key-old"
+  type  = "SecureString"
+  value = var.app_secret_key_old
 }
 
 # FIREBASE_CREDENTIALS — the service-account JSON; only created when provided.

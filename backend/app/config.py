@@ -33,6 +33,12 @@ class Settings(BaseSettings):
     # server-side (SSM) and never shipped in the app bundle. Empty => the autofix
     # endpoints return 503. Needs Contents R/W + Pull requests R + Actions R/W on
     # the target repo.
+    #
+    # This is the *operator's* token for this deployment's own autofix pipeline.
+    # It is deliberately NOT a fallback for the user-facing /github routes: those
+    # read the caller's own credential (see `app/credentials.py`), because a
+    # shared token meant every account browsed the operator's repos — which is
+    # exactly what happened in the field before per-user credentials existed.
     github_token: str = ""
 
     # "owner/name" of the repo autofix dispatches target (e.g. "rileydrcelik/aiko").
@@ -87,12 +93,25 @@ class Settings(BaseSettings):
     # default for a fork of this deployment.
     ai_owner_emails: str = ""
 
-    # Fernet key (32 url-safe base64-encoded bytes) that encrypts the API keys
-    # users store here. SSM in a deployment, `.env` locally. Empty => users
-    # cannot save a key at all, and only `ai_owner_emails` accounts can use the
-    # AI endpoints. Generate with:
+    # Fernet key (32 url-safe base64-encoded bytes) that encrypts every credential
+    # users store here: their Anthropic API key, and their GitHub and Sentry
+    # provider tokens. SSM in a deployment, `.env` locally. Generate with:
     #     python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+    #
+    # Empty fails closed, in two directions: users cannot save a key at all, only
+    # `ai_owner_emails` accounts can use the AI endpoints, and the GitHub/Sentry
+    # plugins go dark rather than falling back to a shared token. Better an
+    # unavailable plugin than user PATs written to the database in plaintext.
     app_secret_key: str = ""
+
+    # The previous `app_secret_key`, during a rotation. Reads try the current key
+    # and then this one; writes always use the current key, so a row migrates the
+    # next time it is written. Drop this once every row has been rewritten.
+    #
+    # Rotating without it orphans every stored credential — each user's AI key and
+    # provider tokens become unreadable at once, and the sealed columns are the
+    # only copy.
+    app_secret_key_old: str = ""
 
     # Firebase service-account credential used to verify ID tokens: either a path
     # to the JSON file (local dev) or the JSON content itself (deployed — injected

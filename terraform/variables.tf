@@ -120,7 +120,7 @@ variable "sentry_api_token" {
   type        = string
   default     = ""
   sensitive   = true
-  description = "Sentry REST API token (internal integration) for the /sentry issue proxy. Empty => the /sentry endpoints return 503."
+  description = "Sentry REST API token (internal integration). No longer read by any route — the /sentry proxy acts as the caller's own token now — but kept wired so rolling the container back to a pre-per-user-credentials image still works. Safe to drop once that rollback is off the table."
 }
 
 variable "github_token" {
@@ -198,7 +198,14 @@ variable "app_secret_key" {
   type        = string
   default     = ""
   sensitive   = true
-  description = "Fernet key (32 url-safe base64 bytes) encrypting the Anthropic API keys users store on their own account. Generate with: python -c \"from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\". Empty => users cannot save a key, and only ai_owner_emails accounts can use the AI endpoints. Rotating this orphans every stored key: nobody loses content, but everyone re-enters their key."
+  description = "Fernet key (32 url-safe base64 bytes) encrypting every credential users store on their own account: their Anthropic API key and their GitHub and Sentry provider tokens. Generate with: python -c \"from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\". Empty => users cannot save a key, only ai_owner_emails accounts can use the AI endpoints, and the GitHub/Sentry plugins fail closed. Rotating this without app_secret_key_old orphans every stored credential: nobody loses content, but everyone re-enters every token."
+}
+
+variable "app_secret_key_old" {
+  type        = string
+  default     = ""
+  sensitive   = true
+  description = "Previous app_secret_key, set only while rotating it. Reads try the current key then this one, so rows sealed under the old key keep working until they are next written. Unset it once the rotation is complete."
 }
 
 variable "ai_owner_emails" {

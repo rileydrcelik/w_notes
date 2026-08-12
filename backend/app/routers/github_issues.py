@@ -3,15 +3,23 @@ client's behalf.
 
 A "GitHub note" in the app carries a marker plus a small config naming which
 ``repo`` (``owner/name``) it watches; that travels to this router per-request.
-The GitHub REST API token stays here on the server (loaded from config/SSM) and
-is never shipped in the Expo bundle — the same token the Sentry autofix code
-uses, so it must additionally carry **Issues: Read and write** to create, close,
-reopen, or comment.
+
+**Every route acts as the caller's own GitHub token**, read from their
+``user_credentials`` row via ``_caller_token``. It used to act as a single
+server-wide PAT, which meant `GET /github/repos` — "every repo the token can
+see" — served the *operator's* private repositories to whichever account asked.
+That is not hypothetical: it is what a second user was shown. There is no
+fallback to the server token here; an account without a PAT gets a 503 pointing
+at Settings. The server's own ``github_token`` now serves only this deployment's
+autofix pipeline (see ``routers/sentry.py``).
+
+A user's token needs **Issues: Read and write** to create, close, reopen or
+comment, and repo read to list.
 
 Issue data is fetched **live** — it deliberately does not flow through the
 sync/SQLite pipeline, so there's no stale copy and nothing to echo back.
 
-- ``GET  /github/repos``                       — repos the token can see (picker).
+- ``GET  /github/repos``                       — repos the caller's token can see (picker).
 - ``GET  /github/issues``                      — a repo's issues (list).
 - ``GET  /github/issues/{number}``             — one issue's detail (full body).
 - ``GET  /github/issues/{number}/comments``    — an issue's comments.
@@ -32,8 +40,11 @@ import re
 import httpx
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
+from app.credentials import require_user_token
+from app.db import get_session
 from app.deps import get_current_user
 from app.models import User
 
@@ -52,7 +63,7 @@ _REPO_RE = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")
 
 
 class RepoSummary(BaseModel):
-    """A repo the server token can see — enough to render a picker row and build
+    """A repo the caller's token can see — enough to render a picker row and build
     a note's ``{repo}`` config from the selection."""
 
     model_config = ConfigDict(extra="ignore")
@@ -196,13 +207,19 @@ class MilestoneList(BaseModel):
 # ---- Helpers ----
 
 
-def _require_token() -> str:
-    token = get_settings().github_token
-    if not token:
-        raise HTTPException(
-            status.HTTP_503_SERVICE_UNAVAILABLE, "GitHub API is not configured"
-        )
-    return token
+async def _caller_token(
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> str:
+    """The **caller's own** GitHub token, or 503 telling them to add one.
+
+    Every route in this module depends on this rather than on a server-wide
+    token. That is the whole point: with a shared token, `GET /github/repos`
+    served the operator's private repositories to whoever asked, which is what
+    a second user actually saw. There is deliberately no fallback — an account
+    without a PAT cannot use the GitHub plugin at all.
+    """
+    return await require_user_token(session, user.id, "github")
 
 
 def _require_repo(repo: str) -> str:
@@ -215,12 +232,15 @@ def _require_repo(repo: str) -> str:
     return repo
 
 
-def _client() -> httpx.AsyncClient:
+def _client(token: str) -> httpx.AsyncClient:
+    """A GitHub client acting as `token` — always the caller's, never the
+    server's. Taking it as an argument rather than reading config is what makes
+    it impossible to reintroduce the shared-credential path by accident."""
     settings = get_settings()
     return httpx.AsyncClient(
         base_url=settings.github_api_base.rstrip("/"),
         headers={
-            "Authorization": f"Bearer {settings.github_token}",
+            "Authorization": f"Bearer {token}",
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28",
         },
@@ -229,11 +249,16 @@ def _client() -> httpx.AsyncClient:
 
 
 def _raise_for_upstream(resp: httpx.Response) -> None:
-    """Turn a non-2xx GitHub response into an HTTPException. A 401/403 means our
-    server token is bad/under-scoped (e.g. missing Issues write) — that's a
-    server misconfig, not the caller's fault, so it surfaces as 502 rather than
-    leaking as the client's own auth failure. Other 4xx (e.g. an unknown repo →
-    404) pass through."""
+    """Turn a non-2xx GitHub response into an HTTPException.
+
+    A 401/403 now surfaces as **400, not 502**. Under the old server-wide token
+    a rejection really was an operator misconfiguration that the caller could do
+    nothing about, so hiding it behind a 502 was right. Now the token is the
+    caller's own: 502 would tell them the server is broken when what actually
+    happened is that their PAT is expired, revoked, or missing a scope — and the
+    one person who can fix it would have been told not to bother. Other 4xx
+    (e.g. an unknown repo → 404) pass through unchanged.
+    """
     if resp.is_success:
         return
     if resp.status_code in (401, 403):
@@ -241,10 +266,10 @@ def _raise_for_upstream(resp: httpx.Response) -> None:
         # merely under-scoped; passing it through turns "the token is bad" into
         # "the token is missing issues=write". Mirrors sentry._raise_for_github.
         needed = resp.headers.get("x-accepted-github-permissions")
-        detail = "GitHub rejected the server token"
+        detail = "GitHub rejected your token — check it in Settings → Plugins"
         if needed:
             detail = f"{detail} (needs: {needed})"
-        raise HTTPException(status.HTTP_502_BAD_GATEWAY, detail)
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail)
     code = resp.status_code if resp.status_code < 500 else status.HTTP_502_BAD_GATEWAY
     raise HTTPException(code, f"GitHub API error ({resp.status_code})")
 
@@ -275,16 +300,15 @@ def _is_pull_request(item: dict) -> bool:
 
 @router.get("/repos", response_model=RepoList)
 async def list_repos(
-    user: User = Depends(get_current_user),
+    token: str = Depends(_caller_token),
 ) -> RepoList:
-    """Every repo the server token can see — the source for the in-app picker
+    """Every repo the caller's token can see — the source for the in-app picker
     that configures a GitHub note. Pages through GitHub's Link header so an
     account with many repos isn't truncated, with a hard cap so a runaway
     paginator can't loop forever. Sorted by most-recently pushed."""
-    _require_token()
     repos: list[RepoSummary] = []
     page = 1
-    async with _client() as client:
+    async with _client(token) as client:
         for _ in range(20):
             resp = await client.get(
                 "/user/repos",
@@ -306,16 +330,15 @@ class IssueCount(BaseModel):
 @router.get("/issue-count", response_model=IssueCount)
 async def issue_count(
     repo: str = Query(..., description="Target repo (owner/name)"),
-    user: User = Depends(get_current_user),
+    token: str = Depends(_caller_token),
 ) -> IssueCount:
     """Accurate count of OPEN ISSUES ONLY, excluding pull requests. The repo
     object's ``open_issues_count`` lumps issues and PRs together, so the picker
     can't use it for a true issue count. GitHub's search API reports the real
     total via ``total_count``. Search is rate-limited, so the picker calls this
     lazily per repo rather than folding it into the repo list."""
-    _require_token()
     _require_repo(repo)
-    async with _client() as client:
+    async with _client(token) as client:
         resp = await client.get(
             "/search/issues",
             params={"q": f"repo:{repo} is:issue is:open", "per_page": 1},
@@ -330,14 +353,13 @@ async def list_issues(
     state: str = Query("open", pattern="^(open|closed|all)$"),
     limit: int = Query(25, ge=1, le=100),
     cursor: str | None = Query(None, description="Opaque next-page cursor (page number)"),
-    user: User = Depends(get_current_user),
+    token: str = Depends(_caller_token),
 ) -> IssueList:
-    _require_token()
     _require_repo(repo)
     params: dict[str, object] = {"state": state, "per_page": limit, "sort": "updated"}
     if cursor and cursor.isdigit():
         params["page"] = int(cursor)
-    async with _client() as client:
+    async with _client(token) as client:
         resp = await client.get(f"/repos/{repo}/issues", params=params)
         _raise_for_upstream(resp)
         items = [item for item in resp.json() if not _is_pull_request(item)]
@@ -352,11 +374,10 @@ async def list_issues(
 async def get_issue(
     number: int,
     repo: str = Query(..., description="Target repo (owner/name)"),
-    user: User = Depends(get_current_user),
+    token: str = Depends(_caller_token),
 ) -> IssueSummary:
-    _require_token()
     _require_repo(repo)
-    async with _client() as client:
+    async with _client(token) as client:
         resp = await client.get(f"/repos/{repo}/issues/{number}")
         _raise_for_upstream(resp)
         return IssueSummary.model_validate(resp.json())
@@ -366,11 +387,10 @@ async def get_issue(
 async def list_comments(
     number: int,
     repo: str = Query(..., description="Target repo (owner/name)"),
-    user: User = Depends(get_current_user),
+    token: str = Depends(_caller_token),
 ) -> CommentList:
-    _require_token()
     _require_repo(repo)
-    async with _client() as client:
+    async with _client(token) as client:
         resp = await client.get(
             f"/repos/{repo}/issues/{number}/comments", params={"per_page": 50}
         )
@@ -381,11 +401,10 @@ async def list_comments(
 @router.get("/labels", response_model=LabelList)
 async def list_labels(
     repo: str = Query(..., description="Target repo (owner/name)"),
-    user: User = Depends(get_current_user),
+    token: str = Depends(_caller_token),
 ) -> LabelList:
-    _require_token()
     _require_repo(repo)
-    async with _client() as client:
+    async with _client(token) as client:
         resp = await client.get(f"/repos/{repo}/labels", params={"per_page": 100})
         _raise_for_upstream(resp)
         return LabelList(labels=[Label.model_validate(ln) for ln in resp.json()])
@@ -394,12 +413,11 @@ async def list_labels(
 @router.get("/assignees", response_model=AssigneeList)
 async def list_assignees(
     repo: str = Query(..., description="Target repo (owner/name)"),
-    user: User = Depends(get_current_user),
+    token: str = Depends(_caller_token),
 ) -> AssigneeList:
     """Users who can be assigned issues in the repo (its collaborators)."""
-    _require_token()
     _require_repo(repo)
-    async with _client() as client:
+    async with _client(token) as client:
         resp = await client.get(f"/repos/{repo}/assignees", params={"per_page": 100})
         _raise_for_upstream(resp)
         return AssigneeList(assignees=[SimpleUser.model_validate(u) for u in resp.json()])
@@ -408,11 +426,10 @@ async def list_assignees(
 @router.get("/milestones", response_model=MilestoneList)
 async def list_milestones(
     repo: str = Query(..., description="Target repo (owner/name)"),
-    user: User = Depends(get_current_user),
+    token: str = Depends(_caller_token),
 ) -> MilestoneList:
-    _require_token()
     _require_repo(repo)
-    async with _client() as client:
+    async with _client(token) as client:
         resp = await client.get(
             f"/repos/{repo}/milestones", params={"state": "open", "per_page": 100}
         )
@@ -436,9 +453,8 @@ class CreateIssueRequest(BaseModel):
 async def create_issue(
     repo: str = Query(..., description="Target repo (owner/name)"),
     req: CreateIssueRequest = Body(...),
-    user: User = Depends(get_current_user),
+    token: str = Depends(_caller_token),
 ) -> IssueSummary:
-    _require_token()
     _require_repo(repo)
     payload: dict[str, object] = {"title": req.title}
     if req.body:
@@ -449,7 +465,7 @@ async def create_issue(
         payload["assignees"] = req.assignees
     if req.milestone is not None:
         payload["milestone"] = req.milestone
-    async with _client() as client:
+    async with _client(token) as client:
         resp = await client.post(f"/repos/{repo}/issues", json=payload)
         _raise_for_upstream(resp)
         return IssueSummary.model_validate(resp.json())
@@ -483,13 +499,12 @@ async def update_issue_state(
     number: int,
     repo: str = Query(..., description="Target repo (owner/name)"),
     req: UpdateStateRequest = Body(...),
-    user: User = Depends(get_current_user),
+    token: str = Depends(_caller_token),
 ) -> IssueStateResponse:
     """Update an issue: close/reopen (the app's "resolve"/"undo"), edit its
     title/body (a Details edit), and/or replace its labels and assignees when a
     task-manager attribute edit is pushed. Every field is optional; only the ones
     provided are sent to GitHub."""
-    _require_token()
     _require_repo(repo)
     payload: dict[str, object] = {}
     if req.state:
@@ -507,7 +522,7 @@ async def update_issue_state(
     if not payload:
         # Nothing to change — don't waste a GitHub call.
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "No fields to update.")
-    async with _client() as client:
+    async with _client(token) as client:
         resp = await client.patch(f"/repos/{repo}/issues/{number}", json=payload)
         _raise_for_upstream(resp)
         issue = resp.json()
@@ -531,11 +546,10 @@ async def add_comment(
     number: int,
     repo: str = Query(..., description="Target repo (owner/name)"),
     req: CreateCommentRequest = Body(...),
-    user: User = Depends(get_current_user),
+    token: str = Depends(_caller_token),
 ) -> Comment:
-    _require_token()
     _require_repo(repo)
-    async with _client() as client:
+    async with _client(token) as client:
         resp = await client.post(
             f"/repos/{repo}/issues/{number}/comments", json={"body": req.body}
         )

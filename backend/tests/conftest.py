@@ -50,7 +50,7 @@ from app.main import app  # noqa: E402
 
 # Every table the suite wipes between tests. `users` included: each test mints
 # fresh device keys, and leftover users would accumulate across the session.
-_TABLES = ("issues", "copa_items", "notes", "folders", "users")
+_TABLES = ("issues", "copa_items", "notes", "folders", "user_credentials", "users")
 
 
 def _admin_dsn_and_dbname() -> tuple[str, str]:
@@ -142,3 +142,47 @@ def device() -> dict[str, str]:
 def other_device() -> dict[str, str]:
     """A second, unrelated user, for isolation tests."""
     return {"Authorization": f"Bearer {uuid.uuid4()}"}
+
+
+# A syntactically valid Fernet key. Fixed rather than generated so a failure is
+# reproducible; it protects nothing real.
+TEST_FERNET_KEY = "8_1J1NCH8Zj0Xz3vN7yQ9pKcR2sT4uV6wX8yZ0aB1cE="
+
+
+@pytest.fixture
+def crypto_key(monkeypatch):
+    """Configure credential encryption, as a deployment with SSM wired up has.
+
+    Without this the credential routes 503 by design (fail closed), so any test
+    that stores or uses a per-user provider token needs it.
+
+    One key covers both kinds of stored credential — provider tokens and the
+    per-account Anthropic key — because `app/crypto.py` seals both with
+    ``app_secret_key``.
+    """
+    from app.config import get_settings as _gs
+
+    settings = _gs()
+    monkeypatch.setattr(settings, "app_secret_key", TEST_FERNET_KEY, raising=False)
+    monkeypatch.setattr(settings, "app_secret_key_old", "", raising=False)
+    yield settings
+    _gs.cache_clear()
+
+
+@pytest.fixture
+def save_credential(client, crypto_key):
+    """Store a provider token for a given device, the way the app does.
+
+    Goes through the real ``PUT /credentials/{provider}`` rather than inserting a
+    row, so a test that relies on a credential also exercises the path that
+    creates one.
+    """
+
+    async def _save(headers: dict[str, str], provider: str, token: str = "tok-abcd"):
+        resp = await client.put(
+            f"/credentials/{provider}", headers=headers, json={"token": token}
+        )
+        assert resp.status_code == 200, resp.text
+        return resp.json()
+
+    return _save

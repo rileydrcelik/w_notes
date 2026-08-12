@@ -1,9 +1,16 @@
 """Sentry proxy endpoints — read a project's issues on the client's behalf.
 
 A "Sentry note" in the app carries a marker plus a small config naming which
-``org``/``project`` it watches; those travel to this router per-request. The
-Sentry REST API token stays here on the server (an internal-integration token,
-loaded from config/SSM) and is never shipped in the Expo bundle.
+``org``/``project`` it watches; those travel to this router per-request.
+
+**The read endpoints act as the caller's own Sentry API token**, stored
+encrypted per account (see ``app/credentials.py``) and never shipped in the Expo
+bundle. A single server-wide token used to serve every account, which meant
+everyone read issues through the operator's Sentry access.
+
+The ``/autofix`` endpoints are the exception and stay on the server's own
+credentials: they drive *this deployment's* pipeline — its repo, its workflow —
+which is the operator's, not the caller's.
 
 Issue data is fetched **live** — it deliberately does not flow through the
 sync/SQLite pipeline, so there's no stale copy and nothing to echo back.
@@ -24,9 +31,12 @@ import re
 import httpx
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import get_settings
 from app.ai_access import require_owner
+from app.config import get_settings
+from app.credentials import require_user_token
+from app.db import get_session
 from app.deps import get_current_user
 from app.models import User
 
@@ -94,7 +104,7 @@ class IssueList(BaseModel):
 
 
 class ProjectSummary(BaseModel):
-    """A project the server token can see — enough to render a picker row and
+    """A project the caller's token can see — enough to render a picker row and
     build a note's ``{org, project}`` config from the selection."""
 
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
@@ -191,20 +201,26 @@ class LatestEvent(BaseModel):
 # ---- Helpers ----
 
 
-def _require_token() -> str:
-    token = get_settings().sentry_api_token
-    if not token:
-        raise HTTPException(
-            status.HTTP_503_SERVICE_UNAVAILABLE, "Sentry API is not configured"
-        )
-    return token
+async def _caller_token(
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> str:
+    """The **caller's own** Sentry API token, or 503 telling them to add one.
+
+    Same reasoning as the GitHub proxy: a single server-wide token meant every
+    account read issues through the operator's Sentry access. The autofix
+    endpoints below are different — they drive *this deployment's* pipeline and
+    legitimately use the server's own credentials.
+    """
+    return await require_user_token(session, user.id, "sentry")
 
 
-def _client() -> httpx.AsyncClient:
+def _client(token: str) -> httpx.AsyncClient:
+    """A Sentry client acting as `token` — the caller's, never the server's."""
     settings = get_settings()
     return httpx.AsyncClient(
         base_url=settings.sentry_api_base.rstrip("/"),
-        headers={"Authorization": f"Bearer {settings.sentry_api_token}"},
+        headers={"Authorization": f"Bearer {token}"},
         timeout=_TIMEOUT,
     )
 
@@ -226,15 +242,19 @@ async def _guarded(call, upstream: str = "Sentry") -> httpx.Response:
 
 
 def _raise_for_upstream(resp: httpx.Response) -> None:
-    """Turn a non-2xx Sentry response into an HTTPException. A 401/403 means our
-    server token is bad/under-scoped — that's a server misconfig, not the
-    caller's fault, so it surfaces as 502 rather than leaking as the client's own
-    auth failure. Other 4xx (e.g. an unknown project → 404) pass through."""
+    """Turn a non-2xx Sentry response into an HTTPException.
+
+    A 401/403 now surfaces as **400, not 502**, for the same reason as the
+    GitHub proxy: the token being rejected is the caller's own, so calling it a
+    bad gateway would blame the server for a credential only the caller can
+    replace. Other 4xx (e.g. an unknown project → 404) pass through.
+    """
     if resp.is_success:
         return
     if resp.status_code in (401, 403):
         raise HTTPException(
-            status.HTTP_502_BAD_GATEWAY, "Sentry rejected the server token"
+            status.HTTP_400_BAD_REQUEST,
+            "Sentry rejected your token — check it in Settings → Plugins",
         )
     code = resp.status_code if resp.status_code < 500 else status.HTTP_502_BAD_GATEWAY
     raise HTTPException(code, f"Sentry API error ({resp.status_code})")
@@ -371,15 +391,14 @@ async def list_issues(
     environment: str | None = Query(None),
     limit: int = Query(25, ge=1, le=100),
     cursor: str | None = Query(None, description="Opaque next-page cursor"),
-    user: User = Depends(get_current_user),
+    token: str = Depends(_caller_token),
 ) -> IssueList:
-    _require_token()
     params: dict[str, object] = {"query": query, "limit": limit}
     if environment:
         params["environment"] = environment
     if cursor:
         params["cursor"] = cursor
-    async with _client() as client:
+    async with _client(token) as client:
         resp = await _guarded(client.get(f"/projects/{org}/{project}/issues/", params=params))
     _raise_for_upstream(resp)
     return IssueList(
@@ -391,10 +410,9 @@ async def list_issues(
 @router.get("/issues/{issue_id}", response_model=IssueSummary)
 async def get_issue(
     issue_id: str,
-    user: User = Depends(get_current_user),
+    token: str = Depends(_caller_token),
 ) -> IssueSummary:
-    _require_token()
-    async with _client() as client:
+    async with _client(token) as client:
         resp = await _guarded(client.get(f"/issues/{issue_id}/"))
     _raise_for_upstream(resp)
     return IssueSummary.model_validate(resp.json())
@@ -402,16 +420,15 @@ async def get_issue(
 
 @router.get("/projects", response_model=ProjectList)
 async def list_projects(
-    user: User = Depends(get_current_user),
+    token: str = Depends(_caller_token),
 ) -> ProjectList:
-    """Every project the server token can see, each with its org slug — the
+    """Every project the caller's token can see, each with its org slug — the
     source for the in-app picker that configures a Sentry note. Pages through
     Sentry's cursor so an org with many projects isn't truncated, with a hard
     cap so a malformed cursor can't loop forever."""
-    _require_token()
     projects: list[ProjectSummary] = []
     cursor: str | None = None
-    async with _client() as client:
+    async with _client(token) as client:
         for _ in range(20):
             params = {"cursor": cursor} if cursor else {}
             resp = await _guarded(client.get("/projects/", params=params))
@@ -433,13 +450,12 @@ class ResolveResponse(BaseModel):
 @router.post("/issues/{issue_id}/resolve", response_model=ResolveResponse)
 async def resolve_issue(
     issue_id: str,
-    user: User = Depends(get_current_user),
+    token: str = Depends(_caller_token),
 ) -> ResolveResponse:
     """Mark a Sentry issue resolved — the app's "Ignore" action. Sentry
     auto-reopens it on regression, so this is a dismissal, not a permanent mute.
     Same PUT the autofix workflow makes after opening a PR."""
-    _require_token()
-    async with _client() as client:
+    async with _client(token) as client:
         resp = await _guarded(client.put(f"/issues/{issue_id}/", json={"status": "resolved"}))
     _raise_for_upstream(resp)
     return ResolveResponse(resolved=True, issue_id=issue_id)
@@ -448,10 +464,9 @@ async def resolve_issue(
 @router.get("/issues/{issue_id}/latest-event", response_model=LatestEvent)
 async def latest_event(
     issue_id: str,
-    user: User = Depends(get_current_user),
+    token: str = Depends(_caller_token),
 ) -> LatestEvent:
-    _require_token()
-    async with _client() as client:
+    async with _client(token) as client:
         resp = await _guarded(client.get(f"/issues/{issue_id}/events/latest/"))
     _raise_for_upstream(resp)
     event = resp.json()
@@ -489,6 +504,11 @@ async def latest_event(
 _AUTOFIX_MODELS = frozenset(
     {"claude-haiku-4-5", "claude-sonnet-5", "claude-opus-4-8"}
 )
+
+# How many times one Sentry issue may be re-attempted on its own branch. A cap
+# rather than unbounded retries: an issue that has burned this many agent runs
+# without sticking wants a person, not another run.
+_MAX_AUTOFIX_ATTEMPTS = 10
 
 
 # A GitHub "owner/name" slug. The repo an autofix targets is interpolated into
@@ -678,34 +698,110 @@ def _autofix_payload(
     }
 
 
-async def _autofix_in_flight(gh: httpx.AsyncClient, repo: str, branch: str) -> bool:
-    """True if a fix for this issue's branch already exists (a PR in any state, or
-    the pushed branch) — so we don't dispatch a second billed agent run to redo
-    work that's already done or in progress. Mirrors the checks in
-    ``autofix_status``."""
-    pulls = await _guarded(gh.get(f"/repos/{repo}/pulls", params={"state": "all", "per_page": 30}), "GitHub")
+def _attempt_branch(base: str, n: int) -> str:
+    """The nth attempt at fixing one issue. Attempt 1 keeps the bare base name so
+    existing branches, PRs and workflow runs are unaffected."""
+    return base if n <= 1 else f"{base}-{n}"
+
+
+def _attempt_of(base: str, branch: str) -> int | None:
+    """Which attempt a branch is, or None if it isn't in this issue's family."""
+    if branch == base:
+        return 1
+    suffix = branch[len(base) + 1 :] if branch.startswith(f"{base}-") else ""
+    return int(suffix) if suffix.isdigit() else None
+
+
+async def _family_prs(gh: httpx.AsyncClient, repo: str, base: str) -> dict[str, dict]:
+    """Newest PR per branch across every attempt at this issue, keyed by branch."""
+    pulls = await _guarded(
+        gh.get(f"/repos/{repo}/pulls", params={"state": "all", "per_page": 100}), "GitHub"
+    )
     _raise_for_github(pulls)
-    if any((pr.get("head") or {}).get("ref") == branch for pr in pulls.json()):
-        return True
-    br = await _guarded(gh.get(f"/repos/{repo}/branches/{branch}"), "GitHub")
-    if br.status_code == 404:
-        return False
-    _raise_for_github(br)
-    return True
+    found: dict[str, dict] = {}
+    for pr in pulls.json():  # newest first
+        ref = (pr.get("head") or {}).get("ref") or ""
+        if _attempt_of(base, ref) is not None:
+            found.setdefault(ref, pr)
+    return found
+
+
+async def _family_branches(gh: httpx.AsyncClient, repo: str, base: str) -> set[str]:
+    """Every pushed branch in this issue's attempt family, in one request. The
+    matching-refs endpoint is a prefix match, so the family test still filters."""
+    resp = await _guarded(gh.get(f"/repos/{repo}/git/matching-refs/heads/{base}"), "GitHub")
+    _raise_for_github(resp)
+    refs = set()
+    for ref in resp.json():
+        name = (ref.get("ref") or "").removeprefix("refs/heads/")
+        if _attempt_of(base, name) is not None:
+            refs.add(name)
+    return refs
+
+
+async def _autofix_target_branch(
+    gh: httpx.AsyncClient, repo: str, base: str
+) -> str | None:
+    """The branch a new autofix run should use, or None when one is already in
+    flight and a second billed run would only duplicate it.
+
+    An attempt is *spent* once its PR is closed or merged. Closed means the
+    proposal was rejected; merged means a fix landed — and if Sentry is reporting
+    the issue again, neither is a reason to refuse to try again. Only an open PR
+    (still under review) or a pushed branch with no PR yet (agent still running)
+    is genuinely in flight.
+
+    Treating a spent attempt as in-flight is what made W-NOTES-RN-C permanently
+    unfixable: PR #4 on ``autofixes/issue-w-notes-rn-c`` was closed, so every
+    later dispatch short-circuited to ``dispatched: false`` and the status poll
+    reported that same closed PR back to the app for ever. Nothing retried,
+    because from the outside it looked like the work had already been done.
+    """
+    prs = await _family_prs(gh, repo, base)
+    if any(pr.get("state") == "open" for pr in prs.values()):
+        return None
+
+    branches = await _family_branches(gh, repo, base)
+    for n in range(1, _MAX_AUTOFIX_ATTEMPTS + 1):
+        branch = _attempt_branch(base, n)
+        if branch in prs:
+            continue  # spent — closed or merged
+        if branch in branches:
+            # Pushed but no PR yet: a run is live (or the workflow is about to
+            # open one). Don't race it with a second run on the same branch.
+            return None
+        return branch
+    return None
 
 
 @router.post("/autofix", response_model=AutofixResponse, status_code=status.HTTP_202_ACCEPTED)
 async def autofix(
     req: AutofixRequest = Body(...),
     user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
 ) -> AutofixResponse:
     # Owner-only, and checked first: this is the expensive, irreversible one.
     # It bills an agent run and, where autofix-ship is wired up, ends in an
     # automatic merge and deploy of the operator's repo. No caller-supplied
     # key can pay for that, so the answer is 403 rather than the resume
     # endpoints' 402 — see `require_owner`.
+    #
+    # This is also what closes DEPLOYMENT-READINESS.md §A2, which the per-user
+    # credentials could not: the two sides of this endpoint use different tokens
+    # on purpose — the caller's Sentry token to gather context, the *server's*
+    # GitHub token to dispatch, because the pipeline being driven is the
+    # operator's and not the caller's. That asymmetry meant anyone who could
+    # reach this route could spend the operator's agent budget. The gate is what
+    # makes it safe, so it has to be the first thing that runs.
+    #
+    # Which is why the caller's Sentry token is fetched *here* rather than as a
+    # `Depends(_caller_token)` like every read route above. Dependencies resolve
+    # before the handler body, so as a dependency it would answer a non-owner
+    # with "add a Sentry token" (503) — sending someone off to configure a
+    # credential for a route they will be refused from either way, and saying
+    # more about the deployment than a 403 does.
     require_owner(user, "Autofix")
-    _require_token()  # need Sentry to gather context
+    token = await require_user_token(session, user.id, "sentry")  # gathers context
     _require_github_token()  # and GitHub to dispatch
     # The note's repo, or the server default — but the fallback is only allowed
     # for projects whose code actually lives there. This dispatch bills an agent
@@ -714,7 +810,7 @@ async def autofix(
     repo = _resolve_repo(req.repo, req.project)
 
     # Pull issue detail + latest event to build the context bundle.
-    async with _client() as client:
+    async with _client(token) as client:
         issue_resp = await _guarded(client.get(f"/issues/{req.issue_id}/"))
         _raise_for_upstream(issue_resp)
         issue = issue_resp.json()
@@ -723,16 +819,18 @@ async def autofix(
         event = event_resp.json()
 
     short_id = issue.get("shortId") or req.issue_id
-    branch = _branch_for(short_id)
+    base = _branch_for(short_id)
     # Only honor an allowlisted override; anything else falls back to the workflow
     # default (Haiku). Guards against injecting arbitrary text into `--model`.
     model = req.model if req.model in _AUTOFIX_MODELS else None
 
-    # Dedup: if a fix is already in flight or landed, don't burn another agent run.
+    # Dedup: if a run is genuinely in flight, don't burn another agent run. A
+    # recurrence after a closed or merged attempt gets a fresh branch instead.
     async with _github_client() as gh:
-        if await _autofix_in_flight(gh, repo, branch):
+        branch = await _autofix_target_branch(gh, repo, base)
+        if branch is None:
             return AutofixResponse(
-                dispatched=False, issue_id=req.issue_id, short_id=short_id, branch=branch
+                dispatched=False, issue_id=req.issue_id, short_id=short_id, branch=base
             )
 
         payload = _autofix_payload(issue, event, branch, model)
@@ -756,6 +854,11 @@ async def autofix(
 async def autofix_status(
     short_id: str = Query(..., description="Sentry issue short id, e.g. PYTHON-FASTAPI-3"),
     repo: str | None = Query(None, description="Target repo (owner/name); defaults to the server repo"),
+    branch: str | None = Query(
+        None,
+        description="The attempt branch this poll is about, as returned by /autofix. "
+        "Omit to report the newest attempt.",
+    ),
     user: User = Depends(get_current_user),
 ) -> AutofixStatus:
     # Same gate as the dispatch. Nobody but an owner can have started a run,
@@ -764,31 +867,43 @@ async def autofix_status(
     require_owner(user, "Autofix")
     _require_github_token()
     repo = _resolve_repo(repo)
-    branch = _branch_for(short_id)
+    base = _branch_for(short_id)
+    # Only ever report on this issue's own branches — `branch` arrives from the
+    # client, so it must not be able to point the poll at an unrelated PR.
+    want = branch if branch and _attempt_of(base, branch) is not None else None
 
     async with _github_client() as gh:
-        # A PR is the strongest signal — check first (covers open/merged/closed).
-        pulls = await _guarded(gh.get(f"/repos/{repo}/pulls", params={"state": "all", "per_page": 30}), "GitHub")
-        _raise_for_github(pulls)
-        for pr in pulls.json():
-            if (pr.get("head") or {}).get("ref") == branch:
-                if pr.get("merged_at"):
-                    state = "pr_merged"
-                elif pr.get("state") == "closed":
-                    state = "pr_closed"
-                else:
-                    state = "pr_open"
-                return AutofixStatus(
-                    state=state,
-                    branch=branch,
-                    pr_number=pr.get("number"),
-                    pr_url=pr.get("html_url"),
-                    title=pr.get("title"),
-                )
+        # Report the attempt the caller actually started. Falling back to "newest
+        # attempt" (for clients that don't send one) still beats "first match",
+        # which pinned the chip to a stale PR: the app would show a run that
+        # finished months ago as the outcome of the fix you just started.
+        prs = await _family_prs(gh, repo, base)
+        if want is not None:
+            prs = {ref: pr for ref, pr in prs.items() if ref == want}
+        if prs:
+            newest_pr = max(prs, key=lambda ref: _attempt_of(base, ref) or 0)
+            pr = prs[newest_pr]
+            branch = newest_pr
+            if pr.get("merged_at"):
+                state = "pr_merged"
+            elif pr.get("state") == "closed":
+                state = "pr_closed"
+            else:
+                state = "pr_open"
+            return AutofixStatus(
+                state=state,
+                branch=branch,
+                pr_number=pr.get("number"),
+                pr_url=pr.get("html_url"),
+                title=pr.get("title"),
+            )
 
-        # No PR yet — has the agent at least pushed the branch?
-        br = await _guarded(gh.get(f"/repos/{repo}/branches/{branch}"), "GitHub")
-    if br.status_code == 404:
-        return AutofixStatus(state="none", branch=branch)
-    _raise_for_github(br)
-    return AutofixStatus(state="branch_created", branch=branch)
+        # No PR yet — has the agent at least pushed a branch?
+        branches = await _family_branches(gh, repo, base)
+
+    if want is not None:
+        branches = {ref for ref in branches if ref == want}
+    if not branches:
+        return AutofixStatus(state="none", branch=want or base)
+    newest = max(branches, key=lambda ref: _attempt_of(base, ref) or 0)
+    return AutofixStatus(state="branch_created", branch=newest)
