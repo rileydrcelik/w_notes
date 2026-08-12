@@ -64,6 +64,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 import anthropic
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -130,13 +131,32 @@ _MAX_TAILOR_OUTPUT_TOKENS = 16_000
 
 # How many times the tailor may try to land a compiling one-page document. Each
 # attempt costs a model call *and* a TeX run, and someone is waiting — three is
-# enough for "too long, cut it" to work twice, which is the common case.
+# enough for "too long, cut it" to work twice, which is the common case. This is
+# no longer what bounds the endpoint, though: `_WORK_DEADLINE_SECONDS` is, and
+# whichever runs out first ends the request.
 _MAX_TAILOR_ATTEMPTS = 3
 
-# Per model call, for the tailor only. An SDK timeout raises rather than retries,
-# so this bounds one attempt and not the endpoint; the endpoint's own ceiling is
-# roughly this plus a TeX run, times the attempts above.
-_TAILOR_CALL_TIMEOUT_SECONDS = 120.0
+# Per model call, for the tailor only.
+#
+# This was 120s, under a comment claiming an SDK timeout "raises rather than
+# retries". It does not. The Anthropic client retries a timeout like any other
+# transient failure and `max_retries` defaults to 2, so the wall clock for one
+# call is `timeout x (max_retries + 1)`. Measured against production on
+# 2026-08-12: a single harden turned that 120s ceiling into 360 seconds of
+# silence — past the 300s the client waits — and billed the caller for three
+# whole resumes nobody ever saw. `_MODEL_MAX_RETRIES` is what bounds one call
+# now, which is what lets this be generous enough for a real resume.
+_TAILOR_CALL_TIMEOUT_SECONDS = 180.0
+
+# Retries for one model call, overriding the SDK's default of 2.
+#
+# None, because every retry here writes a whole resume again on the caller's own
+# Anthropic key. A timeout on a request this long is a statement about how long
+# the writing takes, not a blip worth repeating three times at the caller's
+# expense. Rate limits and 5xx still arrive as their own status, and the client
+# already turns those into "try again in a moment" — a person choosing to retry
+# is cheaper, and honest about what it costs.
+_MODEL_MAX_RETRIES = 0
 
 # Job postings are long, and the useful part is the role and the requirements.
 # Generous enough for a real posting pasted whole, bounded so a pasted careers
@@ -1371,6 +1391,10 @@ async def _ask_model(
         timeout=timeout
         if timeout is not None
         else settings.anthropic_timeout_seconds + 15.0 * len(links),
+        # See `_MODEL_MAX_RETRIES`: the default of 2 silently triples both the
+        # wall clock and the caller's bill on exactly the calls that can least
+        # afford either.
+        max_retries=_MODEL_MAX_RETRIES,
     ) as client:
         # A copy, not the caller's list. The pause_turn branch below appends to
         # this, and mutating a list the caller still holds would grow their
@@ -1379,7 +1403,15 @@ async def _ask_model(
         messages: list[dict] = list(turns)
         try:
             for _ in range(_MAX_CONTINUATIONS + 1):
-                message = await client.messages.create(
+                # Streamed rather than a plain `create`. The SDK's timeout covers
+                # the whole request, and a whole resume at
+                # `_MAX_TAILOR_OUTPUT_TOKENS` routinely takes longer to write
+                # than any timeout worth setting on a call that returns nothing
+                # until it is finished — streaming is the documented way to hold
+                # a long generation open. `get_final_message` assembles exactly
+                # the message `create` used to return, so every branch below
+                # reads the same shape it always did.
+                async with client.messages.stream(
                     model=settings.anthropic_model,
                     max_tokens=max_tokens,
                     system=system,
@@ -1392,7 +1424,8 @@ async def _ask_model(
                     },
                     tools=tools,
                     messages=messages,
-                )
+                ) as stream:
+                    message = await stream.get_final_message()
                 # The server runs the fetch loop itself and stops at its own
                 # iteration limit rather than running forever. `pause_turn` is
                 # that stop: send the turn back unchanged and it resumes — no
@@ -1405,7 +1438,17 @@ async def _ask_model(
                     status_code=status.HTTP_504_GATEWAY_TIMEOUT,
                     detail="Reading those links took too long. Try again with fewer.",
                 )
-        except anthropic.APITimeoutError:
+        # `httpx.TimeoutException` alongside the SDK's own, because streaming
+        # moved where a stall surfaces. The SDK translates httpx timeouts into
+        # `APITimeoutError` around the `send()` call only, and for a streamed
+        # request `send()` returns as soon as the *headers* arrive; the SSE body
+        # is read afterwards, unguarded, in `AsyncStream._iter_events`. So the
+        # exact failure this endpoint is about — the model going quiet partway
+        # through writing — now arrives as a bare `httpx.ReadTimeout`. Catching
+        # only the SDK type would leave the sentence below unreachable for the
+        # one case it was written for, and hand the caller `hold_open`'s generic
+        # "something went wrong" instead.
+        except (anthropic.APITimeoutError, httpx.TimeoutException):
             raise HTTPException(
                 status_code=status.HTTP_504_GATEWAY_TIMEOUT,
                 detail=f"Writing this {noun} took too long. Try again.",
@@ -1422,7 +1465,12 @@ async def _ask_model(
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 detail=f"The writing service refused the request ({exc.status_code}).",
             ) from None
-        except anthropic.APIConnectionError:
+        # `httpx.TransportError` for the same reason as the timeout above: a
+        # connection dropped mid-stream (`RemoteProtocolError`, `ReadError`)
+        # happens while the body is being read, past the point where the SDK
+        # would have wrapped it. Listed after the timeout clause because
+        # `TimeoutException` is one of its subclasses.
+        except (anthropic.APIConnectionError, httpx.TransportError):
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 detail="Could not reach the writing service.",
@@ -1514,6 +1562,51 @@ _KEEPALIVE_SECONDS = 5.0
 # before they read anything else, because it arrives with a 200.
 _ERROR_KEY = "error"
 
+# The longest the slow half of a request may run before it is given up on.
+#
+# Sized against the client's patience rather than the work: `harden.ts` and
+# `tailor.ts` abort at 300 seconds, and an answer produced after that is an
+# answer nobody receives. Stopping here, with a minute to spare for the refusal
+# to travel, is what turns "the server didn't answer" into a sentence saying
+# what happened — which is the entire reason failures stream in the body.
+#
+# Without this there was no ceiling anywhere: the keep-alive `wait_for` below
+# shields the work precisely so a tick cannot cancel it, so the request ran
+# until it finished, however long that took, whether or not anyone was still
+# listening.
+_WORK_DEADLINE_SECONDS = 240.0
+
+_DEADLINE_DETAIL = (
+    "This took longer than the server allows in one go, so nothing has been "
+    "applied and your resume is unchanged. Try again — or, if it keeps timing "
+    "out, comment out some of the entries you are least likely to need."
+)
+
+
+def _abandon(task: asyncio.Future) -> None:
+    """Read a finished task's outcome so asyncio doesn't report it unretrieved.
+
+    Attached the moment the work starts. Without it, a task that raises after
+    the response has ended logs a bare "Task exception was never retrieved"
+    with no request attached to it — which is exactly how this endpoint's
+    timeout looked in production: a traceback with no caller, 54 seconds after
+    the browser had already given up.
+
+    This is also the *only* place an unexpected failure is logged. A done
+    callback fires on every completion, whether or not the generator below is
+    still around to see it, so it is the strictly wider net; logging in both
+    places would file two Sentry issues for one failure, since the app captures
+    `ERROR` records as events. Request context survives — asyncio runs done
+    callbacks in the task's own context, which was copied from the request.
+    """
+    if task.cancelled():
+        return
+    exc = task.exception()
+    # An `HTTPException` is the endpoint refusing on purpose; the stream below
+    # has already turned it into a sentence, so it is not worth a traceback.
+    if exc is not None and not isinstance(exc, HTTPException):
+        logger.error("resume: streamed work failed", exc_info=exc)
+
 
 def hold_open(work: Coroutine[Any, Any, BaseModel]) -> StreamingResponse:
     """Run `work`, holding the HTTP connection open until it finishes.
@@ -1525,41 +1618,67 @@ def hold_open(work: Coroutine[Any, Any, BaseModel]) -> StreamingResponse:
 
     async def stream() -> AsyncIterator[bytes]:
         task = asyncio.ensure_future(work)
-        while True:
-            try:
-                # `shield`, so the timeout cancels only this wait and never the
-                # work itself — without it every keep-alive tick would kill the
-                # generation it is waiting for.
-                result = await asyncio.wait_for(
-                    asyncio.shield(task), timeout=_KEEPALIVE_SECONDS
-                )
-            except asyncio.TimeoutError:
-                yield b" "
-                continue
-            except HTTPException as exc:
-                # The endpoint's own refusal, with the sentence it wrote. It
-                # cannot be a status code any more, so it travels as data and the
-                # client turns it back into a message.
-                yield json.dumps(
-                    {_ERROR_KEY: {"status": exc.status_code, "detail": exc.detail}}
-                ).encode()
-                return
-            except Exception:  # noqa: BLE001 - must not leak a traceback mid-body
-                # Once bytes are on the wire there is no 500 to fall back on, so
-                # an unexpected failure has to be said in the body too. Sentry
-                # still sees it via the app's exception hooks.
-                logger.exception("resume: streamed work failed")
-                yield json.dumps(
-                    {
-                        _ERROR_KEY: {
-                            "status": 500,
-                            "detail": "Something went wrong on the server. Your resume is unchanged.",
+        task.add_done_callback(_abandon)
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + _WORK_DEADLINE_SECONDS
+        try:
+            while True:
+                try:
+                    # `shield`, so the timeout cancels only this wait and never
+                    # the work itself — without it every keep-alive tick would
+                    # kill the generation it is waiting for.
+                    result = await asyncio.wait_for(
+                        asyncio.shield(task), timeout=_KEEPALIVE_SECONDS
+                    )
+                except asyncio.TimeoutError:
+                    # Each tick is also where the deadline is noticed. Checked
+                    # here rather than around the whole wait because the work is
+                    # shielded: nothing else in this loop ever regains control
+                    # while the model is writing.
+                    if loop.time() >= deadline:
+                        yield json.dumps(
+                            {
+                                _ERROR_KEY: {
+                                    "status": 504,
+                                    "detail": _DEADLINE_DETAIL,
+                                }
+                            }
+                        ).encode()
+                        return
+                    yield b" "
+                    continue
+                except HTTPException as exc:
+                    # The endpoint's own refusal, with the sentence it wrote. It
+                    # cannot be a status code any more, so it travels as data and
+                    # the client turns it back into a message.
+                    yield json.dumps(
+                        {_ERROR_KEY: {"status": exc.status_code, "detail": exc.detail}}
+                    ).encode()
+                    return
+                except Exception:  # noqa: BLE001 - must not leak a traceback mid-body
+                    # Once bytes are on the wire there is no 500 to fall back on,
+                    # so an unexpected failure has to be said in the body too.
+                    # Not logged here: `_abandon` has already logged this exact
+                    # exception off the task's done callback, and doing it twice
+                    # files two Sentry issues for one failure.
+                    yield json.dumps(
+                        {
+                            _ERROR_KEY: {
+                                "status": 500,
+                                "detail": "Something went wrong on the server. Your resume is unchanged.",
+                            }
                         }
-                    }
-                ).encode()
+                    ).encode()
+                    return
+                yield result.model_dump_json().encode()
                 return
-            yield result.model_dump_json().encode()
-            return
+        finally:
+            # Reached on the deadline above and — the case that actually costs
+            # money — when the client hangs up and this generator is closed.
+            # The model bills by the token whether or not anyone is reading, so
+            # work no one can receive is stopped rather than left to finish.
+            if not task.done():
+                task.cancel()
 
     return StreamingResponse(stream(), media_type="application/json")
 

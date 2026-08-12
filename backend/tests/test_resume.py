@@ -23,7 +23,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 
+import httpx
 import pytest
 
 from app import ai_access
@@ -76,6 +78,71 @@ class _FakeMessage:
         self.stop_reason = stop_reason
 
 
+class _FakeStream:
+    """Stands in for what `client.messages.stream(...)` hands back: an async
+    context manager whose `get_final_message()` assembles the answer."""
+
+    def __init__(self, message: _FakeMessage):
+        self._message = message
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def get_final_message(self):
+        return self._message
+
+
+class _StreamFailsMidBody:
+    """Stands in for `client.messages.stream(...)` when the *stream itself*
+    fails rather than the model answering — a stall or a dropped connection
+    after `send()` has already returned headers. `get_final_message()` is
+    where that failure actually surfaces (see `_ask_model`'s comment above its
+    `except (anthropic.APITimeoutError, httpx.TimeoutException)` /
+    `except (anthropic.APIConnectionError, httpx.TransportError)` clauses),
+    so this is the fake for exactly that case: entering the context manager
+    succeeds, and the raise happens only once something calls
+    `get_final_message()`.
+    """
+
+    def __init__(self, exc: Exception):
+        self._exc = exc
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def get_final_message(self):
+        raise self._exc
+
+
+def _anthropic_client_that_fails_mid_stream(exc: Exception):
+    """A fake `anthropic.AsyncAnthropic` class whose `messages.stream(...)`
+    raises `exc` from `get_final_message()` — see `_StreamFailsMidBody`."""
+
+    class _Messages:
+        def stream(self, **kwargs):
+            _calls.append(kwargs)
+            return _StreamFailsMidBody(exc)
+
+    class _Client:
+        def __init__(self, *args, **kwargs):
+            _client_kwargs.append(kwargs)
+            self.messages = _Messages()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc_info):
+            return False
+
+    return _Client
+
+
 class _FakeMessages:
     """Stands in for `client.messages`. Answers with whatever the test set.
 
@@ -87,17 +154,30 @@ class _FakeMessages:
     def __init__(self, messages: list[_FakeMessage]):
         self._messages = messages
 
-    async def create(self, **kwargs):
+    def _answer(self, kwargs: dict) -> _FakeMessage:
         _calls.append(kwargs)
         # The last queued message repeats, so a test that only cares about the
         # request doesn't have to queue one per continuation.
         index = min(len(_calls) - 1, len(self._messages) - 1)
         return self._messages[index]
 
+    def stream(self, **kwargs):
+        # Deliberately not `async def`: the real SDK returns the context manager
+        # synchronously, and a coroutine here would pass `async with` in a way
+        # the real client would not.
+        return _FakeStream(self._answer(kwargs))
+
+    async def create(self, **kwargs):
+        raise AssertionError(
+            "these endpoints must stream. A plain `create` returns nothing until "
+            "the whole resume is written, which is what let one call run past the "
+            "client's timeout in production — see `_TAILOR_CALL_TIMEOUT_SECONDS`."
+        )
+
 
 class _FakeAsyncAnthropic:
     """Stands in for `anthropic.AsyncAnthropic` — an async context manager
-    whose `.messages.create(...)` returns a canned message."""
+    whose `.messages.stream(...)` yields a canned message."""
 
     def __init__(self, *args, **kwargs):
         _client_kwargs.append(kwargs)
@@ -264,6 +344,45 @@ async def test_an_empty_latex_field_is_a_502(client, device, anthropic_key, fake
     fake_anthropic(json.dumps({"section": "Experience", "latex": "   "}))
     res = await _draft(client, device)
     assert res.status_code == 502
+
+
+async def test_a_stall_mid_stream_is_a_504_not_a_bare_500(
+    client, device, anthropic_key, monkeypatch
+):
+    """The SDK only turns an `httpx` timeout into `anthropic.APITimeoutError`
+    around `send()`, and for a streamed request `send()` returns as soon as
+    headers arrive — the SSE body is read afterwards, unguarded, inside
+    `get_final_message()`. So a stall partway through generation raises a bare
+    `httpx.ReadTimeout`, which used to match none of `_ask_model`'s
+    `except anthropic.*` clauses and fall through to a generic 500. It must
+    land as the same 504 a slower-but-honest timeout would."""
+    monkeypatch.setattr(
+        resume.anthropic,
+        "AsyncAnthropic",
+        _anthropic_client_that_fails_mid_stream(httpx.ReadTimeout("stalled mid-generation")),
+    )
+    res = await _draft(client, device)
+    assert res.status_code == 504
+    assert "took too long" in res.json()["detail"]
+
+
+async def test_a_dropped_connection_mid_stream_is_a_502(
+    client, device, anthropic_key, monkeypatch
+):
+    """The connection-drop counterpart to the stall above: `httpx.TransportError`
+    subclasses (a `RemoteProtocolError`, say) surface from `get_final_message()`
+    the same unguarded way, and must be reported as the same 502 a connection
+    failure at `send()` time would be."""
+    monkeypatch.setattr(
+        resume.anthropic,
+        "AsyncAnthropic",
+        _anthropic_client_that_fails_mid_stream(
+            httpx.RemoteProtocolError("connection dropped mid-response")
+        ),
+    )
+    res = await _draft(client, device)
+    assert res.status_code == 502
+    assert res.json()["detail"] == "Could not reach the writing service."
 
 
 async def test_the_happy_path_returns_the_section_and_latex(
@@ -468,6 +587,19 @@ async def test_links_extend_the_client_timeout(client, device, anthropic_key, fa
     without = _client_kwargs[0]["timeout"]
 
     assert with_link > without
+
+
+async def test_ask_model_disables_sdk_retries(client, device, anthropic_key, fake_anthropic):
+    """`max_retries` defaults to 2 on the SDK, and that default is the whole
+    production incident: a 120s timeout on one call became 360s of silence,
+    billed three times over, because the SDK quietly retried a timeout twice.
+    `_ask_model` must override it on every client it builds, not just set a
+    timeout and hope."""
+    fake_anthropic(json.dumps({"section": "Experience", "latex": "\\resumeItem{x}"}))
+    res = await _draft(client, device)
+    assert res.status_code == 200
+    assert _client_kwargs[0]["max_retries"] == 0
+    assert resume._MODEL_MAX_RETRIES == 0
 
 
 # --------------------------------------------------------------------------
@@ -783,6 +915,225 @@ async def test_a_streamed_failure_still_carries_its_status_and_sentence(
     status, error = outcome(res)
     assert status == 422
     assert "unchanged" in error["detail"]
+
+
+# --------------------------------------------------------------------------
+# The work deadline inside `hold_open`.
+#
+# The keep-alive whitespace above is what survives Cloudflare's ~100s window;
+# `_WORK_DEADLINE_SECONDS` is what survives the *client's* patience —
+# `harden.ts`/`tailor.ts` give up and abort at 300s, and production measured a
+# single call running to 360s of silence once the SDK's default retries were
+# stacked on the old per-call timeout. These call `hold_open` directly rather
+# than through an endpoint: what's under test is the generator's own
+# bookkeeping (the deadline check, the cancellation in `finally`), not
+# anything specific to tailoring or hardening, and driving it directly means
+# no model call or TeX run has to be faked to prove it.
+# --------------------------------------------------------------------------
+
+
+async def _drain(body_iterator) -> bytes:
+    """Every byte `hold_open`'s stream produces, concatenated — what a real
+    HTTP client would end up with as the response body."""
+    chunks = [chunk async for chunk in body_iterator]
+    return b"".join(chunks)
+
+
+async def test_hold_open_streams_a_504_when_the_work_outruns_the_deadline(monkeypatch):
+    """The fix for the production hang, stated directly: a request that would
+    otherwise run until the model finishes instead gets a sentence at
+    `_WORK_DEADLINE_SECONDS`, with a minute to spare before the client's own
+    300s abort — which is what turns "the server never answered" into an
+    error the user actually reads."""
+    monkeypatch.setattr(resume, "_WORK_DEADLINE_SECONDS", 0.05)
+    monkeypatch.setattr(resume, "_KEEPALIVE_SECONDS", 0.01)
+
+    async def work():
+        await asyncio.sleep(10)
+
+    resp = resume.hold_open(work())
+    body = await _drain(resp.body_iterator)
+
+    assert json.loads(body) == {"error": {"status": 504, "detail": resume._DEADLINE_DETAIL}}
+
+
+async def test_hold_open_deadline_payload_is_keepalive_then_one_json_document(monkeypatch):
+    """The exact contract `harden.ts`/`tailor.ts` rely on:
+    `JSON.parse(await res.text())`, then `.error.detail` — nothing more
+    elaborate than that. So this checks the shape a real client sees, not just
+    that the bytes eventually parse: keep-alive ticks have to land on the wire
+    *before* the failure (proving this genuinely streamed, not that
+    concatenating a single chunk trivially parses), and the whole body — ticks
+    included — still has to be exactly one JSON document a plain `JSON.parse`
+    can read."""
+    monkeypatch.setattr(resume, "_WORK_DEADLINE_SECONDS", 0.05)
+    monkeypatch.setattr(resume, "_KEEPALIVE_SECONDS", 0.01)
+
+    async def work():
+        await asyncio.sleep(10)
+
+    resp = resume.hold_open(work())
+    chunks = [chunk async for chunk in resp.body_iterator]
+
+    # At least one real keep-alive tick reached the wire before the failure.
+    assert chunks[0] == b" "
+    assert all(chunk == b" " for chunk in chunks[:-1])
+
+    parsed = json.loads(b"".join(chunks))
+    assert parsed["error"]["status"] == 504
+    assert parsed["error"]["detail"] == resume._DEADLINE_DETAIL
+
+
+async def test_hold_open_cancels_the_pending_task_on_deadline(monkeypatch):
+    """The credit-burn guard: the model bills by the token whether or not
+    anyone is still reading, so once the deadline gives up on the client ever
+    seeing an answer, the work behind it has to actually stop rather than run
+    to completion in the background."""
+    monkeypatch.setattr(resume, "_WORK_DEADLINE_SECONDS", 0.05)
+    monkeypatch.setattr(resume, "_KEEPALIVE_SECONDS", 0.01)
+
+    async def work():
+        await asyncio.sleep(10)
+
+    before = asyncio.all_tasks()
+    resp = resume.hold_open(work())
+    await _drain(resp.body_iterator)
+    (task,) = asyncio.all_tasks() - before
+
+    # `task.cancel()` only *requests* cancellation; it needs one more tick of
+    # the loop to actually land inside the sleeping coroutine.
+    await asyncio.sleep(0)
+    assert task.cancelled()
+
+
+async def test_hold_open_cancels_the_pending_task_when_the_client_disconnects(monkeypatch):
+    """The other, more common way this stops paying: nobody waits for the
+    deadline because the browser has already given up and gone away.
+    Starlette closes the response's async generator when that happens
+    (`GeneratorExit`), and the same `finally` that handles the deadline has to
+    catch this too — reproduced here by closing the generator directly rather
+    than tearing down a whole ASGI connection to get there."""
+    monkeypatch.setattr(resume, "_KEEPALIVE_SECONDS", 0.01)
+
+    async def work():
+        await asyncio.sleep(10)
+
+    before = asyncio.all_tasks()
+    resp = resume.hold_open(work())
+    gen = resp.body_iterator
+    # Pull one keep-alive tick so the task is definitely under way, then close
+    # the generator early — a disconnect mid-stream, not at the end of it.
+    first = await gen.__anext__()
+    assert first == b" "
+    await gen.aclose()
+    (task,) = asyncio.all_tasks() - before
+
+    await asyncio.sleep(0)
+    assert task.cancelled()
+
+
+async def test_hold_open_happy_path_returns_the_real_body_unchanged(monkeypatch):
+    """The deadline exists to catch a request that is going wrong. It must not
+    touch a normal, fast one — the ordinary run that returns in seconds gets
+    exactly the model's own `model_dump_json()`, nothing wrapped around it."""
+    monkeypatch.setattr(resume, "_WORK_DEADLINE_SECONDS", 240.0)
+    model = resume.EntryResponse(
+        section="Experience", latex="\\resumeItem{x}", summary="Added x"
+    )
+
+    async def work():
+        return model
+
+    resp = resume.hold_open(work())
+    body = await _drain(resp.body_iterator)
+
+    assert body == model.model_dump_json().encode()
+
+
+def _reenable_resume_logger(monkeypatch) -> None:
+    """Undo a test-harness side effect so `caplog` can see anything at all.
+
+    `conftest.py`'s session-scoped `_database` fixture runs Alembic's
+    migrations *in this same process* (`asyncio.to_thread(command.upgrade,
+    ...)`), and `alembic/env.py` calls `logging.config.fileConfig(...)` to do
+    it. `fileConfig` defaults to `disable_existing_loggers=True`, which sets
+    `.disabled = True` on every logger that already exists at that point —
+    including `resume.logger`, created at import time when `app.main` (and
+    therefore `app.routers.resume`) is imported by this same conftest a few
+    lines earlier. A disabled logger's `.error(...)` is a silent no-op: no
+    handler ever runs, so `caplog` (or any handler) sees nothing, no matter
+    how correct the code under test is.
+
+    This is a real gap: as of writing, nothing in this suite can observe a
+    `logger.error`/`logger.exception` call anywhere in `app/` for exactly this
+    reason. It does not reach production — the Dockerfile runs `alembic
+    upgrade head` and `uvicorn app.main:app` as two separate processes, so the
+    disabling never survives past the migration — but it means this test would
+    silently pass no matter what `_abandon` did without this workaround.
+    Undone with `monkeypatch` so it reverts after the test.
+    """
+    monkeypatch.setattr(resume.logger, "disabled", False)
+
+
+async def test_hold_open_logs_a_generic_failure_exactly_once(monkeypatch, caplog):
+    """`_abandon` — the task's `add_done_callback` — used to run alongside an
+    identical `logger.exception("resume: streamed work failed")` inline in
+    `hold_open`'s generic `except Exception` branch, so one real failure filed
+    two Sentry issues (the app captures `ERROR` records as events). `_abandon`
+    is now the *sole* logger. This drives `work()` to raise a plain exception
+    and checks both halves of the contract: the streamed body still carries
+    the 500, and exactly one `ERROR` record is produced."""
+    monkeypatch.setattr(resume, "_WORK_DEADLINE_SECONDS", 240.0)
+    _reenable_resume_logger(monkeypatch)
+    caplog.set_level(logging.ERROR, logger=resume.logger.name)
+
+    async def work():
+        raise RuntimeError("boom")
+
+    resp = resume.hold_open(work())
+    body = await _drain(resp.body_iterator)
+    parsed = json.loads(body)
+    assert parsed["error"]["status"] == 500
+    assert "went wrong" in parsed["error"]["detail"]
+
+    # `_abandon` is an `asyncio` done-callback, scheduled via `loop.call_soon`
+    # the moment the task finishes — which is *inside* the same `await` that
+    # let `hold_open`'s generator see the exception, so the callback has not
+    # necessarily run by the time control returns here. A few more turns of
+    # the loop give every queued callback (including `asyncio.wait_for`'s own
+    # bookkeeping ahead of it in the queue) the chance to run.
+    for _ in range(10):
+        if caplog.records:
+            break
+        await asyncio.sleep(0)
+
+    error_records = [r for r in caplog.records if r.levelno == logging.ERROR]
+    assert len(error_records) == 1, [r.getMessage() for r in error_records]
+    assert error_records[0].getMessage() == "resume: streamed work failed"
+
+
+async def test_hold_open_logs_nothing_for_a_deliberate_http_exception(monkeypatch, caplog):
+    """The counterpart pinned alongside the test above: an `HTTPException`
+    raised from `work()` is the endpoint refusing on purpose — `hold_open`
+    turns it into the streamed error body, and `_abandon` deliberately does
+    not log it (`exc_info=exc` would be a traceback for something that isn't
+    a bug). Exactly zero `ERROR` records, not fewer-than-two."""
+    monkeypatch.setattr(resume, "_WORK_DEADLINE_SECONDS", 240.0)
+    _reenable_resume_logger(monkeypatch)
+    caplog.set_level(logging.ERROR, logger=resume.logger.name)
+
+    async def work():
+        raise resume.HTTPException(status_code=422, detail="This entry could not be written.")
+
+    resp = resume.hold_open(work())
+    body = await _drain(resp.body_iterator)
+    parsed = json.loads(body)
+    assert parsed["error"]["status"] == 422
+
+    await asyncio.sleep(0)
+
+    error_records = [r for r in caplog.records if r.levelno == logging.ERROR]
+    assert error_records == []
 
 
 async def test_tailor_asks_an_ordinary_caller_for_a_key(client, device, monkeypatch):
