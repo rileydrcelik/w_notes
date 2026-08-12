@@ -42,7 +42,7 @@ export default function NewIssueScreen() {
   const insets = useSafeAreaInsets();
   const tabBarInset = useTabBarInset();
   const { getFolder, getNotesInFolder, updateFolder, createIssueTypeNote, deleteNote } = useNotes();
-  const { createIssue, updateIssue, getIssuesForNote, deleteIssue } = useIssues();
+  const { createIssue, updateIssue } = useIssues();
 
   const folder = getFolder(id);
   const config = useMemo(() => (folder ? projectConfig(folder) : null), [folder?.kind, folder?.config]);
@@ -139,7 +139,8 @@ export default function NewIssueScreen() {
   };
 
   const removeType = (typeId: string) => {
-    getIssuesForNote(typeId).forEach((i) => deleteIssue(i.id));
+    // deleteNote takes the type's issues with it (those left with no other live
+    // type), stamped so a restore brings them back together.
     deleteNote(typeId);
     setSelectedTypeIds((prev) => prev.filter((t) => t !== typeId));
   };

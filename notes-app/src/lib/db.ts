@@ -12,6 +12,8 @@ import { runWelcomeSeed, WELCOME_PREFIX } from '@/lib/welcome-content';
 import { worthKeepingInTrash } from '@/lib/trash-visibility';
 import { migrateThemeKey, THEME_RENAME_FLAG, THEME_SETTING_KEY } from '@/lib/theme-migrate';
 import { whenDbOwner } from '@/lib/web-db-lock';
+import { parseTypeIds, planIssueCascade } from '@/lib/issue-cascade';
+import type { IssueMembership } from '@/lib/issue-cascade';
 import type { Folder, Issue, Note, ResumeVersion } from '@/data/notes';
 import type { CopaItem } from '@/data/copa';
 
@@ -805,6 +807,130 @@ function toCopa(r: CopaRow): CopaItem {
   };
 }
 
+/** `?, ?, ?` for an `IN (...)` list of n bound values. */
+const placeholders = (n: number) => Array.from({ length: n }, () => '?').join(', ');
+
+/**
+ * A note's rows in the side tables — a finance note's sheet, a resume's version
+ * history, an issue type's issues. They live in their own tables because they
+ * sync independently of the note body, which also means nothing takes them down
+ * when the note is trashed: SQLite foreign keys are deliberately absent here
+ * (a child can legitimately arrive in an earlier sync page than its parent), so
+ * the cascade is written by hand, in both directions.
+ *
+ * Children are stamped with the *parent's* `deleted_at` rather than a fresh
+ * `Date.now()`. That shared timestamp is the whole mechanism: it marks which
+ * children went down with this delete, so a restore can revive exactly that
+ * group and leave alone any child the user had deleted on its own beforehand
+ * (which carries an earlier stamp of its own).
+ *
+ * These are plain functions taking the handle, not `db` methods, for two
+ * reasons: they run inside a caller's transaction, and every mutating `db`
+ * method is serialized behind one write chain (see `serializeWrite`), so
+ * calling one from in here would deadlock against the delete that called it.
+ */
+type IssueTypeRow = { id: string; note_id: string; type_ids: string | null };
+
+const toMembership = (r: IssueTypeRow): IssueMembership => ({
+  id: r.id,
+  types: parseTypeIds(r.note_id, r.type_ids),
+});
+
+/**
+ * Live issues that would be left with no live type once `noteIds` are trashed.
+ * The rule itself is in `issue-cascade.ts`; this supplies the two things only
+ * the database can answer — the issues in play, and which of the types they
+ * also belong to are still live notes.
+ */
+async function issuesLosingLastType(
+  database: SQLite.SQLiteDatabase,
+  noteIds: string[],
+): Promise<string[]> {
+  const rows = await database.getAllAsync<IssueTypeRow>(
+    'SELECT id, note_id, type_ids FROM issues WHERE deleted_at IS NULL',
+  );
+  const { typesToCheck, doomed } = planIssueCascade(rows.map(toMembership), noteIds);
+  if (typesToCheck.length === 0) return doomed([]);
+  const liveRows = await database.getAllAsync<{ id: string }>(
+    `SELECT id FROM notes WHERE deleted_at IS NULL AND id IN (${placeholders(typesToCheck.length)})`,
+    typesToCheck,
+  );
+  return doomed(liveRows.map((r) => r.id));
+}
+
+/** Tombstones the side-table rows owned by notes being trashed at `deletedAt`. */
+async function trashNoteChildren(
+  database: SQLite.SQLiteDatabase,
+  noteIds: string[],
+  deletedAt: number,
+): Promise<void> {
+  if (noteIds.length === 0) return;
+  const ph = placeholders(noteIds.length);
+  // A finance sheet is keyed by the id of the note that owns it.
+  await database.runAsync(
+    `UPDATE finance_sheets SET deleted_at = ?, updated_at = ?, dirty = 1
+     WHERE deleted_at IS NULL AND id IN (${ph})`,
+    [deletedAt, deletedAt, ...noteIds],
+  );
+  await database.runAsync(
+    `UPDATE resume_versions SET deleted_at = ?, updated_at = ?, dirty = 1
+     WHERE deleted_at IS NULL AND note_id IN (${ph})`,
+    [deletedAt, deletedAt, ...noteIds],
+  );
+  const issueIds = await issuesLosingLastType(database, noteIds);
+  if (issueIds.length > 0) {
+    await database.runAsync(
+      `UPDATE issues SET deleted_at = ?, updated_at = ?, dirty = 1
+       WHERE id IN (${placeholders(issueIds.length)})`,
+      [deletedAt, deletedAt, ...issueIds],
+    );
+  }
+}
+
+/**
+ * Brings back the side-table rows that went down with these notes — those, and
+ * only those, carrying the exact `deletedAt` the parent was stamped with.
+ *
+ * A child the user deleted on its own before the note went stays deleted, and
+ * so does an issue that was tombstoned alongside a *different* type of its own
+ * (restoring this type gives it a live home again, but the delete that killed
+ * it was another one; restoring that type revives it).
+ */
+async function reviveNoteChildren(
+  database: SQLite.SQLiteDatabase,
+  noteIds: string[],
+  deletedAt: number | null,
+  now: number,
+): Promise<void> {
+  if (noteIds.length === 0 || deletedAt == null) return;
+  const ph = placeholders(noteIds.length);
+  await database.runAsync(
+    `UPDATE finance_sheets SET deleted_at = NULL, updated_at = ?, dirty = 1
+     WHERE deleted_at = ? AND id IN (${ph})`,
+    [now, deletedAt, ...noteIds],
+  );
+  await database.runAsync(
+    `UPDATE resume_versions SET deleted_at = NULL, updated_at = ?, dirty = 1
+     WHERE deleted_at = ? AND note_id IN (${ph})`,
+    [now, deletedAt, ...noteIds],
+  );
+  const owners = new Set(noteIds);
+  const tombstoned = await database.getAllAsync<IssueTypeRow>(
+    'SELECT id, note_id, type_ids FROM issues WHERE deleted_at = ?',
+    [deletedAt],
+  );
+  const issueIds = tombstoned
+    .filter((r) => parseTypeIds(r.note_id, r.type_ids).some((t) => owners.has(t)))
+    .map((r) => r.id);
+  if (issueIds.length > 0) {
+    await database.runAsync(
+      `UPDATE issues SET deleted_at = NULL, updated_at = ?, dirty = 1
+       WHERE id IN (${placeholders(issueIds.length)})`,
+      [now, ...issueIds],
+    );
+  }
+}
+
 async function buildTrash(database: SQLite.SQLiteDatabase): Promise<TrashEntry[]> {
   const trashedFolders = await database.getAllAsync<FolderRow>(
     'SELECT * FROM folders WHERE deleted_at IS NOT NULL',
@@ -915,10 +1041,13 @@ export const db = {
     dbCrumb('deleteNote', { id });
     const database = await getDb();
     const now = Date.now();
-    await database.runAsync(
-      'UPDATE notes SET deleted_at = ?, updated_at = ?, dirty = 1, trashed_with_folder_id = NULL WHERE id = ?',
-      [now, now, id],
-    );
+    await database.withTransactionAsync(async () => {
+      await database.runAsync(
+        'UPDATE notes SET deleted_at = ?, updated_at = ?, dirty = 1, trashed_with_folder_id = NULL WHERE id = ?',
+        [now, now, id],
+      );
+      await trashNoteChildren(database, [id], now);
+    });
   },
 
   async createFolder({
@@ -986,9 +1115,20 @@ export const db = {
     );
     const subtreeIds = subtree.map((r) => r.id);
     const descendantIds = subtreeIds.filter((fid) => fid !== id);
-    const placeholders = (n: number) => Array.from({ length: n }, () => '?').join(', ');
 
     await database.withTransactionAsync(async () => {
+      // The notes about to go, read before the update that trashes them — their
+      // side-table rows have to come along, and this doesn't route through
+      // deleteNote (a folder delete is one statement over the whole subtree).
+      const doomed = await database.getAllAsync<{ id: string }>(
+        `SELECT id FROM notes WHERE deleted_at IS NULL AND folder_id IN (${placeholders(subtreeIds.length)})`,
+        subtreeIds,
+      );
+      await trashNoteChildren(
+        database,
+        doomed.map((r) => r.id),
+        now,
+      );
       // Trash every note living anywhere in the subtree, tagged with the root.
       await database.runAsync(
         `UPDATE notes SET deleted_at = ?, updated_at = ?, dirty = 1, trashed_with_folder_id = ?
@@ -1111,6 +1251,11 @@ export const db = {
       }
       const now = Date.now();
       await database.withTransactionAsync(async () => {
+        // Read the group before the update below clears the tag that defines it.
+        const returning = await database.getAllAsync<{ id: string }>(
+          'SELECT id FROM notes WHERE trashed_with_folder_id = ?',
+          [id],
+        );
         await database.runAsync(
           'UPDATE folders SET deleted_at = NULL, updated_at = ?, dirty = 1, parent_id = ? WHERE id = ?',
           [now, parentId, id],
@@ -1123,6 +1268,14 @@ export const db = {
         await database.runAsync(
           'UPDATE notes SET deleted_at = NULL, updated_at = ?, dirty = 1, trashed_with_folder_id = NULL WHERE trashed_with_folder_id = ?',
           [now, id],
+        );
+        // The subtree was trashed in one stamp, so the folder's own deleted_at
+        // is the one its notes' children carry.
+        await reviveNoteChildren(
+          database,
+          returning.map((r) => r.id),
+          folder.deleted_at,
+          now,
         );
       });
       return;
@@ -1142,10 +1295,14 @@ export const db = {
         );
         if (!parent) folderId = null;
       }
-      await database.runAsync(
-        'UPDATE notes SET deleted_at = NULL, updated_at = ?, dirty = 1, trashed_with_folder_id = NULL, folder_id = ? WHERE id = ?',
-        [Date.now(), folderId, id],
-      );
+      const now = Date.now();
+      await database.withTransactionAsync(async () => {
+        await database.runAsync(
+          'UPDATE notes SET deleted_at = NULL, updated_at = ?, dirty = 1, trashed_with_folder_id = NULL, folder_id = ? WHERE id = ?',
+          [now, folderId, id],
+        );
+        await reviveNoteChildren(database, [id], note.deleted_at, now);
+      });
     }
   },
 
