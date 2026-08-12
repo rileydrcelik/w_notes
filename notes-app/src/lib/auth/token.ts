@@ -36,9 +36,41 @@ export class AuthUnavailableError extends Error {
   }
 }
 
+type AuthListener = () => void;
+
+const listeners = new Set<AuthListener>();
+
 /** Called by the auth context whenever the signed-in user changes. */
 export function setAuthUser(user: FirebaseUser | null): void {
+  const previous = currentUser;
   currentUser = user;
+  // Only announce a genuine change of identity. `onAuthStateChanged` also fires
+  // on a token refresh with the same account, and a listener that refetches
+  // would then do so on Firebase's refresh schedule rather than when anything
+  // it cares about actually moved.
+  if (previous?.uid !== user?.uid) {
+    // Copied, so a listener that unsubscribes itself while we iterate can't
+    // skip the next one.
+    for (const listener of [...listeners]) listener();
+  }
+}
+
+/**
+ * Watch for the identity changing — including the *first* time it resolves.
+ *
+ * Anything that fetches per-account state on mount needs this. On a cold web
+ * load, Firebase restores its session asynchronously, so a fetch fired from a
+ * mount effect runs while `currentUser` is still null and `getAuthToken` throws
+ * `AuthUnavailableError` to avoid forking the account onto the device key. That
+ * throw means "not yet", not "nothing there" — this is how the caller learns to
+ * ask again. Sync gets the same effect for free by polling; one-shot readers do
+ * not.
+ */
+export function subscribeAuthUser(listener: AuthListener): () => void {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
 }
 
 export function isSignedIn(): boolean {

@@ -8,6 +8,7 @@ import {
   type ReactNode,
 } from 'react';
 
+import { subscribeAuthUser } from '@/lib/auth/token';
 import {
   deleteCredential,
   emptyCredentialStatus,
@@ -142,21 +143,41 @@ export function CreateOptionsProvider({ children }: { children: ReactNode }) {
   // surfaced: Settings should still open when the backend is unreachable, and
   // the fields themselves report a real error when you try to save one.
   //
+  // The exception is `AuthUnavailableError`, which is not a failure at all.
+  // On a cold web load this effect runs before Firebase has restored its
+  // session, so `getAuthToken` refuses to send the device key in a signed-in
+  // account's place and throws. Treating that as "nothing saved" is what made a
+  // saved token show an empty field after every reload — the status was never
+  // fetched, and with no dependencies this effect never asked again. So we hold
+  // `credentialsLoading` and re-run when the identity resolves. It can only
+  // resolve: the throw happens exactly when an account is expected.
+  //
   // Written with `.then` rather than an awaited helper to match the hydrate
   // below — an async function called from an effect sets state on a path the
   // lint rule can't see past, and flags it as a cascading render.
   useEffect(() => {
     let cancelled = false;
-    fetchCredentials()
-      .then((c) => {
-        if (!cancelled) setCredentials(c);
-      })
-      .catch((e) => console.warn('[create-options] failed to load credential status:', e))
-      .finally(() => {
-        if (!cancelled) setCredentialsLoading(false);
-      });
+    const load = () => {
+      fetchCredentials()
+        .then((c) => {
+          if (cancelled) return;
+          setCredentials(c);
+          setCredentialsLoading(false);
+        })
+        .catch((e) => {
+          // Duck-typed rather than an `instanceof`: this module reaches the
+          // error through several layers, and a name check can't be defeated by
+          // two copies of the class.
+          if ((e as { name?: string })?.name === 'AuthUnavailableError') return;
+          console.warn('[create-options] failed to load credential status:', e);
+          if (!cancelled) setCredentialsLoading(false);
+        });
+    };
+    load();
+    const unsubscribe = subscribeAuthUser(load);
     return () => {
       cancelled = true;
+      unsubscribe();
     };
   }, []);
 
