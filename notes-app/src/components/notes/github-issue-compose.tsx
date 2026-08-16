@@ -8,7 +8,6 @@ import Feather from '@expo/vector-icons/Feather';
 import { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
-  KeyboardAvoidingView,
   Platform,
   Pressable,
   ScrollView,
@@ -23,6 +22,7 @@ import { SheetFade } from '@/components/edge-fade';
 import { GlassSurface } from '@/components/glass-surface';
 import { ThemedText } from '@/components/themed-text';
 import { hexToRgba, Spacing } from '@/constants/theme';
+import { useKeyboardPadding } from '@/hooks/use-keyboard-inset';
 import { useTheme } from '@/hooks/use-theme';
 import { apiFetch } from '@/lib/sync/api';
 import type { CreatedIssue, IssueLabel as Label } from '@/lib/github-note';
@@ -85,6 +85,12 @@ export function GithubIssueCompose({
 }) {
   const theme = useTheme();
   const insets = useSafeAreaInsets();
+  // The sheet is anchored to the bottom edge and its first field is a text
+  // input, so it has to climb over the keyboard. `KeyboardAvoidingView` used to
+  // stand here and did nothing on Android — the window is edge-to-edge there, so
+  // the keyboard covers it rather than resizing it, and the whole sheet ended up
+  // behind the keys.
+  const keyboardPad = useKeyboardPadding(insets.bottom);
 
   const [title, setTitle] = useState('');
   const [body, setBody] = useState('');
@@ -170,10 +176,7 @@ export function GithubIssueCompose({
             accessibilityRole="button"
             accessibilityLabel="Cancel new issue"
           />
-          <KeyboardAvoidingView
-            behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-            style={styles.avoider}
-            pointerEvents="box-none">
+          <Animated.View style={[styles.avoider, keyboardPad]} pointerEvents="box-none">
             <Animated.View
               entering={SlideInDown.duration(260)}
               exiting={SlideOutDown.duration(220)}
@@ -311,7 +314,7 @@ export function GithubIssueCompose({
                 </Pressable>
               </GlassSurface>
             </Animated.View>
-          </KeyboardAvoidingView>
+          </Animated.View>
         </>
       )}
     </View>
@@ -335,15 +338,22 @@ const styles = StyleSheet.create({
     bottom: 0,
     backgroundColor: 'rgba(0,0,0,0.35)',
   },
+  // `flexShrink` all the way down to the form: with the keyboard up, the box the
+  // sheet is laid out in is that much shorter, and a sheet full of labels would
+  // otherwise push its own header off the top of the screen instead of giving
+  // the scrolling form less room. Without that pressure it changes nothing.
   avoider: {
     width: '100%',
+    flexShrink: 1,
   },
   sheetHost: {
     width: '100%',
+    flexShrink: 1,
     paddingHorizontal: Spacing.three,
     ...(Platform.OS === 'web' ? { maxWidth: 460, alignSelf: 'center' as const } : null),
   },
   sheet: {
+    flexShrink: 1,
     overflow: 'hidden',
     borderRadius: Spacing.four,
     padding: Spacing.three,
@@ -366,9 +376,11 @@ const styles = StyleSheet.create({
   },
   scrollWrap: {
     position: 'relative',
+    flexShrink: 1,
   },
   form: {
     maxHeight: 420,
+    flexShrink: 1,
   },
   formContent: {
     gap: Spacing.three,

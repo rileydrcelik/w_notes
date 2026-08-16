@@ -10,7 +10,6 @@
 import Feather from '@expo/vector-icons/Feather';
 import { useEffect, useState } from 'react';
 import {
-  KeyboardAvoidingView,
   Platform,
   Pressable,
   ScrollView,
@@ -25,6 +24,7 @@ import { GlassSurface } from '@/components/glass-surface';
 import { ThemedText } from '@/components/themed-text';
 import { IssueAttributeEditors } from '@/components/notes/issue-attribute-editors';
 import { hexToRgba, Spacing } from '@/constants/theme';
+import { useKeyboardPadding } from '@/hooks/use-keyboard-inset';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
 import { useTheme } from '@/hooks/use-theme';
 import type { IssueAttrValue } from '@/data/notes';
@@ -76,6 +76,11 @@ export function IssueAttributesSheet({
 }) {
   const theme = useTheme();
   const tabBarInset = useTabBarInset();
+  // Climbs over the keyboard. Everything in `tabBarInset` bar its own breathing
+  // room is there to clear the floating tab bar, which relocates while the
+  // keyboard is up, so that much of the padding is dead space and is spent on
+  // the keyboard instead of stacked on top of it.
+  const keyboardPad = useKeyboardPadding(tabBarInset - Spacing.three);
   const [values, setValues] = useState<Values>(initial);
   const [typeIds, setTypeIds] = useState<string[]>(initialTypeIds ?? []);
   const [title, setTitle] = useState(initialTitle ?? '');
@@ -128,12 +133,11 @@ export function IssueAttributesSheet({
               this the keyboard opens straight over the thing being typed into —
               the title and description are the first fields it covers. Same
               treatment as github-issue-compose, which this sheet otherwise
-              mirrors. Android needs no `behavior`: it resizes the window
-              itself. */}
-            <KeyboardAvoidingView
-              behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-              style={styles.avoider}
-              pointerEvents="box-none">
+              mirrors. This used to be a `KeyboardAvoidingView` on the theory
+              that Android resizes the window itself; it doesn't — the app is
+              edge-to-edge, so the keyboard is drawn over a window that never
+              changes size, and the sheet stayed put underneath it. */}
+            <Animated.View style={[styles.avoider, keyboardPad]} pointerEvents="box-none">
               <Animated.View
                 entering={SlideInDown.duration(260)}
                 exiting={SlideOutDown.duration(220)}
@@ -255,7 +259,7 @@ export function IssueAttributesSheet({
                   </Pressable>
                 </GlassSurface>
               </Animated.View>
-            </KeyboardAvoidingView>
+            </Animated.View>
         </>
       )}
     </View>
@@ -265,15 +269,21 @@ export function IssueAttributesSheet({
 const styles = StyleSheet.create({
   overlay: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, justifyContent: 'flex-end' },
   backdrop: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.35)' },
+  // `flexShrink` down to the scrolling body: with the keyboard up the sheet is
+  // laid out in a shorter box, and it should give the form less room rather than
+  // push its own header off the top of the screen. Inert without that pressure.
   avoider: {
     width: '100%',
+    flexShrink: 1,
   },
   sheetHost: {
     width: '100%',
+    flexShrink: 1,
     paddingHorizontal: Spacing.three,
     ...(Platform.OS === 'web' ? { maxWidth: 460, alignSelf: 'center' as const } : null),
   },
   sheet: {
+    flexShrink: 1,
     overflow: 'hidden',
     borderRadius: Spacing.four,
     padding: Spacing.three,
@@ -286,8 +296,8 @@ const styles = StyleSheet.create({
   },
   headerRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.two },
   title: { flex: 1, fontSize: 17, fontWeight: '700' },
-  scrollWrap: { position: 'relative' },
-  body: { maxHeight: 380 },
+  scrollWrap: { position: 'relative', flexShrink: 1 },
+  body: { maxHeight: 380, flexShrink: 1 },
   cta: {
     backgroundColor: ACCENT,
     borderRadius: Spacing.three,

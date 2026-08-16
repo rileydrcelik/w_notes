@@ -9,6 +9,7 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import Animated from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { IssueAttributeEditors } from '@/components/notes/issue-attribute-editors';
@@ -16,6 +17,8 @@ import { SwipeBackView } from '@/components/swipe-back-view';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { hexToRgba, Spacing } from '@/constants/theme';
+import { useKeyboardSpacer } from '@/hooks/use-keyboard-inset';
+import { useKeyboardReveal } from '@/hooks/use-keyboard-reveal';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
 import { useTheme } from '@/hooks/use-theme';
 import type { IssueAttrValue } from '@/data/notes';
@@ -43,6 +46,13 @@ export default function NewIssueScreen() {
   const tabBarInset = useTabBarInset();
   const { getFolder, getNotesInFolder, updateFolder, createIssueTypeNote, deleteNote } = useNotes();
   const { createIssue, updateIssue } = useIssues();
+
+  // Details sits at the far end of this form, past the types and every custom
+  // attribute, so on Android — where the keyboard covers the window instead of
+  // resizing it — tapping Title used to put the caret under the keys. The spacer
+  // gives the form somewhere to scroll to; `reveal` does the scrolling.
+  const keyboardSpacer = useKeyboardSpacer();
+  const { scrollProps, reveal } = useKeyboardReveal();
 
   const folder = getFolder(id);
   const config = useMemo(() => (folder ? projectConfig(folder) : null), [folder?.kind, folder?.config]);
@@ -194,6 +204,7 @@ export default function NewIssueScreen() {
         <Stack.Screen options={{ headerShown: false }} />
         <ScrollView
           {...noScrollbar}
+          {...scrollProps}
           contentContainerStyle={[styles.content, { paddingTop: headerTop, paddingBottom: tabBarInset }]}
           keyboardShouldPersistTaps="handled">
           <View style={styles.headerTitleRow}>
@@ -266,6 +277,7 @@ export default function NewIssueScreen() {
                   value={newType}
                   onChangeText={setNewType}
                   onSubmitEditing={confirmAddType}
+                  onFocus={reveal}
                   placeholder="New type name"
                   placeholderTextColor={theme.textSecondary}
                   autoFocus
@@ -330,6 +342,7 @@ export default function NewIssueScreen() {
             onChange={change}
             onRemoveAttr={removeAttr}
             onAddOption={addOption}
+            onFieldFocus={reveal}
             repo={config?.repo}
           />
           {newAttrName === null ? (
@@ -348,6 +361,7 @@ export default function NewIssueScreen() {
               <TextInput
                 value={newAttrName}
                 onChangeText={setNewAttrName}
+                onFocus={reveal}
                 placeholder="Attribute name"
                 placeholderTextColor={theme.textSecondary}
                 autoFocus
@@ -356,6 +370,7 @@ export default function NewIssueScreen() {
               <TextInput
                 value={newAttrOptions}
                 onChangeText={setNewAttrOptions}
+                onFocus={reveal}
                 placeholder="Options, comma separated"
                 placeholderTextColor={theme.textSecondary}
                 style={[styles.input, { color: theme.text, borderColor: border }]}
@@ -393,6 +408,7 @@ export default function NewIssueScreen() {
           <TextInput
             value={title}
             onChangeText={setTitle}
+            onFocus={reveal}
             placeholder="Title"
             placeholderTextColor={theme.textSecondary}
             style={[styles.input, { color: theme.text, borderColor: border }]}
@@ -400,6 +416,7 @@ export default function NewIssueScreen() {
           <TextInput
             value={description}
             onChangeText={setDescription}
+            onFocus={reveal}
             placeholder="Description (optional)"
             placeholderTextColor={theme.textSecondary}
             multiline
@@ -415,6 +432,10 @@ export default function NewIssueScreen() {
             style={({ pressed }) => [styles.cta, !canSave && styles.ctaDisabled, pressed && canSave && styles.pressed]}>
             <ThemedText style={styles.ctaText}>Create issue</ThemedText>
           </Pressable>
+
+          {/* Room for the keyboard, so the fields below the fold have somewhere
+              to scroll up to. Collapses to nothing when it's dismissed. */}
+          <Animated.View style={keyboardSpacer} />
         </ScrollView>
       </ThemedView>
     </SwipeBackView>

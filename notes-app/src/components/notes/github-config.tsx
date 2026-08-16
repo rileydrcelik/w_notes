@@ -10,10 +10,13 @@
 import Feather from '@expo/vector-icons/Feather';
 import { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
+import Animated from 'react-native-reanimated';
 
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { hexToRgba, Spacing } from '@/constants/theme';
+import { useKeyboardSpacer } from '@/hooks/use-keyboard-inset';
+import { useKeyboardReveal } from '@/hooks/use-keyboard-reveal';
 import { useTheme } from '@/hooks/use-theme';
 import { apiErrorMessage, apiFetch } from '@/lib/sync/api';
 import type { GithubTarget } from '@/lib/github-note';
@@ -47,6 +50,10 @@ export function GithubConfig({
   onSubmit: (config: GithubTarget) => void;
 }) {
   const theme = useTheme();
+  // Same treatment as the other setup screens: Android draws the keyboard over
+  // the window instead of resizing it, so the field has to be scrolled clear.
+  const keyboardSpacer = useKeyboardSpacer();
+  const { scrollProps, reveal } = useKeyboardReveal();
   const [repos, setRepos] = useState<Repo[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -107,6 +114,7 @@ export function GithubConfig({
   return (
     <ScrollView
       {...noScrollbar}
+      {...scrollProps}
       contentContainerStyle={[styles.content, { paddingTop, paddingBottom }]}
       keyboardShouldPersistTaps="handled">
       <View style={styles.header}>
@@ -131,6 +139,7 @@ export function GithubConfig({
             value={manual}
             onChangeText={setManual}
             onSubmitEditing={submitManual}
+            onFocus={reveal}
             placeholder="owner/name"
             placeholderTextColor={theme.textSecondary}
             autoCapitalize="none"
@@ -223,6 +232,9 @@ export function GithubConfig({
           })}
         </View>
       )}
+
+      {/* Room for the keyboard, so the field has somewhere to scroll up to. */}
+      <Animated.View style={keyboardSpacer} />
     </ScrollView>
   );
 }

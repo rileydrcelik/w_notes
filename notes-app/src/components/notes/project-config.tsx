@@ -9,10 +9,13 @@
 import Feather from '@expo/vector-icons/Feather';
 import { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
+import Animated from 'react-native-reanimated';
 
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { hexToRgba, Italic, Spacing } from '@/constants/theme';
+import { useKeyboardSpacer } from '@/hooks/use-keyboard-inset';
+import { useKeyboardReveal } from '@/hooks/use-keyboard-reveal';
 import { useTheme } from '@/hooks/use-theme';
 import { noScrollbar } from '@/lib/scroll-style';
 import { apiErrorMessage, apiFetch } from '@/lib/sync/api';
@@ -36,6 +39,11 @@ export function ProjectConfig({
   onSubmit: (input: { name: string; repo: string }) => void;
 }) {
   const theme = useTheme();
+  // Repo sits below a screen's worth of GitHub setup notes, so on Android —
+  // where the keyboard covers the window rather than resizing it — tapping it
+  // put the field behind the keys.
+  const keyboardSpacer = useKeyboardSpacer();
+  const { scrollProps, reveal } = useKeyboardReveal();
   const [name, setName] = useState('');
   const [repos, setRepos] = useState<Repo[]>([]);
   const [loading, setLoading] = useState(true);
@@ -77,6 +85,7 @@ export function ProjectConfig({
   return (
     <ScrollView
       {...noScrollbar}
+      {...scrollProps}
       contentContainerStyle={[styles.content, { paddingTop, paddingBottom }]}
       keyboardShouldPersistTaps="handled">
       <View style={styles.header}>
@@ -137,6 +146,7 @@ export function ProjectConfig({
         <TextInput
           value={name}
           onChangeText={setName}
+          onFocus={reveal}
           placeholder="e.g. Mobile app"
           placeholderTextColor={theme.textSecondary}
           style={[styles.input, { color: theme.text, borderColor: hexToRgba(theme.text, 0.12) }]}
@@ -152,6 +162,7 @@ export function ProjectConfig({
             value={manual}
             onChangeText={setManual}
             onSubmitEditing={submitManual}
+            onFocus={reveal}
             placeholder="owner/name"
             placeholderTextColor={theme.textSecondary}
             autoCapitalize="none"
@@ -233,6 +244,10 @@ export function ProjectConfig({
           ))}
         </View>
       )}
+
+      {/* Room for the keyboard, so the fields have somewhere to scroll up to.
+          Collapses to nothing when it's dismissed. */}
+      <Animated.View style={keyboardSpacer} />
     </ScrollView>
   );
 }

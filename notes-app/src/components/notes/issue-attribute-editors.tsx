@@ -85,6 +85,7 @@ export function IssueAttributeEditors({
   onChange,
   onRemoveAttr,
   onAddOption,
+  onFieldFocus,
   repo,
 }: {
   attributes: AttrDef[];
@@ -94,6 +95,14 @@ export function IssueAttributeEditors({
   onRemoveAttr?: (attrId: string) => void;
   /** When set, each `select` attribute shows a (+) to add another option. */
   onAddOption?: (attrId: string, option: string) => void;
+  /**
+   * Told when a field here takes focus, so a screen that scrolls (rather than a
+   * sheet that lifts whole) can bring it out from under the keyboard. The "add
+   * option" field opens with `autoFocus`, which raises no `keyboardDidShow` when
+   * the keyboard is already up for another field — so without this it is the one
+   * input on the creation screen you can still type into blind.
+   */
+  onFieldFocus?: () => void;
   repo?: string;
 }) {
   const theme = useTheme();
@@ -197,6 +206,7 @@ export function IssueAttributeEditors({
                       onChangeText={setOptionDraft}
                       onSubmitEditing={() => submitOption(attr.id)}
                       onBlur={() => submitOption(attr.id)}
+                      onFocus={onFieldFocus}
                       placeholder="New option"
                       placeholderTextColor={theme.textSecondary}
                       autoFocus
