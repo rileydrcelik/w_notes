@@ -27,6 +27,7 @@ the UI needs rather than passing Sentry's raw payloads straight through.
 from __future__ import annotations
 
 import re
+from typing import NamedTuple
 
 import httpx
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
@@ -510,6 +511,12 @@ _AUTOFIX_MODELS = frozenset(
 # without sticking wants a person, not another run.
 _MAX_AUTOFIX_ATTEMPTS = 10
 
+# The workflow file the dispatch triggers, used to look its runs back up. A
+# `repository_dispatch` run exposes its `client_payload` nowhere in the REST API,
+# so the run is correlated to an attempt through its *name* — which is why
+# `sentry-autofix.yml` sets `run-name` to include the attempt branch.
+_AUTOFIX_WORKFLOW = "sentry-autofix.yml"
+
 
 # A GitHub "owner/name" slug. The repo an autofix targets is interpolated into
 # API paths and (downstream) the workflow, so an override is only honored when it
@@ -535,16 +542,29 @@ class AutofixResponse(BaseModel):
     issue_id: str
     short_id: str | None = None
     branch: str
+    # Why nothing was dispatched, in words the app can show. Without it a refusal
+    # is indistinguishable from a fresh run to the client, which then polls and
+    # reports whatever the *previous* attempt did as the outcome of this press.
+    reason: str | None = None
 
 
 class AutofixStatus(BaseModel):
-    # none => nothing yet (queued / run not started); branch_created => the agent
-    # pushed a branch but no PR yet; pr_* => a PR exists in that state.
+    # none        => nothing yet (queued / run not started)
+    # branch_created => the agent pushed a branch but no PR yet
+    # pr_*        => a PR exists in that state
+    # no_fix      => the run finished without pushing anything. Either the agent
+    #                judged that no code change was warranted, or the run itself
+    #                failed; `run_conclusion` says which. Terminal — the app must
+    #                stop polling, because nothing more is coming.
     state: str
     branch: str
     pr_number: int | None = None
     pr_url: str | None = None
     title: str | None = None
+    # The workflow run behind this attempt, when there's no PR to link instead.
+    # For a `no_fix` it is the only place the agent's reasoning can be read.
+    run_url: str | None = None
+    run_conclusion: str | None = None
 
 
 def _require_github_token() -> str:
@@ -687,6 +707,13 @@ def _autofix_payload(
         # `model` (optional) lives here too so it doesn't add an 11th top-level key;
         # the workflow reads it as client_payload.details.model.
         "details": {
+            # Which Sentry project this came from. The workflow needs it to know
+            # whether a merge to `main` would actually ship the fix for this
+            # surface: one repo serves several projects (see `autofix_projects`),
+            # and only the backend deploys on merge. Without it, a mobile issue
+            # gets its staleness measured against a *backend* deploy it has
+            # nothing to do with, and gets closed while still live on devices.
+            "project": (issue.get("project") or {}).get("slug"),
             "frames": frames,
             "request": {"url": request.url, "method": request.method} if request else None,
             "breadcrumbs": [
@@ -739,29 +766,99 @@ async def _family_branches(gh: httpx.AsyncClient, repo: str, base: str) -> set[s
     return refs
 
 
+async def _family_runs(
+    gh: httpx.AsyncClient, repo: str, base: str
+) -> dict[str, dict]:
+    """Newest workflow run per attempt branch, keyed by branch.
+
+    The correlation is the run's display title: a ``repository_dispatch`` run
+    carries its ``client_payload`` nowhere the REST API will show it, so
+    ``sentry-autofix.yml`` puts the attempt branch in ``run-name``. Any token of
+    the title that parses as a member of this issue's family identifies the run,
+    which keeps the match working if the surrounding wording ever changes.
+
+    Runs are best-effort context, never a hard dependency: a repo without the
+    workflow (autofix can target another codebase) or a token without
+    ``actions:read`` yields an empty map, and every caller then behaves exactly as
+    it did before runs were consulted at all.
+
+    One page, workflow-wide, like ``_family_prs``. Past ~100 dispatches across all
+    issues, this issue's own run can fall off the end and read as "never ran" —
+    which costs a duplicate dispatch, not a wrong answer: the workflow's
+    concurrency group cancels the older run rather than letting the two race.
+    Worth paginating if the pipeline ever gets that busy.
+    """
+    resp = await _guarded(
+        gh.get(
+            f"/repos/{repo}/actions/workflows/{_AUTOFIX_WORKFLOW}/runs",
+            params={"event": "repository_dispatch", "per_page": 100},
+        ),
+        "GitHub",
+    )
+    if resp.status_code in (403, 404):
+        return {}
+    _raise_for_github(resp)
+    found: dict[str, dict] = {}
+    for run in resp.json().get("workflow_runs", []):  # newest first
+        for token in (run.get("display_title") or "").split():
+            if _attempt_of(base, token) is not None:
+                found.setdefault(token, run)
+                break
+    return found
+
+
+def _run_is_live(run: dict) -> bool:
+    """Whether a run may still push a branch. Anything but ``completed`` counts,
+    so a status GitHub adds later reads as live rather than as a finished run
+    that produced nothing."""
+    return run.get("status") != "completed"
+
+
+class AutofixPlan(NamedTuple):
+    """What a Fix press should do: dispatch on ``branch``, or nothing, in which
+    case ``reason`` says why in words the app can put on the card."""
+
+    branch: str | None
+    # Short enough to sit in the card's chip next to "PR #12 open" — this is a
+    # label, not an explanation.
+    reason: str | None = None
+
+
 async def _autofix_target_branch(
     gh: httpx.AsyncClient, repo: str, base: str
-) -> str | None:
-    """The branch a new autofix run should use, or None when one is already in
-    flight and a second billed run would only duplicate it.
+) -> AutofixPlan:
+    """The branch a new autofix run should use, or no branch when one is already
+    in flight and a second billed run would only duplicate it.
 
     An attempt is *spent* once its PR is closed or merged. Closed means the
     proposal was rejected; merged means a fix landed — and if Sentry is reporting
     the issue again, neither is a reason to refuse to try again. Only an open PR
-    (still under review) or a pushed branch with no PR yet (agent still running)
-    is genuinely in flight.
+    (still under review), a pushed branch with no PR yet, or a run that hasn't
+    finished is genuinely in flight.
 
     Treating a spent attempt as in-flight is what made W-NOTES-RN-C permanently
     unfixable: PR #4 on ``autofixes/issue-w-notes-rn-c`` was closed, so every
     later dispatch short-circuited to ``dispatched: false`` and the status poll
     reported that same closed PR back to the app for ever. Nothing retried,
     because from the outside it looked like the work had already been done.
+
+    The mirror image of that bug is why runs are consulted here. An attempt whose
+    agent decided no code change was warranted pushes *no branch and opens no PR*,
+    so on branches-and-PRs alone it is indistinguishable from an attempt that
+    never happened: every later press re-dispatched the same attempt number, the
+    agent reached the same conclusion in ~40s, and the whole loop was invisible —
+    a green run, no artifact, and a chip that spun for two minutes. A finished run
+    with nothing to show for it is a spent attempt, and the next press moves on to
+    a fresh one (main may genuinely have changed since).
     """
     prs = await _family_prs(gh, repo, base)
     if any(pr.get("state") == "open" for pr in prs.values()):
-        return None
+        return AutofixPlan(None, "Already up for review")
 
     branches = await _family_branches(gh, repo, base)
+    # Fetched lazily: only an attempt with neither a PR nor a branch needs runs to
+    # tell "never started" from "finished empty-handed".
+    runs: dict[str, dict] | None = None
     for n in range(1, _MAX_AUTOFIX_ATTEMPTS + 1):
         branch = _attempt_branch(base, n)
         if branch in prs:
@@ -769,9 +866,20 @@ async def _autofix_target_branch(
         if branch in branches:
             # Pushed but no PR yet: a run is live (or the workflow is about to
             # open one). Don't race it with a second run on the same branch.
-            return None
-        return branch
-    return None
+            return AutofixPlan(None, "Already being written")
+        if runs is None:
+            runs = await _family_runs(gh, repo, base)
+        run = runs.get(branch)
+        if run is None:
+            return AutofixPlan(branch)  # nothing has ever run here
+        if _run_is_live(run):
+            # Dispatched, but too early to have pushed. A second dispatch would
+            # land in the same concurrency group and cancel this one mid-fix.
+            return AutofixPlan(None, "Already running")
+        continue  # spent — the run finished without proposing anything
+    return AutofixPlan(
+        None, f"Tried {_MAX_AUTOFIX_ATTEMPTS} times — needs a person"
+    )
 
 
 @router.post("/autofix", response_model=AutofixResponse, status_code=status.HTTP_202_ACCEPTED)
@@ -827,10 +935,14 @@ async def autofix(
     # Dedup: if a run is genuinely in flight, don't burn another agent run. A
     # recurrence after a closed or merged attempt gets a fresh branch instead.
     async with _github_client() as gh:
-        branch = await _autofix_target_branch(gh, repo, base)
+        branch, reason = await _autofix_target_branch(gh, repo, base)
         if branch is None:
             return AutofixResponse(
-                dispatched=False, issue_id=req.issue_id, short_id=short_id, branch=base
+                dispatched=False,
+                issue_id=req.issue_id,
+                short_id=short_id,
+                branch=base,
+                reason=reason,
             )
 
         payload = _autofix_payload(issue, event, branch, model)
@@ -859,7 +971,13 @@ async def autofix_status(
         description="The attempt branch this poll is about, as returned by /autofix. "
         "Omit to report the newest attempt.",
     ),
+    issue_id: str | None = Query(
+        None,
+        description="The Sentry issue this poll is about. Only used to tell a run "
+        "that proposed nothing from one whose verdict closed the issue.",
+    ),
     user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
 ) -> AutofixStatus:
     # Same gate as the dispatch. Nobody but an owner can have started a run,
     # so for anyone else this only reports on the operator's open pull
@@ -900,10 +1018,59 @@ async def autofix_status(
 
         # No PR yet — has the agent at least pushed a branch?
         branches = await _family_branches(gh, repo, base)
+        if want is not None:
+            branches = {ref for ref in branches if ref == want}
+        if branches:
+            newest = max(branches, key=lambda ref: _attempt_of(base, ref) or 0)
+            return AutofixStatus(state="branch_created", branch=newest)
+
+        # Nothing pushed. That is not automatically "still starting up": a run
+        # that has *finished* with no branch and no PR is a real outcome — the
+        # agent judged no code change was warranted, or the run broke — and
+        # without asking the run, the app can only keep saying "Queued…" until it
+        # times out and claims the pipeline is "still working" on something that
+        # ended in seconds.
+        runs = await _family_runs(gh, repo, base)
 
     if want is not None:
-        branches = {ref for ref in branches if ref == want}
-    if not branches:
+        runs = {ref: run for ref, run in runs.items() if ref == want}
+    if not runs:
         return AutofixStatus(state="none", branch=want or base)
-    newest = max(branches, key=lambda ref: _attempt_of(base, ref) or 0)
-    return AutofixStatus(state="branch_created", branch=newest)
+    newest = max(runs, key=lambda ref: _attempt_of(base, ref) or 0)
+    run = runs[newest]
+    if _run_is_live(run):
+        return AutofixStatus(
+            state="none", branch=newest, run_url=run.get("html_url")
+        )
+    # The run is over and proposed nothing. It may also have *closed* the issue —
+    # the workflow dismisses one whose fix is already on main and which hasn't
+    # fired since that code deployed. Sentry is the authority on whether that
+    # happened, so ask it rather than trying to read the verdict back out of a
+    # workflow run. Without an answer the honest report is the plain no-fix, which
+    # is what the app shows if this lookup is unavailable.
+    state = "no_fix"
+    if issue_id and await _issue_is_resolved(session, user, issue_id):
+        state = "dismissed"
+    return AutofixStatus(
+        state=state,
+        branch=newest,
+        run_url=run.get("html_url"),
+        run_conclusion=run.get("conclusion"),
+    )
+
+
+async def _issue_is_resolved(
+    session: AsyncSession, user: User, issue_id: str
+) -> bool:
+    """Whether Sentry now considers this issue resolved. Best-effort by design:
+    an owner without a Sentry credential, or an upstream that refuses, must not
+    turn a status poll into an error — it only costs the chip its wording."""
+    try:
+        token = await require_user_token(session, user.id, "sentry")
+        async with _client(token) as client:
+            resp = await _guarded(client.get(f"/issues/{issue_id}/"))
+        if not resp.is_success:
+            return False
+        return (resp.json().get("status") or "") == "resolved"
+    except HTTPException:
+        return False
