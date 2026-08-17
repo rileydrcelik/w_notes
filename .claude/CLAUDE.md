@@ -23,14 +23,19 @@
   `hooks/use-edit-action.ts`; the pencil becomes the done check once the editor
   takes focus, so the whole gesture reads pencil → check. Long-press still opens
   the create menu.
-- the pencil assumes there's a read view to start editing *from*. Where a screen
-  is already in edit mode by default, there's nothing for it to offer, and the
-  slot goes to whatever that screen can't otherwise show you. The **resume** is
-  the one such screen today: it opens straight into its source, and side by side
-  the source never leaves the screen, so it offers its **version history**
+- the pencil offers to *start* editing, so it needs both a read view to start
+  from and an editor to arrive at. Where either is missing there's nothing for it
+  to offer, and the slot goes to whatever that screen can't otherwise show you.
+  The **resume** is the one such screen today, and it misses a different half on
+  each platform: on web it opens straight into its source — and side by side the
+  source never leaves the screen — so there's no read view to start *from*; on a
+  phone it is read-only (`lib/resume-mode.ts`), so there's no editor to arrive
+  *at*. Either way it offers its **version history**
   (`hooks/use-version-action.ts`) instead of a pencil. This is a real exception,
-  not an oversight — don't "restore" the pencil there. It is also the whole test:
-  a screen that opens in a read view keeps the pencil, no matter how leaf-like.
+  not an oversight — don't "restore" the pencil there. The test is both halves: a
+  screen that opens in a read view *and can edit* keeps the pencil, no matter how
+  leaf-like. A read-only screen isn't leaf-like, it's inert, and a pencil that
+  opens nothing is worse than no pencil.
 - exporting is a navbar action too, never a button on the screen. While you're
   *reading* a document — a note, a compiled resume — a download icon appears
   inside the navbar's pill, growing it; it's absent while an editor is focused,

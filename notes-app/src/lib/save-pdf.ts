@@ -4,9 +4,11 @@
  * picker on Android (whose share sheet cannot save a file), the share sheet on
  * iOS, which offers "Save to Files".
  *
- * Nothing on native produces a PDF yet — no LaTeX engine (see `latex/engine.ts`)
- * — but the saver is platform-complete, so wiring the engine up later needs no
- * changes here.
+ * This is now live: the resume screen compiles on native too (the compile is a
+ * server call, so it works wherever the API does), and the navbar's download
+ * icon lands here. Drawing the pages on screen is the part still missing — see
+ * `latex/pdf-render.ts` — so on a phone this is currently how you read a resume,
+ * not merely how you keep a copy of one.
  */
 import { Alert } from 'react-native';
 import * as Sharing from 'expo-sharing';
