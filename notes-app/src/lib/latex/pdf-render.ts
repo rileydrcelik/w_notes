@@ -1,7 +1,14 @@
 /**
- * Native PDF rendering — not built yet, for the same reason as `engine.ts`:
- * nothing on this platform compiles the resume in the first place. Exports must
- * mirror `pdf-render.web.ts` exactly (see `platform-parity.test.ts`).
+ * Native PDF rendering — not built yet. This is now the *only* missing half:
+ * native does compile a resume (the compile is a server call — see `engine.ts`),
+ * so the bytes exist and the navbar will happily save them. Nothing here can
+ * draw them, which is why the resume screen offers a phone the download and not
+ * the page (`lib/resume-mode.ts`).
+ *
+ * Filling this in means a real native PDF viewer, which is a native module and
+ * therefore a new build rather than an OTA update.
+ *
+ * Exports must mirror `pdf-render.web.ts` exactly (see `platform-parity.test.ts`).
  */
 import type { PdfDocument } from '@/lib/latex/types';
 
