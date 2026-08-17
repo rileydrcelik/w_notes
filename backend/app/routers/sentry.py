@@ -707,6 +707,13 @@ def _autofix_payload(
         # `model` (optional) lives here too so it doesn't add an 11th top-level key;
         # the workflow reads it as client_payload.details.model.
         "details": {
+            # Which Sentry project this came from. The workflow needs it to know
+            # whether a merge to `main` would actually ship the fix for this
+            # surface: one repo serves several projects (see `autofix_projects`),
+            # and only the backend deploys on merge. Without it, a mobile issue
+            # gets its staleness measured against a *backend* deploy it has
+            # nothing to do with, and gets closed while still live on devices.
+            "project": (issue.get("project") or {}).get("slug"),
             "frames": frames,
             "request": {"url": request.url, "method": request.method} if request else None,
             "breadcrumbs": [
@@ -774,6 +781,12 @@ async def _family_runs(
     workflow (autofix can target another codebase) or a token without
     ``actions:read`` yields an empty map, and every caller then behaves exactly as
     it did before runs were consulted at all.
+
+    One page, workflow-wide, like ``_family_prs``. Past ~100 dispatches across all
+    issues, this issue's own run can fall off the end and read as "never ran" —
+    which costs a duplicate dispatch, not a wrong answer: the workflow's
+    concurrency group cancels the older run rather than letting the two race.
+    Worth paginating if the pipeline ever gets that busy.
     """
     resp = await _guarded(
         gh.get(

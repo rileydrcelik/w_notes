@@ -22,9 +22,15 @@ on:
     types: [sentry-autofix]
 
 # Least privilege: write code (branch/commit) and open PRs. No merge permission.
+# Least privilege: write code (branch/commit) and open PRs. No merge permission.
+# Naming any permission sets every unnamed one to `none`, so `actions: read` has
+# to be explicit — the dismissal step reads this repo's deploy history to date
+# the running code. Without it that read 403s, `deployed` comes back empty, and
+# the step quietly stops ever dismissing anything: safe, but silently inert.
 permissions:
   contents: write
   pull-requests: write
+  actions: read
 
 # One run per issue branch; a repeat dispatch cancels the stale run rather than
 # racing it. Also caps token spend from accidental double-taps.
@@ -234,8 +240,15 @@ jobs:
           SENTRY_API_TOKEN: ${{ secrets.SENTRY_API_TOKEN }}
           ISSUE_ID: ${{ github.event.client_payload.issue_id }}
           SHORT_ID: ${{ github.event.client_payload.short_id }}
+          BRANCH: ${{ github.event.client_payload.branch }}
           VERDICT_FILE: ${{ runner.temp }}/autofix-verdict.json
           REPO: ${{ github.repository }}
+          PROJECT: ${{ github.event.client_payload.details.project }}
+          # The one Sentry project whose fixes reach production by merging here.
+          # This repo also serves `w-notes-rn`, which ships by EAS build and so
+          # has no merge-time deploy to date an error against. Override per repo
+          # with an AUTOFIX_DEPLOYED_PROJECT variable.
+          DEPLOYED_PROJECT: ${{ vars.AUTOFIX_DEPLOYED_PROJECT || 'w-notes-fastapi' }}
         run: |
           set -uo pipefail
           keep() {
@@ -246,10 +259,29 @@ jobs:
           [ -n "${SENTRY_API_TOKEN:-}" ] || keep "no SENTRY_API_TOKEN secret."
           [ -f "$VERDICT_FILE" ] || keep "the run recorded no verdict."
 
+          # `opened` is the step-output half of "no fix was proposed"; this is the
+          # half that doesn't depend on the previous step having got far enough to
+          # write it. If `gh pr create` succeeds server-side but the client call
+          # then fails, that step aborts before setting the output and this one
+          # runs with a real PR sitting open. Ask GitHub instead of inferring.
+          if [ -n "$(gh pr list --repo "$REPO" --head "$BRANCH" --state open --json number --jq '.[].number')" ]; then
+            keep "a pull request for $BRANCH is open after all."
+          fi
+
           verdict=$(jq -r '.verdict // empty' "$VERDICT_FILE" 2>/dev/null || true)
           summary=$(jq -r '.summary // empty' "$VERDICT_FILE" 2>/dev/null || true)
           echo "Verdict: ${verdict:-none} — ${summary:-no summary}"
           [ "$verdict" = "already-fixed" ] || keep "verdict is '${verdict:-unreadable}', not 'already-fixed'."
+
+          # The deploy timestamp below only dates *this* repo's backend. Measuring
+          # any other surface against it compares an error to a deploy that could
+          # not have carried its fix — and because the backend deploys often, that
+          # comparison usually reads "stale" by coincidence and closes a mobile
+          # issue that is still live on every device running the old build. The
+          # projects are not interchangeable, so anything else keeps.
+          [ -n "$PROJECT" ] || keep "the dispatch didn't say which Sentry project this is."
+          [ "$PROJECT" = "$DEPLOYED_PROJECT" ] \
+            || keep "$PROJECT doesn't ship by merging here, so there is no deploy to date it against."
 
           # When production last changed. `updated_at` is the run's finish time,
           # so this is "the moment the code now live went live".
@@ -264,7 +296,17 @@ jobs:
             -H "Authorization: Bearer $SENTRY_API_TOKEN" | jq -r '.lastSeen // empty' || true)
           [ -n "$last_seen" ] || keep "Sentry did not report when it was last seen."
 
-          if [ "$(date -d "$last_seen" +%s)" -ge "$(date -d "$deployed" +%s)" ]; then
+          # Parse before comparing. `[ "" -ge 123 ]` is a *usage* error, not a
+          # false comparison: it exits 2, and with no `set -e` that reads as "the
+          # condition was false" and drops through to the resolve below. An
+          # unparseable timestamp would then close the issue having skipped the
+          # only check standing between a live alarm and silence — so each date
+          # gets its own explicit failure exit.
+          last_epoch=$(date -d "$last_seen" +%s 2>/dev/null) \
+            || keep "Sentry's last-seen time '$last_seen' could not be read."
+          deploy_epoch=$(date -d "$deployed" +%s 2>/dev/null) \
+            || keep "the deploy time '$deployed' could not be read."
+          if [ "$last_epoch" -ge "$deploy_epoch" ]; then
             keep "it fired at $last_seen, after the running code deployed at $deployed — it is not fixed."
           fi
 

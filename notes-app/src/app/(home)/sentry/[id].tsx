@@ -328,12 +328,16 @@ function FixChip({ fix }: { fix: FixState }) {
         label = 'Already fixed — dismissed';
         break;
       case 'no_fix':
-        // A run that ends without a branch is either "nothing to change here" or
-        // a broken run — worth telling apart, since only the second is a fault.
+        // A run that ends without a branch has three quite different meanings,
+        // and only one of them is a fault. A cancelled run is usually this same
+        // issue being dispatched again — reading that as "failed" would send
+        // someone looking for a break that isn't there.
         label =
           fix.status.run_conclusion === 'success'
             ? 'No change proposed — see run'
-            : 'Autofix run failed — see run';
+            : fix.status.run_conclusion === 'cancelled'
+              ? 'Superseded by a newer run'
+              : 'Autofix run failed — see run';
         break;
       case 'branch_created':
         label = fix.stopped ? 'Still working — check GitHub' : 'Fixing…';

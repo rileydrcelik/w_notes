@@ -105,3 +105,31 @@ def _user():
         id = "user-1"
 
     return _U()
+
+
+# ---- what the workflow needs in order to judge staleness ---------------------
+
+
+def test_the_payload_names_the_sentry_project():
+    """The dismissal step measures an issue's age against this repo's *backend*
+    deploy. One repo serves several Sentry projects, so without the project name
+    a mobile issue is dated against a deploy that could not have carried its fix
+    — and since the backend deploys often, that reads "stale" by coincidence and
+    closes an issue still live on every device running the old build. The
+    workflow refuses to dismiss when this is absent, so it has to be present."""
+    payload = sentry_router._autofix_payload(
+        {"id": "1", "shortId": "W-NOTES-RN-C", "project": {"slug": "w-notes-rn"}},
+        {"entries": []},
+        "autofixes/issue-w-notes-rn-c",
+    )
+    assert payload["details"]["project"] == "w-notes-rn"
+
+
+def test_the_payload_survives_an_issue_with_no_project():
+    """Sentry has always returned one, but a missing project must read as "don't
+    know" — which the workflow treats as "don't dismiss" — not as a crash that
+    loses the whole dispatch."""
+    payload = sentry_router._autofix_payload(
+        {"id": "1", "shortId": "W-NOTES-RN-C"}, {"entries": []}, "b"
+    )
+    assert payload["details"]["project"] is None
