@@ -38,4 +38,24 @@ run -pdfxe smoke
 # System fonts via fontspec — XeLaTeX only, since pdfTeX cannot run fontspec.
 run -pdfxe smoke-fontspec
 
+# Rasterising, on the PDF the last run just produced. Here for the same reason
+# the compiles are: `-scale-to-x`/`-scale-to-y` are the flags the server passes,
+# and whether this poppler build accepts them is a property of the base image,
+# not of any document. Finding that out from a user whose preview came back
+# empty would cost far more than one build step.
+printf '\n--- rasterise with pdftoppm ---\n'
+if ! pdftoppm -png -scale-to-x 800 -scale-to-y -1 \
+    "$OUT/smoke-fontspec.pdf" "$OUT/page" >"$OUT/raster" 2>&1; then
+    echo "RASTERISE FAILED:"
+    cat "$OUT/raster"
+    exit 1
+fi
+if [ ! -s "$OUT/page-1.png" ]; then
+    echo "pdftoppm reported success but produced no PNG. Output was:"
+    cat "$OUT/raster"
+    ls -la "$OUT"
+    exit 1
+fi
+echo "ok"
+
 rm -rf "$OUT"

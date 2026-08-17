@@ -50,6 +50,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import logging
 import os
 import re
 import shutil
@@ -70,6 +71,8 @@ except ImportError:  # pragma: no cover - exercised only off-Linux
 from app.config import get_settings
 from app.deps import get_current_user
 from app.models import User
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/latex", tags=["latex"])
 
@@ -107,6 +110,22 @@ _MAX_LOG_CHARS = 20_000
 _MAX_CONCURRENT_COMPILES = 2
 _compile_slots = asyncio.Semaphore(_MAX_CONCURRENT_COMPILES)
 
+# Rasterising is a fraction of the work TeX just did, so it gets a much shorter
+# leash: past this something is wrong with the PDF or with poppler, and the
+# compile itself already succeeded and is worth returning on its own.
+_RASTER_TIMEOUT_SECONDS = 20.0
+
+# Most pages we'll rasterise for one request. A resume is one or two; this is the
+# runaway guard, not a judgement about length. Exceeding it costs the pages, not
+# the PDF.
+_MAX_RASTER_PAGES = 10
+
+# Bounds on the pixel width a client may ask each page to be rendered at. The
+# floor keeps a "preview" legible; the ceiling is what stops a request asking for
+# a 50,000px-wide page and spending the task's memory before anything is drawn.
+_MIN_PAGE_WIDTH = 200
+_MAX_PAGE_WIDTH = 2000
+
 
 class CompileRequest(BaseModel):
     source: str = Field(description="The LaTeX document to compile.")
@@ -116,14 +135,52 @@ class CompileRequest(BaseModel):
         default="pdflatex",
         description="Which TeX engine to run. Overleaf's default is pdflatex.",
     )
+    # Opt-in, and default off, so the web client — which draws the PDF itself
+    # with pdf.js — never pays for pixels it won't look at.
+    include_pages: bool = Field(
+        default=False,
+        description=(
+            "Also return each page as a PNG, for clients that cannot draw a PDF."
+        ),
+    )
+    page_width: int = Field(
+        default=1000,
+        ge=_MIN_PAGE_WIDTH,
+        le=_MAX_PAGE_WIDTH,
+        description=(
+            "Pixel width to render each page at. The caller picks it because only "
+            "the caller knows its screen width and pixel density."
+        ),
+    )
+
+
+class RenderedPage(BaseModel):
+    """One rasterised page. The dimensions travel with the bytes so a client can
+    reserve the right space before the image decodes, instead of laying the page
+    out twice and jumping."""
+
+    width: int
+    height: int
+    png_base64: str
 
 
 class CompileResponse(BaseModel):
+    # "The document compiled." Deliberately *not* widened to mean "and we could
+    # draw it": rasterising is a bonus on top of a successful compile, and a
+    # client that can't preview can still download the PDF. Failing the whole
+    # response because poppler had a bad day would take away the thing that
+    # already worked.
     ok: bool
     # Base64 PDF rather than a raw body: the log travels with it either way, and
     # the client needs both in one round trip to show a failure without a retry.
     pdf_base64: str | None = None
     log: str = ""
+    # Present only when the caller asked for pages and we produced them.
+    pages: list[RenderedPage] | None = None
+    # Set when the compile succeeded but the pages didn't, so a client can say
+    # which of the two happened rather than showing an empty page and calling it
+    # success. `ok` stays true in this case.
+    pages_error: str | None = None
 
 
 @asynccontextmanager
@@ -163,6 +220,136 @@ def _compile_user() -> tuple[int, int] | None:
     return entry.pw_uid, entry.pw_gid
 
 
+def _privilege_drop(directory: Path) -> list[str]:
+    """The argv prefix that runs a command as the unprivileged compile user, and
+    the chown that lets it write to the scratch directory. Empty off-image, where
+    there is no privilege to drop.
+
+    Shared by TeX and by the rasteriser. The second one matters as much as the
+    first for a reason worth stating: poppler is not executing the document the
+    way TeX is — there is no `\\write18` equivalent — but it *is* parsing a file
+    built out of untrusted input, and a renderer's parser is a memory-safety
+    surface. The sandbox is already built per request; running the second
+    subprocess outside it would be a choice, not a saving.
+
+    Dropping privileges goes through `setpriv`, not a `user=` argument: asyncio's
+    subprocess API accepts a narrower set of keywords than `subprocess.Popen` and
+    rejects `user`/`group` outright ("unexpected kwargs"), which fails every
+    compile with a 500. Wrapping the command keeps the drop visible in argv,
+    where a test can assert it.
+
+    Safe to call more than once per request: `chown` to the ids it already has is
+    a no-op, so callers don't have to thread a prefix through each other.
+    """
+    settings = get_settings()
+    credentials = _compile_user()
+    if credentials is None:
+        return []
+    uid, gid = credentials
+    # The scratch directory is created 0700 by root; hand it to the user that
+    # will actually be writing there.
+    os.chown(directory, uid, gid)
+    return [
+        settings.setpriv_path,
+        f"--reuid={uid}",
+        f"--regid={gid}",
+        "--clear-groups",
+        "--",
+    ]
+
+
+def _png_size(data: bytes) -> tuple[int, int]:
+    """A PNG's pixel dimensions, read straight out of its IHDR chunk.
+
+    Eight bytes of signature, then the chunk's 4-byte length and 4-byte type,
+    then width and height as big-endian uint32s. Parsed by hand rather than by
+    adding an imaging library for two integers we already have the bytes for.
+    """
+    if len(data) < 24:
+        return 0, 0
+    return (
+        int.from_bytes(data[16:20], "big"),
+        int.from_bytes(data[20:24], "big"),
+    )
+
+
+async def _rasterise(directory: Path, page_width: int) -> tuple[list[RenderedPage], str | None]:
+    """Render ``main.pdf`` to one PNG per page. Returns (pages, error).
+
+    Called only after a compile has succeeded, inside the same scratch directory
+    and the same compile slot, so the PDF is the one that was just built and no
+    second TeX run happens. Every failure path returns an error string rather
+    than raising: the caller has a valid PDF in hand and must be able to answer
+    with it.
+
+    `-scale-to-x` with `-scale-to-y -1` scales to a pixel width and lets the
+    height follow the page's own aspect. That avoids computing a DPI, which would
+    mean knowing whether the document came out letter, A4, or something a
+    `\\geometry` line invented — a question the server has no reason to answer.
+    """
+    settings = get_settings()
+    if not shutil.which(settings.pdftoppm_path):
+        # A deploy that hasn't picked up the image layer yet. The compile is
+        # still good, so this is a missing bonus rather than a broken server.
+        return [], "This server can't render page previews yet."
+
+    process = await asyncio.create_subprocess_exec(
+        *_privilege_drop(directory),
+        settings.pdftoppm_path,
+        "-png",
+        "-scale-to-x",
+        str(page_width),
+        "-scale-to-y",
+        "-1",
+        "main.pdf",
+        # Output prefix; poppler appends `-1`, `-2`, … and the extension.
+        "page",
+        cwd=str(directory),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+        # Same reasoning as the TeX run: hand the renderer nothing of ours.
+        env={"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": str(directory)},
+    )
+
+    try:
+        stdout, _ = await asyncio.wait_for(
+            process.communicate(), timeout=_RASTER_TIMEOUT_SECONDS
+        )
+    except asyncio.TimeoutError:
+        process.kill()
+        await process.wait()
+        return [], "Rendering the page previews took too long."
+
+    if process.returncode != 0:
+        detail = stdout.decode("utf-8", errors="replace").strip()
+        logger.warning("pdftoppm failed (%s): %s", process.returncode, detail[-500:])
+        return [], "The page previews couldn't be rendered."
+
+    # Sorted by the number poppler put in the name, not lexically — otherwise
+    # page 10 files between 1 and 2, and a long document comes back shuffled.
+    files = sorted(
+        directory.glob("page-*.png"),
+        key=lambda p: int(re.sub(r"\D", "", p.stem) or 0),
+    )
+    if not files:
+        return [], "The page previews couldn't be rendered."
+    if len(files) > _MAX_RASTER_PAGES:
+        return [], f"This document is longer than {_MAX_RASTER_PAGES} pages, so it can only be downloaded."
+
+    pages: list[RenderedPage] = []
+    for path in files:
+        data = path.read_bytes()
+        width, height = _png_size(data)
+        pages.append(
+            RenderedPage(
+                width=width,
+                height=height,
+                png_base64=base64.b64encode(data).decode("ascii"),
+            )
+        )
+    return pages, None
+
+
 async def _run_latexmk(directory: Path, engine: Engine) -> tuple[bool, str]:
     """Compile ``main.tex`` in ``directory``. Returns (succeeded, log)."""
     settings = get_settings()
@@ -176,20 +363,7 @@ async def _run_latexmk(directory: Path, engine: Engine) -> tuple[bool, str]:
     # `subprocess.Popen` and rejects `user`/`group` outright ("unexpected
     # kwargs"), which fails every compile with a 500. Wrapping the command keeps
     # the drop visible in argv, where a test can assert it.
-    credentials = _compile_user()
-    privilege_drop: list[str] = []
-    if credentials is not None:
-        uid, gid = credentials
-        # The scratch directory is created 0700 by root; hand it to the user
-        # that will actually be writing there.
-        os.chown(directory, uid, gid)
-        privilege_drop = [
-            settings.setpriv_path,
-            f"--reuid={uid}",
-            f"--regid={gid}",
-            "--clear-groups",
-            "--",
-        ]
+    privilege_drop = _privilege_drop(directory)
 
     process = await asyncio.create_subprocess_exec(
         *privilege_drop,
@@ -374,8 +548,29 @@ async def compile_latex(
         if not succeeded or not pdf_path.exists():
             # A failed compile is a normal outcome for a half-written document,
             # not a server error: 200 with ok=false, and the log to explain it.
+            # Nothing is rasterised on this path: there is no PDF to rasterise,
+            # and a client reporting "couldn't render the preview" for a document
+            # that never compiled would be answering the wrong question.
             return CompileResponse(ok=False, log=log)
 
         pdf = pdf_path.read_bytes()
 
-    return CompileResponse(ok=True, pdf_base64=base64.b64encode(pdf).decode("ascii"), log=log)
+        # Inside the same scratch directory and the same compile slot, off the
+        # PDF that was just built. This is the whole reason pages live on this
+        # endpoint rather than one of their own: a separate call would have to
+        # either compile the document again or keep the first result somewhere,
+        # and compiling one resume more than once per view is a bill this repo
+        # has already paid once — see `3cd7907`.
+        pages: list[RenderedPage] | None = None
+        pages_error: str | None = None
+        if payload.include_pages:
+            rendered, pages_error = await _rasterise(directory, payload.page_width)
+            pages = rendered or None
+
+    return CompileResponse(
+        ok=True,
+        pdf_base64=base64.b64encode(pdf).decode("ascii"),
+        log=log,
+        pages=pages,
+        pages_error=pages_error,
+    )

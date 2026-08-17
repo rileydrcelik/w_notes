@@ -167,6 +167,13 @@ class Settings(BaseSettings):
     # `group=` (unlike subprocess.Popen), so the command is wrapped instead.
     # util-linux, present in the Debian base.
     setpriv_path: str = "setpriv"
+    # Rasterises a compiled PDF into per-page PNGs, for clients that can't draw a
+    # PDF themselves — which is every phone, since a real PDF viewer is a native
+    # module and the app ships fixes over the air. poppler rather than
+    # ImageMagick or Ghostscript: it renders PDF directly instead of delegating
+    # to a much larger PostScript interpreter, so the untrusted document meets
+    # one parser instead of two. Only reached when a client asks for pages.
+    pdftoppm_path: str = "pdftoppm"
 
     @property
     def publisher_email_set(self) -> set[str]:
