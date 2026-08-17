@@ -260,3 +260,56 @@ async def test_rasterising_that_hangs_is_killed_and_the_pdf_still_returned(
     assert body["pdf_base64"]
     assert body["pages"] is None
     assert body["pages_error"]
+
+
+async def test_the_rasteriser_runs_under_a_memory_cap(client, rasterised):
+    """A document chooses its own page geometry, and TeX will accept a page 1pt
+    wide and 16383pt tall — valid, instant to compile, and at the widths we allow
+    a bitmap tens of millions of pixels tall. Capping the page *count* doesn't
+    help, because one such page is enough. So the memory is bounded instead."""
+    await _compile(client, include_pages=True)
+    args = list(next(c for c in rasterised["calls"] if "-png" in c["args"])["args"])
+    assert any(a.startswith("--as=") for a in args)
+    # And the limiter wraps the renderer rather than trailing after it.
+    assert [a for a in args if a.startswith("--as=")][0]
+    assert args.index("--") < args.index("-png")
+
+
+async def test_no_memory_limiter_means_no_rasterising(client, monkeypatch):
+    """Fail closed. A renderer that can reach for a terabyte inside the task that
+    also serves sync and its own health check is an outage, not a preview."""
+
+    async def _exec(*args, **kwargs):
+        Path(kwargs["cwd"], "main.pdf").write_bytes(b"%PDF-1.5 fake")
+        return _FakeProcess(returncode=0)
+
+    monkeypatch.setattr(latex.asyncio, "create_subprocess_exec", _exec)
+    monkeypatch.setattr(
+        latex.shutil, "which", lambda p: None if "prlimit" in p else f"/usr/bin/{p}"
+    )
+    body = (await _compile(client, include_pages=True)).json()
+    assert body["ok"] is True
+    assert body["pdf_base64"]
+    assert body["pages"] is None
+    assert body["pages_error"]
+
+
+async def test_an_unexpected_error_still_returns_the_pdf(client, monkeypatch):
+    """`_rasterise` handles the failures it expects. This is the guarantee for
+    the ones it doesn't: a 500 here would discard a document that compiled."""
+
+    async def _exec(*args, **kwargs):
+        if "-png" in args:
+            raise OSError("cannot fork")
+        Path(kwargs["cwd"], "main.pdf").write_bytes(b"%PDF-1.5 fake")
+        return _FakeProcess(returncode=0)
+
+    monkeypatch.setattr(latex.asyncio, "create_subprocess_exec", _exec)
+    monkeypatch.setattr(latex.shutil, "which", lambda p: f"/usr/bin/{p}")
+    res = await _compile(client, include_pages=True)
+    assert res.status_code == 200
+    body = res.json()
+    assert body["ok"] is True
+    assert base64.b64decode(body["pdf_base64"]).startswith(b"%PDF")
+    assert body["pages"] is None
+    assert body["pages_error"]

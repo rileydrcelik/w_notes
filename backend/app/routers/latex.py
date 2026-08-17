@@ -293,8 +293,25 @@ async def _rasterise(directory: Path, page_width: int) -> tuple[list[RenderedPag
         # still good, so this is a missing bonus rather than a broken server.
         return [], "This server can't render page previews yet."
 
+    # A document picks its own page geometry, and nothing upstream constrains it:
+    # `\pdfpagewidth=1pt \pdfpageheight=16383pt` is a valid page that compiles in
+    # an instant, and asking for it at the widths we allow means a bitmap tens of
+    # millions of pixels tall. Capping the count doesn't help — one page is
+    # enough. So bound the memory instead of trying to decide which shapes are
+    # legitimate: the allocation fails, poppler exits non-zero, and the request
+    # answers with the PDF and an explanation.
+    #
+    # Refuse rather than run uncapped if the limiter is missing. A rasteriser
+    # that can reach for a terabyte inside the task that also serves sync and its
+    # own health check is not a preview feature, it's an outage.
+    if not shutil.which(settings.prlimit_path):
+        return [], "This server can't render page previews yet."
+
     process = await asyncio.create_subprocess_exec(
         *_privilege_drop(directory),
+        settings.prlimit_path,
+        f"--as={settings.raster_memory_bytes}",
+        "--",
         settings.pdftoppm_path,
         "-png",
         # Stop *there*, rather than rendering everything and counting afterwards.
@@ -571,7 +588,16 @@ async def compile_latex(
         pages: list[RenderedPage] | None = None
         pages_error: str | None = None
         if payload.include_pages:
-            rendered, pages_error = await _rasterise(directory, payload.page_width)
+            # `_rasterise` answers its *expected* failures with a message. This
+            # catches the unexpected ones — an OSError spawning a process right
+            # after a memory-hungry TeX run, a permissions edge case in the
+            # chown — because the one thing that must not happen here is a 500
+            # that throws away a PDF which compiled perfectly well.
+            try:
+                rendered, pages_error = await _rasterise(directory, payload.page_width)
+            except Exception:  # noqa: BLE001 — the PDF outranks the preview
+                logger.exception("rasterising a compiled resume failed")
+                rendered, pages_error = [], "The page previews couldn't be rendered."
             pages = rendered or None
 
     return CompileResponse(
