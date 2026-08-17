@@ -30,8 +30,51 @@ export type CompileDiagnostic = {
   line?: number;
 };
 
+/**
+ * One page of a compiled resume, drawn server-side.
+ *
+ * For platforms with no PDF renderer of their own — every phone, since a real
+ * viewer is a native module and this app ships over the air. The dimensions
+ * travel with the bytes so a page can be laid out before it decodes, rather
+ * than the list reflowing under you as each image arrives.
+ */
+export type RenderedPage = {
+  width: number;
+  height: number;
+  png: Uint8Array;
+};
+
+/**
+ * A rendered page once it's been written to the cache — what the preview shows.
+ *
+ * Lives here, beside `RenderedPage`, rather than in either preview component:
+ * both platform halves take the same props so the screen has one call site and
+ * no `Platform.OS` branch, and a type that only one half could import would
+ * leave the other's signature free to drift.
+ */
+export type PreviewPage = {
+  /** `file://` path to the rendered PNG. */
+  uri: string;
+  /** The pixel size it was rendered at — the source of the aspect ratio. */
+  width: number;
+  height: number;
+};
+
 export type CompileResult =
-  | { ok: true; pdf: Uint8Array; log: string }
+  | {
+      ok: true;
+      pdf: Uint8Array;
+      log: string;
+      /** Present only when pages were asked for and the server drew them. */
+      pages?: RenderedPage[];
+      /**
+       * The compile succeeded but the pages didn't. Distinct from `ok: false`,
+       * and deliberately not fatal: there is still a PDF here to download, so a
+       * client that can't draw one says *this* rather than showing an empty
+       * page and calling it success.
+       */
+      pagesError?: string;
+    }
   | { ok: false; log: string; diagnostics: CompileDiagnostic[] };
 
 export type CompileOptions = {
@@ -39,7 +82,29 @@ export type CompileOptions = {
   onProgress?: (stage: CompileStage, detail?: string) => void;
   /** Which engine to compile with. The server defaults to `pdflatex`. */
   engine?: LatexEngine;
+  /**
+   * Ask the server to draw each page at this pixel width. Omitted by callers
+   * that can render the PDF themselves, so web never pays for images it will
+   * not show. The width comes from the caller because only the caller knows its
+   * screen size and pixel density.
+   */
+  pages?: { width: number };
 };
+
+/**
+ * Widest a page is ever drawn, so a tablet or a maximised window doesn't render
+ * a wall-sized sheet.
+ *
+ * It lives here, with the shapes both previews share, because the two halves
+ * draw the *same document* by different means — web paints the PDF, native
+ * paints server-rendered images of it — and the promise is that a page break
+ * falls in the same place either way. Two copies of this number is that promise
+ * kept by coincidence, and only until someone tunes one of them.
+ */
+export const MAX_PREVIEW_PAGE_WIDTH = 720;
+
+/** Fallback shape while a page's real dimensions are unknown: US Letter. */
+export const LETTER_ASPECT = 1.294;
 
 /**
  * An opened PDF, page by page. Deliberately narrow: the preview only needs to

@@ -11,12 +11,18 @@ import { StyleSheet, View } from 'react-native';
 import { ThemedText } from '@/components/themed-text';
 import { hexToRgba, Spacing } from '@/constants/theme';
 import { loadPdf } from '@/lib/latex/pdf-render';
-import type { PdfDocument } from '@/lib/latex/types';
+import {
+  LETTER_ASPECT,
+  MAX_PREVIEW_PAGE_WIDTH,
+  type PdfDocument,
+  type PreviewPage,
+} from '@/lib/latex/types';
 
-/** Widest a page is drawn, so a big window doesn't render a wall-sized sheet. */
-const MAX_PAGE_WIDTH = 720;
-
-export function ResumePreview({ pdf }: { pdf: Uint8Array }) {
+// `pages` is the native half's input — server-rendered images, for a platform
+// with no PDF renderer. This one has pdf.js, so it draws the PDF itself and the
+// server is never asked for pixels. Accepted and ignored so both halves share a
+// signature and the screen needs no platform branch.
+export function ResumePreview({ pdf }: { pdf: Uint8Array; pages: PreviewPage[] }) {
   const [doc, setDoc] = useState<PdfDocument | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [width, setWidth] = useState(0);
@@ -52,7 +58,7 @@ export function ResumePreview({ pdf }: { pdf: Uint8Array }) {
     };
   }, [pdf]);
 
-  const pageWidth = Math.min(width, MAX_PAGE_WIDTH);
+  const pageWidth = Math.min(width, MAX_PREVIEW_PAGE_WIDTH);
 
   return (
     <View style={styles.container} onLayout={(e) => setWidth(e.nativeEvent.layout.width)}>
@@ -109,7 +115,7 @@ function PdfPage({
 
   return (
     <View style={styles.pageBlock}>
-      <View style={[styles.sheet, { width, height: height ?? width * 1.294 }]}>
+      <View style={[styles.sheet, { width, height: height ?? width * LETTER_ASPECT }]}>
         <canvas ref={canvasRef} style={{ display: 'block', borderRadius: Spacing.three }} />
       </View>
       <ThemedText type="small" themeColor="textSecondary" style={styles.pageLabel}>

@@ -18,6 +18,15 @@ export function isPdfPreviewSupported(): boolean {
   return true;
 }
 
+/**
+ * No: this platform draws the PDF itself, so server-rendered page images would
+ * be bytes over the wire and CPU on a shared task for pictures it would throw
+ * away. The native half returns true. See `pdf-render.ts`.
+ */
+export function pageImagesRequested(): boolean {
+  return false;
+}
+
 export async function loadPdf(bytes: Uint8Array): Promise<PdfDocument> {
   // pdf.js takes ownership of the buffer it's handed (it transfers it to its
   // worker), which would detach the copy the download button still needs. Give
