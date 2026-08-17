@@ -79,7 +79,13 @@ type IssueListResponse = { issues: Issue[]; next_cursor?: string | null };
 
 // Backend /sentry/autofix responses. The status/progress shapes, and the rules
 // for carrying progress across a reload, live in lib/autofix-progress.
-type AutofixResponse = { dispatched: boolean; issue_id: string; short_id?: string | null; branch: string };
+type AutofixResponse = {
+  dispatched: boolean;
+  issue_id: string;
+  short_id?: string | null;
+  branch: string;
+  reason?: string | null; // why nothing was dispatched, when it wasn't
+};
 
 type ContextLine = { lineno: number; code: string };
 
@@ -296,7 +302,9 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
 /** Small status pill shown on a card once its issue has been sent to autofix. */
 function FixChip({ fix }: { fix: FixState }) {
   const prNum = fix.status?.pr_number;
-  const prUrl = fix.status?.pr_url;
+  // A run with no PR still has somewhere to link: the run itself, which is where
+  // a "no fix proposed" verdict is written.
+  const prUrl = fix.status?.pr_url ?? fix.status?.run_url;
 
   let label = '';
   let spin = false;
@@ -316,13 +324,26 @@ function FixChip({ fix }: { fix: FixState }) {
       case 'pr_closed':
         label = `PR #${prNum} closed`;
         break;
+      case 'dismissed':
+        label = 'Already fixed — dismissed';
+        break;
+      case 'no_fix':
+        // A run that ends without a branch is either "nothing to change here" or
+        // a broken run — worth telling apart, since only the second is a fault.
+        label =
+          fix.status.run_conclusion === 'success'
+            ? 'No change proposed — see run'
+            : 'Autofix run failed — see run';
+        break;
       case 'branch_created':
         label = fix.stopped ? 'Still working — check GitHub' : 'Fixing…';
         spin = !fix.stopped;
         break;
       default:
-        label = fix.stopped ? 'Still working — check GitHub' : 'Queued…';
-        spin = !fix.stopped;
+        // `message` is set when the server declined to start a run and said why;
+        // it holds until the poll reports what the existing attempt is doing.
+        label = fix.message || (fix.stopped ? 'Still working — check GitHub' : 'Queued…');
+        spin = !fix.stopped && !fix.message;
     }
   }
 
@@ -833,6 +854,11 @@ export default function SentryIssuesScreen() {
                 phase: 'tracking',
                 shortId: res.short_id ?? undefined,
                 status: { state: 'none', branch: res.branch },
+                // Nothing was dispatched — an attempt is already in flight, or
+                // the issue has burned its retries. Carry the server's reason so
+                // the chip says that, rather than showing a spinner for a run
+                // this press never started.
+                ...(res.dispatched ? null : { message: res.reason ?? 'Autofix is already running' }),
               },
             }));
           })
@@ -946,7 +972,12 @@ export default function SentryIssuesScreen() {
             const status = await apiFetch<AutofixStatus>(
               `/sentry/autofix/status?short_id=${encodeURIComponent(s.shortId!)}${
                 target?.repo ? `&repo=${encodeURIComponent(target.repo)}` : ''
-              }${s.status?.branch ? `&branch=${encodeURIComponent(s.status.branch)}` : ''}`,
+              }${s.status?.branch ? `&branch=${encodeURIComponent(s.status.branch)}` : ''}` +
+                // Lets the server tell a run that merely proposed nothing from one
+                // whose verdict closed the issue. The card deliberately stays on
+                // screen showing "Already fixed — dismissed"; the next list
+                // refresh is what drops it, so the reason is seen before it goes.
+                `&issue_id=${encodeURIComponent(issueId)}`,
             );
             setFixStates((prev) =>
               prev[issueId]

@@ -91,6 +91,14 @@ describe('isPollable', () => {
     expect(isPollable({ phase: 'tracking', shortId: 'A-1', status: { state, branch: 'b' } })).toBe(false);
   });
 
+  it('stops once the run has finished without proposing anything', () => {
+    // The run is over; polling on would spin the chip for two minutes and then
+    // claim the pipeline is "still working" on something that already ended.
+    expect(
+      isPollable({ phase: 'tracking', shortId: 'A-1', status: { state: 'no_fix', branch: 'b' } }),
+    ).toBe(false);
+  });
+
   it('does not poll a fix with no short id — there is nothing to ask about', () => {
     expect(isPollable({ phase: 'tracking', status: { state: 'none', branch: 'b' } })).toBe(false);
   });

@@ -10,6 +10,13 @@
 
 name: Sentry autofix
 
+# The attempt branch goes in the run's title because it is the only way to find
+# this run again. A `repository_dispatch` run exposes its `client_payload`
+# nowhere in the REST API, so without this the backend's status poll cannot tell
+# "the agent is still working" from "the run finished and proposed nothing" — and
+# the app spun a "Queued…" chip for two minutes over a run that had already ended.
+run-name: Sentry autofix ${{ github.event.client_payload.branch }}
+
 on:
   repository_dispatch:
     types: [sentry-autofix]
@@ -35,6 +42,7 @@ jobs:
           fetch-depth: 0
 
       - name: Claude autofix
+        id: claude
         uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -71,6 +79,27 @@ jobs:
             you cannot confidently identify a fix from the context below, open the PR anyway with
             your analysis and a proposed direction rather than guessing broadly.
 
+            One case is different: if no code change is warranted at all — the fix is already on
+            `main`, or the cause is outside this repository (a misconfigured URL, a service that is
+            down, a missing credential) — then do NOT create the branch and do NOT open a pull
+            request. End your final message with a short verdict instead: what the code already
+            does, and what would actually have to change to stop the error. That message is the
+            whole result of the run and is read back into the app, so make it stand alone.
+
+            In that case ALSO write this file, which the pipeline reads to decide whether the
+            Sentry issue can be closed:
+              ${{ runner.temp }}/autofix-verdict.json
+            containing exactly {"verdict": "<one of below>", "summary": "<one sentence>"}:
+              already-fixed  — the code that would stop this error is on `main` today. Use this
+                               only when the error could not still be happening against current
+                               `main`; if the code is right and the error is real, it is not this.
+              external-cause — this repository is behaving correctly and something outside it has
+                               to change. An error still firing against correct code is this one.
+              needs-human    — you could not tell.
+            Be strict about the first: an `already-fixed` claim is the only one that can close a
+            live production issue, and closing one that is still firing hides an outage. When
+            torn between `already-fixed` and `external-cause`, choose `external-cause`.
+
             --- Sentry issue ---
             Issue: ${{ github.event.client_payload.short_id }} — ${{ github.event.client_payload.title }}
             Level: ${{ github.event.client_payload.level }}
@@ -82,11 +111,39 @@ jobs:
             this JSON payload:
             ${{ toJSON(github.event.client_payload) }}
 
+      # The agent's own words, in the run summary. The action runs Claude through
+      # the SDK with its output hidden (it can echo whatever it read), so when a
+      # run ends without a branch — the agent decided the code was already
+      # correct, or the cause is outside this repo — the log says nothing about
+      # why. That verdict is the entire result of such a run, and the app now
+      # links here to show it, so the one message that carries it is worth
+      # lifting out. Best-effort: a missing or unexpected file just skips.
+      - name: Summarize what the agent concluded
+        if: always() && steps.claude.outputs.execution_file != ''
+        env:
+          EXECUTION_FILE: ${{ steps.claude.outputs.execution_file }}
+        run: |
+          set -uo pipefail
+          [ -f "$EXECUTION_FILE" ] || { echo "No execution file at $EXECUTION_FILE."; exit 0; }
+          verdict=$(jq -r '[.[]? | select(.type == "result") | .result // empty] | last // empty' \
+            "$EXECUTION_FILE" 2>/dev/null || true)
+          if [ -z "$verdict" ]; then
+            verdict=$(jq -r '[.[]? | select(.type == "assistant") | .message.content[]?
+              | select(.type == "text") | .text] | last // empty' "$EXECUTION_FILE" 2>/dev/null || true)
+          fi
+          [ -n "$verdict" ] || { echo "Could not read a final message from the run."; exit 0; }
+          {
+            echo "## What the agent concluded"
+            echo
+            echo "$verdict"
+          } >> "$GITHUB_STEP_SUMMARY"
+
       # The action pushes the fix branch but, on a repository_dispatch trigger,
       # doesn't reliably open the PR itself (no comment thread to open it from).
       # This guarantees a PR exists whenever the branch has commits — idempotent,
       # so it's a no-op if the action already opened one. Still PR-only, no merge.
       - name: Ensure pull request
+        id: pr
         if: always()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -95,22 +152,34 @@ jobs:
           PERMALINK: ${{ github.event.client_payload.permalink }}
         run: |
           set -euo pipefail
-          if ! git fetch origin "$BRANCH"; then
-            echo "No branch $BRANCH was pushed — nothing to open a PR for."
+          # A run that proposes nothing is a legitimate outcome — most often the
+          # fix is already on main and the error is recurring for a reason outside
+          # this repo. It stays a green run, and the backend reads "finished, no
+          # branch, no PR" as that verdict; the notice is for whoever opens the run.
+          nofix() {
+            echo "::notice::$1"
+            echo "**No fix proposed.** $1" >> "$GITHUB_STEP_SUMMARY"
             exit 0
+          }
+          if ! git fetch origin "$BRANCH"; then
+            nofix "No branch $BRANCH was pushed — nothing to open a PR for."
           fi
           commits=$(git rev-list --count "origin/main..origin/$BRANCH")
           if [ "$commits" -eq 0 ]; then
-            echo "Branch $BRANCH has no commits over main — no fix to propose."
-            exit 0
+            nofix "Branch $BRANCH has no commits over main — no fix to propose."
           fi
-          if [ -n "$(gh pr list --head "$BRANCH" --state all --json number --jq '.[].number')" ]; then
-            echo "A pull request for $BRANCH already exists."
+          # `opened` is how the dismissal step below knows a fix was proposed after
+          # all. Only the paths that end with a PR set it, so every `nofix` exit
+          # leaves it unset and the issue gets considered for dismissal instead.
+          if [ -n "$(gh pr list --head "$BRANCH" --state open --json number --jq '.[].number')" ]; then
+            echo "An open pull request for $BRANCH already exists."
+            echo "opened=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           gh pr create --head "$BRANCH" --base main \
             --title "Autofix: $SHORT_ID" \
             --body "Automated fix for Sentry issue $SHORT_ID. See $PERMALINK"
+          echo "opened=true" >> "$GITHUB_OUTPUT"
 
       # Once a PR exists for the fix, mark the Sentry issue resolved so it drops
       # out of the unresolved list. If the error recurs, Sentry auto-reopens it on
@@ -142,3 +211,74 @@ jobs:
           echo "Sentry responded $code"
           # Don't fail the run if Sentry rejects it — the PR is the important part.
           if [ "$code" -ge 400 ]; then echo "::warning::Sentry resolve returned $code"; fi
+
+      # The other way an issue can be finished with: the agent proposed no fix
+      # because the fix is already on `main`. That closes the issue too — but only
+      # when it is *provably* stale, which is not the same claim.
+      #
+      # "The code is right" and "the error has stopped" are different facts, and
+      # W-NOTES-FASTAPI-A is exactly the pair coming apart: commit 4ee6168 is the
+      # fix, and the 404 it reports is still arriving on every publish because the
+      # cause is a service outside this repo. Resolving on the agent's word alone
+      # would have silenced the alarm that commit was written to raise.
+      #
+      # So the agent's `already-fixed` verdict is necessary but not sufficient. The
+      # deciding test is evidence: has this issue fired since the code now running
+      # in production went out? If it has, nothing on `main` is stopping it,
+      # whatever the verdict says. No deploy to compare against (a front-end issue,
+      # a repo that doesn't deploy this way) means no evidence, so nothing closes.
+      - name: Dismiss the Sentry issue if it is provably stale
+        if: always() && steps.pr.outputs.opened != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.AUTOFIX_PAT || secrets.GITHUB_TOKEN }}
+          SENTRY_API_TOKEN: ${{ secrets.SENTRY_API_TOKEN }}
+          ISSUE_ID: ${{ github.event.client_payload.issue_id }}
+          SHORT_ID: ${{ github.event.client_payload.short_id }}
+          VERDICT_FILE: ${{ runner.temp }}/autofix-verdict.json
+          REPO: ${{ github.repository }}
+        run: |
+          set -uo pipefail
+          keep() {
+            echo "::notice::$SHORT_ID left open: $1"
+            echo "**Left open in Sentry.** $1" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          }
+          [ -n "${SENTRY_API_TOKEN:-}" ] || keep "no SENTRY_API_TOKEN secret."
+          [ -f "$VERDICT_FILE" ] || keep "the run recorded no verdict."
+
+          verdict=$(jq -r '.verdict // empty' "$VERDICT_FILE" 2>/dev/null || true)
+          summary=$(jq -r '.summary // empty' "$VERDICT_FILE" 2>/dev/null || true)
+          echo "Verdict: ${verdict:-none} — ${summary:-no summary}"
+          [ "$verdict" = "already-fixed" ] || keep "verdict is '${verdict:-unreadable}', not 'already-fixed'."
+
+          # When production last changed. `updated_at` is the run's finish time,
+          # so this is "the moment the code now live went live".
+          # Name your own deploy workflow here. Without one nothing is ever
+          # dismissed, which is the safe direction to fail in.
+          deployed=$(gh api \
+            "/repos/$REPO/actions/workflows/deploy-backend.yml/runs?status=success&per_page=1" \
+            --jq '.workflow_runs[0].updated_at // empty' 2>/dev/null || true)
+          [ -n "$deployed" ] || keep "no successful deploy to measure staleness against."
+
+          last_seen=$(curl -sS "https://sentry.io/api/0/issues/$ISSUE_ID/" \
+            -H "Authorization: Bearer $SENTRY_API_TOKEN" | jq -r '.lastSeen // empty' || true)
+          [ -n "$last_seen" ] || keep "Sentry did not report when it was last seen."
+
+          if [ "$(date -d "$last_seen" +%s)" -ge "$(date -d "$deployed" +%s)" ]; then
+            keep "it fired at $last_seen, after the running code deployed at $deployed — it is not fixed."
+          fi
+
+          code=$(curl -sS -X PUT "https://sentry.io/api/0/issues/$ISSUE_ID/" \
+            -H "Authorization: Bearer $SENTRY_API_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d '{"status":"resolved"}' -o /dev/null -w "%{http_code}")
+          if [ "$code" -ge 400 ]; then
+            echo "::warning::Sentry resolve returned $code"
+            exit 0
+          fi
+          echo "::notice::$SHORT_ID resolved — already fixed on main, last seen $last_seen, before the deploy at $deployed."
+          {
+            echo "**Dismissed as already fixed.** ${summary:-The fix is already on main.}"
+            echo
+            echo "Last seen \`$last_seen\`, before the running code deployed at \`$deployed\`."
+          } >> "$GITHUB_STEP_SUMMARY"

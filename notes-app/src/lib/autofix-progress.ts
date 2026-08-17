@@ -21,13 +21,29 @@
  */
 
 // Backend /sentry/autofix responses.
-export type AutofixStatusState = 'none' | 'branch_created' | 'pr_open' | 'pr_merged' | 'pr_closed';
+export type AutofixStatusState =
+  | 'none'
+  | 'branch_created'
+  | 'pr_open'
+  | 'pr_merged'
+  | 'pr_closed'
+  // The run finished without pushing anything: the agent judged that no code
+  // change was warranted, or the run itself failed. Terminal, and the run is the
+  // only place its reasoning can be read — so it carries `run_url`, not a PR.
+  | 'no_fix'
+  // Same run, but the issue was also closed in Sentry: the fix is already on
+  // main *and* the error hasn't fired since that code deployed. Both halves are
+  // required — an error still arriving against correct code is `no_fix`, and
+  // saying "already fixed" there would silence a live outage.
+  | 'dismissed';
 export type AutofixStatus = {
   state: AutofixStatusState;
   branch: string;
   pr_number?: number | null;
   pr_url?: string | null;
   title?: string | null;
+  run_url?: string | null;
+  run_conclusion?: string | null;
 };
 
 /** Per-issue autofix progress, keyed by Sentry issue id on the screen. */
@@ -39,7 +55,11 @@ export type FixState = {
   message?: string;
 };
 
-/** A fix is still "in flight" (worth polling) until a PR shows up or we give up. */
+/**
+ * A fix is still "in flight" (worth polling) until a PR shows up, the run ends
+ * with nothing to show (`no_fix`), or we give up. Only the two non-terminal
+ * states poll, so a new terminal state stops the timer by being listed nowhere.
+ */
 export function isPollable(fix: FixState | undefined): boolean {
   return (
     !!fix &&
