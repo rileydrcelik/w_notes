@@ -18,7 +18,7 @@
  * delete more than either intended.
  */
 import Feather from '@expo/vector-icons/Feather';
-import { useMemo, useState } from 'react';
+import { useMemo, useState, type ReactNode } from 'react';
 import {
   Pressable,
   ScrollView,
@@ -51,6 +51,7 @@ export function VersionList({
   onClose,
   onRestore,
   onDelete,
+  readOnly = false,
 }: {
   open: boolean;
   /** Newest first. */
@@ -59,6 +60,15 @@ export function VersionList({
   onClose: () => void;
   onRestore: (version: ResumeVersion) => void;
   onDelete: (version: ResumeVersion) => void;
+  /**
+   * Show the history without offering to change it. Restoring swaps the
+   * document's source and deleting drops a version for good — both are edits,
+   * so on a screen that doesn't edit (the resume on mobile) the list still says
+   * what exists and when, and stops there. The rows go inert rather than
+   * disabled-looking: there's nothing broken about them, they just aren't
+   * buttons here.
+   */
+  readOnly?: boolean;
 }) {
   const theme = useTheme();
   const insets = useSafeAreaInsets();
@@ -148,11 +158,17 @@ export function VersionList({
                     const isOriginal = version.id === originalId;
                     return (
                       <View key={version.id} style={styles.rowWrap}>
-                      <Pressable
-                        accessibilityRole="button"
-                        accessibilityLabel={`Restore: ${version.label}`}
-                        onPress={() => onRestore(version)}
-                        style={({ pressed }) => [styles.row, pressed && styles.pressed]}>
+                      {/* Read-only rows are a plain View, not a disabled
+                          Pressable. `disabled` writes through to
+                          `accessibilityState`, so TalkBack and VoiceOver would
+                          announce them as "dimmed" — telling a screen-reader
+                          user something is broken or temporarily unavailable,
+                          when it is neither. It is read-only content, and the
+                          honest way to say that is to not be a control. */}
+                      <RowShell
+                        readOnly={readOnly}
+                        label={version.label}
+                        onPress={() => onRestore(version)}>
                         <View style={styles.rowText}>
                           <ThemedText numberOfLines={2}>{version.label}</ThemedText>
                           <View style={styles.metaRow}>
@@ -177,16 +193,20 @@ export function VersionList({
                             </ThemedText>
                           </View>
                         ) : (
-                          <Feather name="corner-up-left" size={16} color={theme.textSecondary} />
+                          // The restore arrow is the affordance, so it goes with
+                          // the action rather than sitting there unexplained.
+                          !readOnly && (
+                            <Feather name="corner-up-left" size={16} color={theme.textSecondary} />
+                          )
                         )}
-                      </Pressable>
+                      </RowShell>
                       {/* Outside the row's Pressable, not inside it: nesting one
                           pressable in another makes which one you hit a matter of
                           a few pixels, and the two do very different things. The
                           version you are working in has no delete — it is the
                           document on screen, and removing it would leave the
                           editor holding text that belongs to nothing. */}
-                      {!isCurrent && (
+                      {!isCurrent && !readOnly && (
                         <Pressable
                           accessibilityRole="button"
                           accessibilityLabel={`Delete version: ${version.label}`}
@@ -206,6 +226,36 @@ export function VersionList({
         </>
       )}
     </View>
+  );
+}
+
+/**
+ * One history row's container: a button where restoring is offered, and plain
+ * content where it isn't. Two elements rather than one element with `disabled`,
+ * because "you can't press this right now" and "this was never a button" read
+ * identically on screen but differently to a screen reader — and only the second
+ * is true here.
+ */
+function RowShell({
+  readOnly,
+  label,
+  onPress,
+  children,
+}: {
+  readOnly: boolean;
+  label: string;
+  onPress: () => void;
+  children: ReactNode;
+}) {
+  if (readOnly) return <View style={styles.row}>{children}</View>;
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={`Restore: ${label}`}
+      onPress={onPress}
+      style={({ pressed }) => [styles.row, pressed && styles.pressed]}>
+      {children}
+    </Pressable>
   );
 }
 

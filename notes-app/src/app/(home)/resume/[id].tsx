@@ -7,15 +7,29 @@
  * puts the same download icon there), so the screen registers its exporter with
  * `lib/save-action.ts` and the bar grows an icon while there's a PDF to save.
  *
- * On a phone, and in a narrow or portrait browser window, it edits the way every
- * other note does: opening a written resume shows the compiled preview (its read
- * view), and tapping the preview drops into the source. No mode toggle of its
- * own — see `lib/active-editor.ts`, which the source editor registers with.
+ * In a narrow or portrait browser window it edits the way every other note does:
+ * opening a written resume shows the compiled preview (its read view), and
+ * tapping the preview drops into the source. No mode toggle of its own — see
+ * `lib/active-editor.ts`, which the source editor registers with.
+ *
+ * **On a phone it does not edit at all** (`lib/resume-mode.ts`). A resume is
+ * read and downloaded there, never written: a touch keyboard over a monospace
+ * document leaves no room for the page, and every authoring tool here assumes
+ * the source is on screen. So native mounts no source field, no toolbar, and no
+ * restore — the read view is the only view. The gate is the platform and not the
+ * window, because a narrow browser window still has a keyboard.
+ *
+ * Compiling and previewing are separate capabilities, and only the second is
+ * web-only. They were one flag, which meant native compiled nothing — and so had
+ * no PDF, and so could not download the resume it was refusing to draw. Native
+ * now compiles on the server like everywhere else and hands you the file; what
+ * it cannot yet do is draw the pages (`lib/latex/pdf-render.ts`).
  *
  * The navbar's trailing button on this screen is the **version history**, and it
  * stays that whether or not the source has focus. It is not a create button
- * (a resume contains nothing), not an edit pencil (tapping the preview already
- * starts an edit), and not a "done" check — see below.
+ * (a resume contains nothing) and not an edit pencil — on web because tapping
+ * the preview already starts an edit, on a phone because there is no edit to
+ * start. Nor is it a "done" check — see below.
  *
  * **In a wide landscape browser window the two stop taking turns and sit side by
  * side** (`lib/split-layout.ts`): source on the left, compiled pages on the
@@ -124,6 +138,7 @@ import { hardenResume, type HardenDraft } from '@/lib/latex/harden';
 import { tailorResume, type TailorDraft } from '@/lib/latex/tailor';
 import type { ResumeVersion } from '@/data/notes';
 import { savePdfToDevice } from '@/lib/save-pdf';
+import { RESUME_READ_ONLY, openingResumeMode, type ResumeMode } from '@/lib/resume-mode';
 import { useSplitLayout } from '@/lib/split-layout';
 import { noFocusOutline } from '@/lib/web-style';
 import { ACCENT } from '@/components/resume/accent';
@@ -133,7 +148,7 @@ import { noScrollbar } from '@/lib/scroll-style';
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
-type Mode = 'edit' | 'view';
+type Mode = ResumeMode;
 
 /**
  * What the preview pane is doing right now. A finished result remembers the
@@ -180,7 +195,9 @@ export default function ResumeScreen() {
   const [source, setSource] = useState(note?.body ?? '');
   // A written resume opens in its read view (the preview), a blank one in the
   // editor — same as opening a note that has body text versus a new empty one.
-  const [mode, setMode] = useState<Mode>((note?.body ?? '').trim() ? 'view' : 'edit');
+  // Read-only, there is no editor to open into, so even an empty resume opens in
+  // the read view and says so.
+  const [mode, setMode] = useState<Mode>(openingResumeMode(note?.body));
   const [compilation, setCompilation] = useState<Compilation>({ state: 'idle' });
   const [editing, setEditing] = useState(false);
   const [enginePickerOpen, setEnginePickerOpen] = useState(false);
@@ -209,10 +226,16 @@ export default function ResumeScreen() {
   const previewScroll = useScrolled();
   const sourceRef = useRef<TextInput>(null);
 
-  // Compiling happens on the server, so it works everywhere the API does.
-  // Drawing the PDF is still web-only, so native can compile and download a
-  // resume but not preview it yet.
-  const supported = isLatexCompileSupported() && isPdfPreviewSupported();
+  // Two capabilities, not one. Compiling happens on the server, so it works
+  // everywhere the API does; drawing the PDF is still web-only. They used to be
+  // ANDed into a single `supported`, which quietly meant native never compiled —
+  // so there was no PDF, so the navbar had nothing to export and mobile could
+  // neither preview a resume *nor download one*. Keeping them apart is what lets
+  // this screen hand you the file it can't yet draw.
+  const canCompile = isLatexCompileSupported();
+  const canPreview = isPdfPreviewSupported();
+
+  const readOnly = RESUME_READ_ONLY;
 
   // Mirrors note/[id].tsx: `edited` gates every commit so a remote change landing
   // in an open resume can't be overwritten by our stale copy, and `committed`
@@ -269,7 +292,7 @@ export default function ResumeScreen() {
     }
     editedRef.current = false;
     setCompilation({ state: 'idle' });
-    setMode((current?.body ?? '').trim() ? 'view' : 'edit');
+    setMode(openingResumeMode(current?.body));
   }, [id]);
 
   // Adopt an edit made on another device, unless we're mid-edit ourselves.
@@ -485,7 +508,7 @@ export default function ResumeScreen() {
   // become compile-as-you-type: the first thing it does is set `running`, and
   // the second keystroke's run sees a state that isn't `idle` and stands down.
   useEffect(() => {
-    if (!supported || (!split && mode !== 'view') || shown.state !== 'idle') return;
+    if (!canCompile || (!split && mode !== 'view') || shown.state !== 'idle') return;
     if (source.trim().length === 0) return;
     void (async () => {
       const cached = await readCachedPdf(id, engine, source);
@@ -496,7 +519,7 @@ export default function ResumeScreen() {
       }
       await runCompile(source, () => isCurrent(id, engine, source));
     })();
-  }, [supported, split, mode, shown.state, source, id, engine, isCurrent, runCompile]);
+  }, [canCompile, split, mode, shown.state, source, id, engine, isCurrent, runCompile]);
 
   // Leaving the editor just leaves it. Whether the result on screen is still
   // the right one is `shown`'s question, not this one's: it reads as `idle` the
@@ -536,11 +559,15 @@ export default function ResumeScreen() {
   };
 
   // A resume holds nothing, so the navbar's trailing button isn't a (+) here —
-  // and it isn't a pencil either. This screen is *already editing*: it opens
-  // straight into the source when the resume is empty, and side by side the
-  // source is permanently on screen beside the page. A pencil offers to start
-  // something that has already started. The history is the one thing about a
-  // resume this screen can't otherwise show you, so it takes the slot. See
+  // and it isn't a pencil either, for a different reason on each platform. On
+  // web this screen is *already editing*: it opens straight into the source when
+  // the resume is empty, and side by side the source is permanently on screen
+  // beside the page, so a pencil would offer to start something that has already
+  // started. On a phone the opposite is true — it opens in the read view and
+  // there is no editor at all — so a pencil would offer to start something that
+  // cannot happen, which is the worse of the two. The history is the one thing
+  // about a resume this screen can't otherwise show you, and it is worth reading
+  // on either platform, so it takes the slot both times. See
   // `lib/version-action.ts`, and the leaf-object rule in `.claude/CLAUDE.md`
   // that this is the written exception to.
   //
@@ -832,8 +859,10 @@ export default function ResumeScreen() {
 
   // The two panes, built once and then either stacked (one at a time, by `mode`)
   // or set side by side. Identical either way — the layout decides where they go,
-  // not what they are.
-  const editorPane = (
+  // not what they are. Read-only there is no source pane at all: not a hidden
+  // one, not a disabled one — the TextInput is never mounted, so no gesture or
+  // stray focus call can reach it.
+  const editorPane = readOnly ? null : (
     <View style={styles.editor}>
       <LatexSourceEditor
         value={source}
@@ -877,7 +906,9 @@ export default function ResumeScreen() {
   const preview = (
     <PreviewPane
       compilation={shown}
-      supported={supported}
+      canCompile={canCompile}
+      canPreview={canPreview}
+      readOnly={readOnly}
       hasSource={source.trim().length > 0}
       stale={stale}
       onRetry={() => void runCompile(source)}
@@ -893,8 +924,9 @@ export default function ResumeScreen() {
         {/* Stacked, the page *is* the read view, so tapping it starts an edit
             the way tapping a note's body does. Split, the source is already
             beside it and the page is just a page — clicking it should select or
-            scroll, not throw focus across the screen. */}
-        {split ? (
+            scroll, not throw focus across the screen. Read-only it is a page in
+            the plainest sense: there is nowhere for a tap to go. */}
+        {split || readOnly ? (
           preview
         ) : (
           <Pressable
@@ -945,7 +977,7 @@ export default function ResumeScreen() {
               </View>
               <View style={styles.pane}>{previewPane}</View>
             </View>
-          ) : mode === 'edit' ? (
+          ) : mode === 'edit' && editorPane ? (
             editorPane
           ) : (
             previewPane
@@ -957,6 +989,10 @@ export default function ResumeScreen() {
             Split, the source never loses the screen, so the bar never leaves
             either: it is the layout's furniture rather than a thing that comes
             and goes as you click between the two panes. */}
+        {/* Every button on it changes the document — add entry, tailor, harden,
+            recompile, engine — so read-only it isn't hidden, it isn't rendered.
+            That also seals the sheets it opens: they have no other trigger. */}
+        {!readOnly && (
         <ResumeToolbar
           visible={(split || editing) && !sheetOpen}
           compilerLabel={engineLabel(engine)}
@@ -998,6 +1034,7 @@ export default function ResumeScreen() {
             openOverEditor(setEnginePickerOpen);
           }}
         />
+        )}
 
         <ResumeEntryModal
           open={entryOpen}
@@ -1051,6 +1088,10 @@ export default function ResumeScreen() {
           onClose={() => closeOverEditor(setVersionsOpen)}
           onRestore={restoreVersion}
           onDelete={(version) => void removeVersion(version.id)}
+          // The history is worth reading on a phone — which versions exist, when
+          // they were made, which one is on screen. Restoring or deleting one is
+          // an edit, so those stay on web.
+          readOnly={readOnly}
         />
 
         <EnginePicker
@@ -1178,13 +1219,20 @@ function EnginePicker({
 
 function PreviewPane({
   compilation,
-  supported,
+  canCompile,
+  canPreview,
+  readOnly,
   hasSource,
   stale,
   onRetry,
 }: {
   compilation: Compilation;
-  supported: boolean;
+  /** The server can build a PDF from this source. True wherever the API is. */
+  canCompile: boolean;
+  /** This platform can draw the PDF it gets back. Web only, for now. */
+  canPreview: boolean;
+  /** No editor to send anyone to, so empty states can't suggest one. */
+  readOnly: boolean;
   hasSource: boolean;
   /**
    * The source has been edited past this result (split layout only). The pages
@@ -1197,7 +1245,7 @@ function PreviewPane({
 }) {
   const theme = useTheme();
 
-  if (!supported) {
+  if (!canCompile) {
     return (
       <ThemedText type="small" themeColor="textSecondary" style={styles.state}>
         Compiling a resume is available on the web app for now. The LaTeX source syncs, so a resume
@@ -1209,7 +1257,9 @@ function PreviewPane({
   if (!hasSource) {
     return (
       <ThemedText type="small" themeColor="textSecondary" style={styles.state}>
-        Nothing to preview yet — paste or write some LaTeX in the editor.
+        {readOnly
+          ? 'This resume is empty. Write it on the web app and it will sync here.'
+          : 'Nothing to preview yet — paste or write some LaTeX in the editor.'}
       </ThemedText>
     );
   }
@@ -1261,6 +1311,26 @@ function PreviewPane({
           <Feather name="refresh-cw" size={14} color={theme.text} />
           <ThemedText type="small">Try again</ThemedText>
         </Pressable>
+      </View>
+    );
+  }
+
+  // Compiled, but this platform can't draw a PDF yet. The resume is real and in
+  // memory — the navbar's download icon is holding it — so this says where it
+  // went rather than reporting a failure, which is what the old shared
+  // "available on the web app" copy did for a document that had just built fine.
+  if (!canPreview) {
+    return (
+      <View style={styles.state}>
+        <Feather name="check-circle" size={16} color={ACCENT} />
+        <ThemedText type="small" themeColor="textSecondary" style={styles.stateText}>
+          {/* No "above"/"below": the navbar is bottom-docked while you're
+              reading and jumps to the top-right corner whenever a keyboard is
+              up, so naming a direction is wrong half the time. The icon is what
+              identifies it. */}
+          Your resume is ready. Use the download button to save the PDF — reading it here is coming
+          in the next app update.
+        </ThemedText>
       </View>
     );
   }
@@ -1418,6 +1488,12 @@ const styles = StyleSheet.create({
     gap: Spacing.two,
     paddingVertical: Spacing.five,
     textAlign: 'center',
+  },
+  // `state` centres its children, but a wrapped sentence still sets each line
+  // left within the box it's given, so the text needs to be told as well.
+  stateText: {
+    textAlign: 'center',
+    paddingHorizontal: Spacing.four,
   },
   errorPanel: {
     borderRadius: Spacing.three,
