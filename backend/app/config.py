@@ -167,6 +167,23 @@ class Settings(BaseSettings):
     # `group=` (unlike subprocess.Popen), so the command is wrapped instead.
     # util-linux, present in the Debian base.
     setpriv_path: str = "setpriv"
+    # Rasterises a compiled PDF into per-page PNGs, for clients that can't draw a
+    # PDF themselves — which is every phone, since a real PDF viewer is a native
+    # module and the app ships fixes over the air. poppler rather than
+    # ImageMagick or Ghostscript: it renders PDF directly instead of delegating
+    # to a much larger PostScript interpreter, so the untrusted document meets
+    # one parser instead of two. Only reached when a client asks for pages.
+    pdftoppm_path: str = "pdftoppm"
+    # Caps the address space the rasteriser may claim. A document chooses its own
+    # page geometry, and TeX will accept a page 1pt wide and 16383pt tall — which
+    # compiles in an instant and then asks poppler for a bitmap of tens of
+    # millions of pixels per row. Rather than guess which shapes are reasonable,
+    # bound the memory: the allocation fails, poppler exits non-zero, and the
+    # request answers with the PDF and no pages. util-linux, like `setpriv`.
+    prlimit_path: str = "prlimit"
+    # 1 GiB. A page at the largest width we allow is tens of megabytes, so this
+    # is far above anything legitimate and far below what would trouble the task.
+    raster_memory_bytes: int = 1024 * 1024 * 1024
 
     @property
     def publisher_email_set(self) -> set[str]:

@@ -57,6 +57,14 @@ RUN set -eux; \
       fonts-texgyre \
       fonts-lato \
       fonts-roboto-unhinted \
+      # Rasterises a compiled PDF into per-page PNGs, for clients with no PDF
+      # renderer of their own — every phone, since a real viewer is a native
+      # module and this app ships fixes over the air. poppler and not
+      # ImageMagick or Ghostscript: it draws PDF directly, where the other two
+      # route through a far larger PostScript interpreter, so a document built
+      # from untrusted input meets one parser instead of two. Small next to the
+      # TeX trees above, and it runs under the same dropped privileges.
+      poppler-utils \
       ca-certificates curl xz-utils; \
     rm -rf /var/lib/apt/lists/*
 
