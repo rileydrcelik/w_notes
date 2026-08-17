@@ -141,6 +141,18 @@ async def test_a_document_past_the_page_cap_is_download_only(client, rasterised)
     assert str(latex._MAX_RASTER_PAGES) in body["pages_error"]
 
 
+async def test_the_cap_is_enforced_on_poppler_not_after_it(client, rasterised):
+    """`-l` makes poppler stop one page past the cap. Counting the files it
+    produced instead would run *after* a thousand-page document had already
+    written a thousand images — a limit that costs exactly what it was meant to
+    prevent."""
+    await _compile(client, include_pages=True)
+    raster = next(c for c in rasterised["calls"] if "-png" in c["args"])
+    args = list(raster["args"])
+    assert "-l" in args
+    assert args[args.index("-l") + 1] == str(latex._MAX_RASTER_PAGES + 1)
+
+
 async def test_pages_are_ordered_by_number_not_by_name(client, monkeypatch):
     """poppler names them `page-1` … `page-10`, which sort lexically as 1, 10, 2.
     A resume whose pages came back shuffled would read as a bug in the document

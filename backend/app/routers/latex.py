@@ -297,6 +297,13 @@ async def _rasterise(directory: Path, page_width: int) -> tuple[list[RenderedPag
         *_privilege_drop(directory),
         settings.pdftoppm_path,
         "-png",
+        # Stop *there*, rather than rendering everything and counting afterwards.
+        # One page past the cap is enough to know the cap was passed, and it
+        # means a thousand-page PDF costs eleven images instead of a thousand —
+        # the check below would otherwise run after the disk had already been
+        # spent, which is no limit at all.
+        "-l",
+        str(_MAX_RASTER_PAGES + 1),
         "-scale-to-x",
         str(page_width),
         "-scale-to-y",
