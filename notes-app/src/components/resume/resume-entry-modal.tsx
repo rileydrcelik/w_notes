@@ -23,8 +23,6 @@ import Feather from '@expo/vector-icons/Feather';
 import { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
-  KeyboardAvoidingView,
-  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -40,6 +38,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { GlassSurface } from '@/components/glass-surface';
 import { ThemedText } from '@/components/themed-text';
 import { Fonts, hexToRgba, Spacing } from '@/constants/theme';
+import { useKeyboardPadding } from '@/hooks/use-keyboard-inset';
 import { useTheme } from '@/hooks/use-theme';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
 import {
@@ -194,6 +193,14 @@ export function ResumeEntryModal({
   // is what the sheet gets.
   const maxSheetHeight = windowHeight - insets.top - SHEET_TOP_GAP - tabBarInset;
 
+  // Lifts the sheet over the keyboard. The clearance above is for the floating
+  // navbar, which the keyboard covers while it is up, so that much of it is dead
+  // space and is spent on the keyboard rather than stacked on top of it. This was
+  // a `KeyboardAvoidingView` on the theory that Android resizes its window for
+  // the keyboard; it doesn't — the app is edge-to-edge, so the keyboard is drawn
+  // over a window that never changes size, and the whole sheet sat behind it.
+  const keyboardPad = useKeyboardPadding(tabBarInset - Spacing.three);
+
   const [draft, setDraft] = useState<ResumeEntryDraft>(() => emptyEntryDraft(sections[0] ?? ''));
   const [editDraft, setEditDraft] = useState<ResumeEditDraft>(emptyEditDraft);
   const [newSection, setNewSection] = useState('');
@@ -322,10 +329,7 @@ export function ResumeEntryModal({
             accessibilityRole="button"
             accessibilityLabel="Dismiss"
           />
-          <KeyboardAvoidingView
-            style={styles.sheetHost}
-            pointerEvents="box-none"
-            behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+          <Animated.View style={[styles.sheetHost, keyboardPad]} pointerEvents="box-none">
             <Animated.View
               entering={SlideInDown.duration(260)}
               exiting={SlideOutDown.duration(220)}
@@ -696,7 +700,7 @@ export function ResumeEntryModal({
                 )}
               </GlassSurface>
             </Animated.View>
-          </KeyboardAvoidingView>
+          </Animated.View>
         </>
       )}
     </View>
@@ -810,14 +814,19 @@ const styles = StyleSheet.create({
   // Centred and capped rather than stretched. `sheetHost` is a column, so its
   // children stretch the full width by default — which is right for a phone and
   // absurd on the split layout's desktop window.
+  // `flexShrink` here and on the sheet so that when the keyboard shortens the
+  // box, the already-shrinkable scrollers below give up the room rather than the
+  // sheet pushing its own header off the top. Inert without that pressure.
   sheetWrap: {
     width: '100%',
     maxWidth: SHEET_MAX_WIDTH,
     alignSelf: 'center',
+    flexShrink: 1,
   },
   sheet: {
     borderRadius: Spacing.four,
     paddingVertical: Spacing.two,
+    flexShrink: 1,
     // The height cap is applied inline, from the window — see `maxSheetHeight`.
     // Tall enough to hold the form, short enough that the resume stays visible
     // behind it: this is an addition to a document, not a new screen.
