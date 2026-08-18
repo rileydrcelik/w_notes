@@ -12,8 +12,26 @@
  */
 import type { PdfDocument } from '@/lib/latex/types';
 
+/**
+ * Native shows a resume, just not by drawing the PDF: the server sends page
+ * images and `resume-preview.tsx` displays them. So this answers the question
+ * it actually asks — "can this platform show a compiled resume at all" — and
+ * the answer is now yes.
+ */
 export function isPdfPreviewSupported(): boolean {
-  return false;
+  return true;
+}
+
+/**
+ * Whether the server should be asked to draw the pages. True here and false on
+ * web, which has pdf.js and would only be paying for pixels it throws away.
+ *
+ * Separate from `isPdfPreviewSupported` on purpose: the two used to be the same
+ * question and stopped being one the moment native could show a resume without
+ * being able to render a PDF.
+ */
+export function pageImagesRequested(): boolean {
+  return true;
 }
 
 export async function loadPdf(_bytes: Uint8Array): Promise<PdfDocument> {

@@ -20,6 +20,13 @@ type CompileApiResponse = {
   ok: boolean;
   pdf_base64?: string | null;
   log?: string;
+  // Both absent from a server older than the page-rendering deploy, which is
+  // the ordinary state of things for a moment after a release: the client
+  // updates over the air and the backend rolls separately. Optional here so
+  // that reads as "no pages this time" and falls back to the download, rather
+  // than as a malformed response.
+  pages?: { width: number; height: number; png_base64: string }[] | null;
+  pages_error?: string | null;
 };
 
 const B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
@@ -79,7 +86,7 @@ export async function compileLatex(
   source: string,
   options: CompileOptions = {},
 ): Promise<CompileResult> {
-  const { onProgress, engine } = options;
+  const { onProgress, engine, pages } = options;
 
   if (!syncConfigured) {
     return {
@@ -101,8 +108,14 @@ export async function compileLatex(
     const response = await apiFetch<CompileApiResponse>('/latex/compile', {
       method: 'POST',
       // Omitted rather than defaulted here: the server owns which engine is the
-      // default, and one place deciding that is one place to change it.
-      body: engine ? { source, engine } : { source },
+      // default, and one place deciding that is one place to change it. Pages
+      // are likewise only mentioned when wanted, so the request a web client
+      // sends is byte-for-byte the one it sent before they existed.
+      body: {
+        source,
+        ...(engine ? { engine } : {}),
+        ...(pages ? { include_pages: true, page_width: pages.width } : {}),
+      },
       signal: controller.signal,
     });
 
@@ -110,7 +123,19 @@ export async function compileLatex(
 
     if (response.ok && response.pdf_base64) {
       onProgress?.('done');
-      return { ok: true, pdf: base64ToBytes(response.pdf_base64), log };
+      return {
+        ok: true,
+        pdf: base64ToBytes(response.pdf_base64),
+        log,
+        pages: response.pages?.length
+          ? response.pages.map((page) => ({
+              width: page.width,
+              height: page.height,
+              png: base64ToBytes(page.png_base64),
+            }))
+          : undefined,
+        pagesError: response.pages_error ?? undefined,
+      };
     }
 
     // A document that doesn't compile is a normal answer, not an error: the

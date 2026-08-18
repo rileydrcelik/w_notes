@@ -19,11 +19,17 @@
  * restore — the read view is the only view. The gate is the platform and not the
  * window, because a narrow browser window still has a keyboard.
  *
- * Compiling and previewing are separate capabilities, and only the second is
- * web-only. They were one flag, which meant native compiled nothing — and so had
- * no PDF, and so could not download the resume it was refusing to draw. Native
- * now compiles on the server like everywhere else and hands you the file; what
- * it cannot yet do is draw the pages (`lib/latex/pdf-render.ts`).
+ * Compiling and previewing are separate capabilities. They were one flag, which
+ * meant native compiled nothing — and so had no PDF, and so could not download
+ * the resume it was refusing to draw.
+ *
+ * Native still cannot draw a PDF: that needs a native module, which would mean a
+ * store build rather than an over-the-air update. So the *server* draws it. The
+ * same compile that returns the PDF also returns one PNG per page
+ * (`include_pages`), and `resume-preview.tsx` shows those, cached against the
+ * source *and the width they were drawn at* (`lib/latex/page-cache.ts`). Web
+ * never asks for them — it has pdf.js — which is what `pageImagesRequested()`
+ * decides.
  *
  * The navbar's trailing button on this screen is the **version history**, and it
  * stays that whether or not the source has focus. It is not a create button
@@ -69,11 +75,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
+  PixelRatio,
   Platform,
   Pressable,
   ScrollView,
   StyleSheet,
   TextInput,
+  useWindowDimensions,
   View,
 } from 'react-native';
 import Animated, { FadeIn, FadeOut, SlideInDown, SlideOutDown } from 'react-native-reanimated';
@@ -106,7 +114,14 @@ import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
 import { useTheme } from '@/hooks/use-theme';
 import { compileLatex, isLatexCompileSupported } from '@/lib/latex/engine';
 import { readCachedPdf, writeCachedPdf } from '@/lib/latex/pdf-cache';
-import { isPdfPreviewSupported } from '@/lib/latex/pdf-render';
+import {
+  cachedPageUris,
+  readCachedPages,
+  readCachedPagesError,
+  writeCachedPages,
+  writeCachedPagesError,
+} from '@/lib/latex/page-cache';
+import { pageImagesRequested } from '@/lib/latex/pdf-render';
 import {
   fontSubstitutions,
   summarizeDiagnostics,
@@ -124,7 +139,13 @@ import {
   replaceResumeEntry,
   resumeSectionNames,
 } from '@/lib/latex/sections';
-import type { CompileDiagnostic, CompileStage, LatexEngine } from '@/lib/latex/types';
+import type {
+  CompileDiagnostic,
+  CompileStage,
+  LatexEngine,
+  PreviewPage,
+  RenderedPage,
+} from '@/lib/latex/types';
 import {
   resumeConfigWithEngine,
   resumeConfigWithVersion,
@@ -148,6 +169,33 @@ import { noScrollbar } from '@/lib/scroll-style';
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
+/**
+ * Ceiling on the width the server is asked to draw a page at, matching the
+ * backend's own clamp. A page wider than this gains nothing on any phone and
+ * costs bytes on a connection that may be paying for them.
+ */
+const MAX_SERVER_PAGE_WIDTH = 2000;
+
+/**
+ * Pair rendered pages with the cache files they were just written to.
+ *
+ * The preview takes file URIs rather than bytes — a full-page PNG as a base64
+ * data URI is a megabyte-ish string to hand across the bridge on every render,
+ * where a path is decoded natively and held by the image loader. The write is
+ * fire-and-forget, and these URIs are where it is putting them.
+ */
+function toPreviewPages(
+  noteId: string,
+  engine: LatexEngine,
+  source: string,
+  width: number,
+  pages: RenderedPage[] | undefined,
+): PreviewPage[] | undefined {
+  if (!pages?.length) return undefined;
+  const uris = cachedPageUris(noteId, engine, source, width, pages.length);
+  return pages.map((page, i) => ({ uri: uris[i], width: page.width, height: page.height }));
+}
+
 type Mode = ResumeMode;
 
 /**
@@ -162,7 +210,21 @@ type Compilation =
   // compile has them: the cache stores the PDF, not the log, so reopening a
   // resume shows no chip. That's the right trade — the moment this matters is
   // when you paste a document and first see it — but it is a trade.
-  | { state: 'ok'; pdf: Uint8Array; source: string; engine: LatexEngine; warnings: string[] }
+  | {
+      state: 'ok';
+      pdf: Uint8Array;
+      source: string;
+      engine: LatexEngine;
+      warnings: string[];
+      /** Server-drawn pages, on a platform that can't draw the PDF itself. */
+      pages?: PreviewPage[];
+      /**
+       * The document compiled but its pages didn't come. Distinct from a failed
+       * compile: there is a PDF here to download, so the screen says *that*
+       * rather than showing an empty sheet and calling it a preview.
+       */
+      pagesError?: string;
+    }
   | {
       state: 'failed';
       diagnostics: CompileDiagnostic[];
@@ -233,7 +295,26 @@ export default function ResumeScreen() {
   // neither preview a resume *nor download one*. Keeping them apart is what lets
   // this screen hand you the file it can't yet draw.
   const canCompile = isLatexCompileSupported();
-  const canPreview = isPdfPreviewSupported();
+  // Who draws the document: this platform, or the server. Web has pdf.js and
+  // draws the PDF; native shows the page images the server drew, because a real
+  // PDF viewer is a native module and this app ships over the air. Not
+  // `isPdfPreviewSupported`, which now answers "can a resume be shown here at
+  // all" and is true either way — that flag stopped being able to tell these two
+  // apart the moment native could show one without rendering a PDF.
+  const canDrawPdf = !pageImagesRequested();
+  // How wide to have the server draw each page, in device pixels — only this
+  // side knows the screen or its density. Bucketed to the nearest 80pt and
+  // capped, so rotating, opening a keyboard, or any other layout twitch doesn't
+  // land on a new number and invalidate a cache entry that was fine. Density is
+  // capped at 2 as well: a 3x phone gains little on a page of body text and pays
+  // for it in bytes on a mobile connection.
+  const window = useWindowDimensions();
+  const pageWidth = pageImagesRequested()
+    ? Math.min(
+        MAX_SERVER_PAGE_WIDTH,
+        Math.round((Math.min(window.width, 820) * Math.min(PixelRatio.get(), 2)) / 80) * 80,
+      )
+    : 0;
 
   const readOnly = RESUME_READ_ONLY;
 
@@ -437,7 +518,17 @@ export default function ResumeScreen() {
     // effect re-runs the instant this sets `running`, so an effect-lifetime
     // flag cancels the very compile it just started and the preview spins for
     // ever. See `isCurrent` below.
-    async (text: string, shouldApply: () => boolean = () => true) => {
+    // `fallbackPdf` is the PDF we already had before asking. It is set only on a
+    // backfill — a compile run purely to fetch page images for a document that
+    // is already cached and already correct — and it makes that run unable to
+    // lose anything: if the server can't be reached, the resume on screen stays
+    // the one from the cache, downloadable, instead of becoming a failure screen
+    // for a document that compiles perfectly well.
+    async (
+      text: string,
+      shouldApply: () => boolean = () => true,
+      fallbackPdf?: Uint8Array,
+    ) => {
       if (text.trim().length === 0) {
         setCompilation({ state: 'idle' });
         return;
@@ -445,14 +536,33 @@ export default function ResumeScreen() {
       setCompilation({ state: 'running', stage: 'starting' });
       const result = await compileLatex(text, {
         engine,
+        // Only where the PDF can't be drawn locally. `pageWidth` is 0 on web,
+        // and omitting the option entirely is what keeps web's request byte-for
+        // -byte the one it sent before pages existed.
+        ...(pageWidth > 0 ? { pages: { width: pageWidth } } : {}),
         onProgress: (stage) => setCompilation((prev) =>
           prev.state === 'running' ? { state: 'running', stage } : prev,
         ),
       });
       // Cached even when superseded: the PDF is a correct result for this
       // (resume, engine, source), so whoever asks for that pairing next gets it
-      // for free rather than paying for TeX again.
-      if (result.ok) void writeCachedPdf(id, engine, text, result.pdf);
+      // for free rather than paying for TeX again. The pages are cached on the
+      // same reasoning, under the width they were drawn at.
+      // Whether the page images actually reached disk. The preview is handed
+      // paths into that directory, so this has to be awaited rather than fired
+      // and forgotten: URIs for files that never landed draw blank sheets.
+      let pagesCached = false;
+      if (result.ok) {
+        void writeCachedPdf(id, engine, text, result.pdf);
+        if (result.pages?.length) {
+          pagesCached = await writeCachedPages(id, engine, text, pageWidth, result.pages);
+        } else if (result.pagesError && pageWidth > 0) {
+          // A refusal is a result too, and a durable one. Cached here, the next
+          // open reads it back and says so immediately, instead of paying for a
+          // compile to be refused again in the same terms.
+          void writeCachedPagesError(id, engine, text, pageWidth, result.pagesError);
+        }
+      }
       if (!shouldApply()) {
         // Drop the answer, but hand the screen back to `idle` so the effect can
         // go and get the one it now wants. Leaving it `running` is a preview
@@ -468,14 +578,31 @@ export default function ResumeScreen() {
               source: text,
               engine,
               warnings: fontSubstitutions(result.log),
+              // Only what's actually on disk. Pages the server drew but this
+              // device couldn't store are pages the preview can't load, so the
+              // screen falls back to offering the download — which works.
+              pages: pagesCached ? toPreviewPages(id, engine, text, pageWidth, result.pages) : undefined,
+              pagesError: result.pagesError,
             }
-          : {
-              state: 'failed',
-              diagnostics: result.diagnostics,
-              log: result.log,
-              source: text,
-              engine,
-            },
+          : fallbackPdf
+            ? // The compile we couldn't complete was only ever after images. The
+              // PDF it would have re-produced is already in hand and already
+              // right, so this keeps showing it rather than reporting a failure
+              // for a document that isn't broken.
+              {
+                state: 'ok',
+                pdf: fallbackPdf,
+                source: text,
+                engine,
+                warnings: [],
+              }
+            : {
+                state: 'failed',
+                diagnostics: result.diagnostics,
+                log: result.log,
+                source: text,
+                engine,
+              },
       );
 
       // The first compile that works is where a resume's history starts.
@@ -492,7 +619,11 @@ export default function ResumeScreen() {
       // return to, and it costs one row rather than one per keystroke.
       if (result.ok) void recordFirstCompile(text);
     },
-    [id, engine, recordFirstCompile],
+    // `pageWidth` belongs here: it is bucketed, so it only moves when the window
+    // genuinely changes size class, and a stale one would ask the server to draw
+    // a page for the shape the screen used to be — then cache it under the new
+    // width, where it would be read back and shown at the wrong size.
+    [id, engine, pageWidth, recordFirstCompile],
   );
 
   // The one path from "the read view has no result" to "here is the PDF", and
@@ -514,12 +645,49 @@ export default function ResumeScreen() {
       const cached = await readCachedPdf(id, engine, source);
       if (!isCurrent(id, engine, source)) return;
       if (cached) {
-        setCompilation({ state: 'ok', pdf: cached, source, engine, warnings: [] });
+        // The pages are a second, independent cache, and it can miss while the
+        // PDF hits — a device that updated its app before this feature existed,
+        // or has rotated since, has one and not the other.
+        const pages = pageWidth > 0 ? await readCachedPages(id, engine, source, pageWidth) : null;
+        if (!isCurrent(id, engine, source)) return;
+        if (pageWidth === 0 || pages) {
+          setCompilation({
+            state: 'ok',
+            pdf: cached,
+            source,
+            engine,
+            warnings: [],
+            pages: pages ? toPreviewPages(id, engine, source, pageWidth, pages) : undefined,
+          });
+          return;
+        }
+        // Missing images are usually just un-fetched, and a compile gets them.
+        // But some resumes the server won't draw at all, and it says so in the
+        // same terms every time — so a cached refusal is taken at its word.
+        // Without this, such a resume compiles on every single open, for ever,
+        // to be told the same no.
+        const refused = await readCachedPagesError(id, engine, source, pageWidth);
+        if (!isCurrent(id, engine, source)) return;
+        if (refused) {
+          setCompilation({
+            state: 'ok',
+            pdf: cached,
+            source,
+            engine,
+            warnings: [],
+            pagesError: refused,
+          });
+          return;
+        }
+        // A backfill: everything on screen is already correct, and this is only
+        // after the images. It hands over the cached PDF so a server that can't
+        // be reached costs us the preview, not the resume.
+        await runCompile(source, () => isCurrent(id, engine, source), cached);
         return;
       }
       await runCompile(source, () => isCurrent(id, engine, source));
     })();
-  }, [canCompile, split, mode, shown.state, source, id, engine, isCurrent, runCompile]);
+  }, [canCompile, split, mode, shown.state, source, id, engine, pageWidth, isCurrent, runCompile]);
 
   // Leaving the editor just leaves it. Whether the result on screen is still
   // the right one is `shown`'s question, not this one's: it reads as `idle` the
@@ -907,7 +1075,7 @@ export default function ResumeScreen() {
     <PreviewPane
       compilation={shown}
       canCompile={canCompile}
-      canPreview={canPreview}
+      canDrawPdf={canDrawPdf}
       readOnly={readOnly}
       hasSource={source.trim().length > 0}
       stale={stale}
@@ -1220,7 +1388,7 @@ function EnginePicker({
 function PreviewPane({
   compilation,
   canCompile,
-  canPreview,
+  canDrawPdf,
   readOnly,
   hasSource,
   stale,
@@ -1229,8 +1397,12 @@ function PreviewPane({
   compilation: Compilation;
   /** The server can build a PDF from this source. True wherever the API is. */
   canCompile: boolean;
-  /** This platform can draw the PDF it gets back. Web only, for now. */
-  canPreview: boolean;
+  /**
+   * This platform draws the PDF itself (web, via pdf.js). False on native,
+   * which shows the page images the server drew instead — so a missing set
+   * there means "downloadable but not viewable", not "broken".
+   */
+  canDrawPdf: boolean;
   /** No editor to send anyone to, so empty states can't suggest one. */
   readOnly: boolean;
   hasSource: boolean;
@@ -1315,11 +1487,12 @@ function PreviewPane({
     );
   }
 
-  // Compiled, but this platform can't draw a PDF yet. The resume is real and in
-  // memory — the navbar's download icon is holding it — so this says where it
-  // went rather than reporting a failure, which is what the old shared
-  // "available on the web app" copy did for a document that had just built fine.
-  if (!canPreview) {
+  // Compiled, but this platform draws pages rather than the PDF, and they aren't
+  // here. Either the server couldn't render them (`pagesError`) or it is old
+  // enough not to have been asked. Both leave a real, downloadable resume in
+  // hand, so this says where it went rather than reporting a failure for a
+  // document that built perfectly well.
+  if (!canDrawPdf && !compilation.pages?.length) {
     return (
       <View style={styles.state}>
         <Feather name="check-circle" size={16} color={ACCENT} />
@@ -1328,8 +1501,10 @@ function PreviewPane({
               reading and jumps to the top-right corner whenever a keyboard is
               up, so naming a direction is wrong half the time. The icon is what
               identifies it. */}
-          Your resume is ready. Use the download button to save the PDF — reading it here is coming
-          in the next app update.
+          {/* The server's sentence stands on its own — "…so it can only be
+              downloaded" already says the resume is there. Prefixing it with
+              our own "ready to download" made it say download twice. */}
+          {compilation.pagesError ?? 'Your resume is ready. Use the download button to save the PDF.'}
         </ThemedText>
       </View>
     );
@@ -1346,7 +1521,7 @@ function PreviewPane({
           </ThemedText>
         </View>
       )}
-      <ResumePreview pdf={compilation.pdf} />
+      <ResumePreview pdf={compilation.pdf} pages={compilation.pages ?? []} />
     </View>
   );
 }
