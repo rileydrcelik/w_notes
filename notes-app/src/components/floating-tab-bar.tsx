@@ -334,8 +334,10 @@ export function FloatingTabBar({ blurTarget }: FloatingTabBarProps) {
     { key: 'menu', icon: 'menu' },
   ];
 
-  // When docked at the top-right the slots reserve height; otherwise width.
-  const slotStyle = vertical ? { height: TabBar.height } : { width: TabBar.height };
+  // The slots reserve a whole button either way round. Both axes, not just the
+  // one the cluster runs along: the trailing slot's children are taken out of
+  // flow (see `slotItem`), so without a height of its own it would collapse.
+  const slotStyle = { width: TabBar.height, height: TabBar.height };
   // The pill sizes to its icons (each a square TabBar.height wide) plus padding,
   // so adding/removing the save icon grows/shrinks it. Its main-axis length is
   // animated via the wrapper's LinearTransition below.
@@ -456,6 +458,7 @@ export function FloatingTabBar({ blurTarget }: FloatingTabBarProps) {
             {fixMode ? (
               <Animated.View
                 key="selection"
+                style={styles.slotItem}
                 entering={FadeIn.duration(160)}
                 exiting={FadeOut.duration(140)}>
                 <SelectionMenuButton
@@ -468,6 +471,7 @@ export function FloatingTabBar({ blurTarget }: FloatingTabBarProps) {
             ) : ghMode ? (
               <Animated.View
                 key="gh-selection"
+                style={styles.slotItem}
                 entering={FadeIn.duration(160)}
                 exiting={FadeOut.duration(140)}>
                 <SelectionMenuButton
@@ -481,6 +485,7 @@ export function FloatingTabBar({ blurTarget }: FloatingTabBarProps) {
             ) : taskMode ? (
               <Animated.View
                 key="task-selection"
+                style={styles.slotItem}
                 entering={FadeIn.duration(160)}
                 exiting={FadeOut.duration(140)}>
                 <SelectionMenuButton
@@ -494,6 +499,7 @@ export function FloatingTabBar({ blurTarget }: FloatingTabBarProps) {
             ) : itemSelected ? (
               <Animated.View
                 key="item-options"
+                style={styles.slotItem}
                 entering={FadeIn.duration(160)}
                 exiting={FadeOut.duration(140)}>
                 <ItemOptionsButton
@@ -510,6 +516,7 @@ export function FloatingTabBar({ blurTarget }: FloatingTabBarProps) {
             ) : ghComposeMode ? (
               <Animated.View
                 key="gh-compose"
+                style={styles.slotItem}
                 entering={FadeIn.duration(160)}
                 exiting={FadeOut.duration(140)}>
                 <ComposeButton blurTarget={blurTarget} onPress={() => setGhComposeOpen(true)} />
@@ -517,6 +524,7 @@ export function FloatingTabBar({ blurTarget }: FloatingTabBarProps) {
             ) : taskComposeMode ? (
               <Animated.View
                 key="task-compose"
+                style={styles.slotItem}
                 entering={FadeIn.duration(160)}
                 exiting={FadeOut.duration(140)}>
                 <ComposeButton
@@ -536,7 +544,11 @@ export function FloatingTabBar({ blurTarget }: FloatingTabBarProps) {
                 />
               </Animated.View>
             ) : (
-              <Animated.View key="create" entering={FadeIn.duration(160)} exiting={FadeOut.duration(140)}>
+              <Animated.View
+                key="create"
+                style={styles.slotItem}
+                entering={FadeIn.duration(160)}
+                exiting={FadeOut.duration(140)}>
                 <CreateButton
                   iconColor={colors.textSecondary}
                   keyboardVisible={doneMode}
@@ -1621,6 +1633,29 @@ const styles = StyleSheet.create({
   sideSlot: {
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  /**
+   * One trailing button, laid over the slot rather than inside its flow.
+   *
+   * The slot's contents change identity when a screen changes what the button
+   * is *for* — the (+) becoming a project's "new issue" compose button, or a
+   * selection's "⋯". For the ~150ms both the outgoing and incoming button are
+   * mounted, and as flow children two 48px squares stack into a column: the one
+   * you can see gets displaced half a button upwards and drops back when its
+   * predecessor unmounts. That was the navbar "jumping" on the way in and out of
+   * a task-manager project — the only navigation that swaps the button for a
+   * different component, since the edit pencil is a state of `CreateButton`
+   * rather than a sibling of it.
+   *
+   * Out of flow they share the box and the swap is the cross-fade it was always
+   * meant to be. No insets: an absolutely positioned child of a flex container
+   * is placed by that container's `alignItems`/`justifyContent` (CSS Flexbox
+   * §4.1, and Yoga does the same), so `sideSlot` still centres it — which
+   * matters because the selection buttons are wider than the slot and pinning
+   * their edges would squash them.
+   */
+  slotItem: {
+    position: 'absolute',
   },
   backButton: {
     alignItems: 'center',
