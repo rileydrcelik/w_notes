@@ -12,6 +12,7 @@ import {
 import Animated from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { ConfirmDialog } from '@/components/confirm-dialog';
 import { IssueAttributeEditors } from '@/components/notes/issue-attribute-editors';
 import { SwipeBackView } from '@/components/swipe-back-view';
 import { ThemedText } from '@/components/themed-text';
@@ -21,7 +22,7 @@ import { useKeyboardSpacer } from '@/hooks/use-keyboard-inset';
 import { useKeyboardReveal } from '@/hooks/use-keyboard-reveal';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
 import { useTheme } from '@/hooks/use-theme';
-import type { IssueAttrValue } from '@/data/notes';
+import { effectiveTypeIds, type IssueAttrValue } from '@/data/notes';
 import { newAttrId, parseTypeConfig, projectConfig, serializeProjectConfig } from '@/lib/project';
 import {
   createGithubIssue,
@@ -45,7 +46,7 @@ export default function NewIssueScreen() {
   const insets = useSafeAreaInsets();
   const tabBarInset = useTabBarInset();
   const { getFolder, getNotesInFolder, updateFolder, createIssueTypeNote, deleteNote } = useNotes();
-  const { createIssue, updateIssue } = useIssues();
+  const { createIssue, updateIssue, getIssuesForNote } = useIssues();
 
   // Details sits at the far end of this form, past the types and every custom
   // attribute, so on Android — where the keyboard covers the window instead of
@@ -148,7 +149,27 @@ export default function NewIssueScreen() {
     setNewTypeConnected(true);
   };
 
-  const removeType = (typeId: string) => {
+  // Deleting a type takes its issues with it, and its (x) sits a few pixels from
+  // the chip you tap to select the type — far too easy to hit by accident. So the
+  // (x) only *asks*; `pendingDeleteType` holds the type until the dialog answers.
+  const [pendingDeleteType, setPendingDeleteType] = useState<string | null>(null);
+  const pendingType = typeNotes.find((t) => t.id === pendingDeleteType);
+  const pendingTypeName = pendingType?.title || 'Untitled';
+  // How many issues the delete would actually take down with it: the cascade
+  // spares any issue that still has another live type to be seen under.
+  const pendingDoomedCount = pendingDeleteType
+    ? getIssuesForNote(pendingDeleteType).filter(
+        (i) =>
+          !effectiveTypeIds(i).some(
+            (t) => t !== pendingDeleteType && typeNotes.some((n) => n.id === t),
+          ),
+      ).length
+    : 0;
+
+  const confirmRemoveType = () => {
+    const typeId = pendingDeleteType;
+    setPendingDeleteType(null);
+    if (!typeId) return;
     // deleteNote takes the type's issues with it (those left with no other live
     // type), stamped so a restore brings them back together.
     deleteNote(typeId);
@@ -250,9 +271,9 @@ export default function NewIssueScreen() {
                     </ThemedText>
                   </Pressable>
                   <Pressable
-                    onPress={() => removeType(t.id)}
+                    onPress={() => setPendingDeleteType(t.id)}
                     accessibilityRole="button"
-                    accessibilityLabel={`Remove ${t.title} type`}
+                    accessibilityLabel={`Delete ${t.title} type`}
                     hitSlop={6}
                     style={({ pressed }) => pressed && styles.pressed}>
                     <Feather name="x" size={13} color={theme.textSecondary} />
@@ -438,6 +459,19 @@ export default function NewIssueScreen() {
           <Animated.View style={keyboardSpacer} />
         </ScrollView>
       </ThemedView>
+      <ConfirmDialog
+        open={pendingDeleteType !== null}
+        title={`Delete “${pendingTypeName}”?`}
+        message={
+          pendingDoomedCount > 0
+            ? `The type and the ${pendingDoomedCount} issue${
+                pendingDoomedCount === 1 ? '' : 's'
+              } filed only under it move to the trash together. Restoring the type brings them back.`
+            : `The type moves to the trash. Restoring it brings it back.`
+        }
+        onConfirm={confirmRemoveType}
+        onCancel={() => setPendingDeleteType(null)}
+      />
     </SwipeBackView>
   );
 }
