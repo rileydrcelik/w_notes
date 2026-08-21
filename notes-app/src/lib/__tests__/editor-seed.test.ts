@@ -37,11 +37,19 @@ describe('the native editor body', () => {
     expect(SOURCE).toMatch(/defaultValue=""/);
   });
 
-  it('swallows the seed echo, so it is not mistaken for a user edit', () => {
+  it('tells the seed echo from a keystroke by focus, not by timing', () => {
     // The note screen marks the note edited on every change event, so reporting
     // the seed would flag an untouched note as edited and re-commit its body.
-    expect(SOURCE).toMatch(/if \(seeding\.current\)/);
-    // …but never indefinitely: a swallowed real edit is lost text.
-    expect(SOURCE).toMatch(/seeding\.current = false/);
+    // The gate has to be focus: setValue is applied on a later native tick, so
+    // the echo can arrive after the field is focused, and any rule counting
+    // events would either report the seed as an edit or swallow a keystroke.
+    expect(SOURCE).toMatch(/if \(!touched\.current\) return;/);
+    expect(SOURCE).toMatch(/touched\.current = true;/);
+  });
+
+  it('does not gate the echo on a timer', () => {
+    // A timer would be back to guessing at ordering — and one that fired late
+    // would swallow a real edit, which is lost text.
+    expect(SOURCE).not.toMatch(/setTimeout/);
   });
 });

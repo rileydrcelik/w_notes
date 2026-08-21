@@ -118,18 +118,21 @@ export function MarkdownEditor({
 
   // The seed comes back as a change event; that is the editor echoing what the
   // store already holds, not the user typing, and reporting it would mark the
-  // note edited (see `onChangeBody` in the note screen) and re-commit the body.
-  const seeding = useRef(initialValue.length > 0);
+  // note edited (see `onChangeBody` in the note screen) and re-commit a body
+  // nobody touched — which is how two open clients start bouncing a note off
+  // each other.
+  //
+  // What tells the two apart is focus, not timing. `setValue` is a view command
+  // applied on a later native tick, so the echo can arrive *after* the field has
+  // been focused; a rule that swallowed "the first event after seeding" would
+  // then report the seed as an edit. Typing, on the other hand, is impossible
+  // without focus — so an event arriving before the editor has ever been focused
+  // cannot be the user, and one arriving after can be treated as though it is.
+  // That needs no timer and can never swallow a real keystroke.
+  const touched = useRef(false);
   useEffect(() => {
     if (!initialValue) return;
     editor.current?.setValue(initialValue);
-    // Backstop. If that event never arrives, stop swallowing changes — a
-    // swallowed *real* edit is lost text, which is far worse than a spurious
-    // commit of the body the store already has.
-    const timer = setTimeout(() => {
-      seeding.current = false;
-    }, 2000);
-    return () => clearTimeout(timer);
     // `editor` is a ref object and never changes identity; listed to satisfy the
     // exhaustive-deps rule without re-seeding.
   }, [initialValue, editor]);
@@ -197,12 +200,9 @@ export function MarkdownEditor({
       htmlStyle={html}
       style={base}
       onChangeHtml={(e) => {
-        // The seed echoing back, not a keystroke. One event only: anything after
-        // it is the user, and the flag is cleared on focus and by the backstop.
-        if (seeding.current) {
-          seeding.current = false;
-          return;
-        }
+        // Nothing typed here yet, so this is the seed echoing back rather than
+        // a keystroke.
+        if (!touched.current) return;
         watchForEscapedMarkup(e.nativeEvent.value);
         onChangeText(e.nativeEvent.value);
       }}
@@ -212,9 +212,8 @@ export function MarkdownEditor({
         onSelectionChange?.({ start, end, atEnd: end >= text.length });
       }}
       onFocus={() => {
-        // Whatever happened to the seed's event, anything typed from here is the
-        // user, so stop swallowing changes.
-        seeding.current = false;
+        // From here on the field can be typed into, so changes are the user's.
+        touched.current = true;
         // The native editor isn't registered with RN's TextInputState, so the
         // navbar's "done" can't reach it via Keyboard.dismiss(). Expose a blur.
         setActiveEditorDismiss(() => editor.current?.blur());
