@@ -173,7 +173,7 @@ export function VersionList({
                           <ThemedText numberOfLines={2}>{version.label}</ThemedText>
                           <View style={styles.metaRow}>
                             <ThemedText type="small" themeColor="textSecondary">
-                              {describeAge(version.createdAt)}
+                              {describeAge(version.updatedAt)}
                             </ThemedText>
                             {isOriginal && (
                               <ThemedText type="small" themeColor="textSecondary">

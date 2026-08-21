@@ -790,6 +790,10 @@ function toResumeVersion(r: ResumeVersionRow): ResumeVersion {
     label: r.label,
     source: r.source,
     createdAt: r.created_at,
+    // The column defaults to 0, and 0 shown as an age reads "56 years ago" —
+    // every write path sets it, so falling back to the creation time keeps a row
+    // that somehow missed one merely unhelpful rather than absurd.
+    updatedAt: r.updated_at || r.created_at,
   };
 }
 

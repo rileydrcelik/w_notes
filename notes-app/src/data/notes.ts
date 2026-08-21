@@ -134,6 +134,17 @@ export type ResumeVersion = {
   source: string;
   /** Raw creation timestamp (ms) — the history's sort key. */
   createdAt: number;
+  /**
+   * When this version's text last changed (ms) — what its row *shows*.
+   *
+   * Deliberately not the sort key. A version you are working in is kept in step
+   * with the editor, so this moves as you type; ordering by it would make the
+   * list reshuffle under you, which is why `createdAt` still decides position.
+   * But the age on the row answers "how stale is this version", and for the one
+   * you have been refining all afternoon its creation time is the wrong answer.
+   * Equal to `createdAt` until something rewrites the source.
+   */
+  updatedAt: number;
 };
 
 /**

@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+
 import { describe, expect, it } from 'vitest';
 
 import type { ResumeVersion } from '@/data/notes';
@@ -15,12 +18,19 @@ import {
   truncateLabel,
 } from '@/lib/resume-versions';
 
-const version = (id: string, createdAt: number, label = id): ResumeVersion => ({
+const version = (
+  id: string,
+  createdAt: number,
+  label = id,
+  // Untouched since it was written, unless a test says otherwise.
+  updatedAt = createdAt,
+): ResumeVersion => ({
   id,
   noteId: 'note-1',
   label,
   source: `source-${id}`,
   createdAt,
+  updatedAt,
 });
 
 describe('truncateLabel', () => {
@@ -219,6 +229,39 @@ describe('sortVersionsNewestFirst', () => {
 
   it('handles an empty history', () => {
     expect(sortVersionsNewestFirst([])).toEqual([]);
+  });
+
+  it('orders by creation, not by the last edit', () => {
+    // The version you are working in has its source rewritten as you type, so
+    // its `updatedAt` keeps moving. Ordering by that would walk it up the list
+    // mid-keystroke. Here the oldest version is the most recently edited one and
+    // it still sorts last.
+    const sorted = sortVersionsNewestFirst([
+      version('old-but-live', 100, 'old-but-live', 999),
+      version('new', 300),
+      version('mid', 200),
+    ]);
+    expect(sorted.map((v) => v.id)).toEqual(['new', 'mid', 'old-but-live']);
+  });
+});
+
+describe('the age on a version row', () => {
+  // Which timestamp the row reads is a one-word decision in the component, and
+  // there is no render test in this project to catch it going back — but it is
+  // the difference between "edited 2 min ago" and a version claiming to be three
+  // weeks old while you type into it. Read the source and insist on the field,
+  // the same way no-scrollbar.test.ts guards its own one-word invariant.
+  const source = readFileSync(
+    fileURLToPath(new URL('../../components/resume/version-list.tsx', import.meta.url)),
+    'utf8',
+  );
+
+  it('is how long ago the version was last edited', () => {
+    expect(source).toMatch(/describeAge\(\s*version\.updatedAt\s*\)/);
+  });
+
+  it('is not how long ago it was created', () => {
+    expect(source).not.toMatch(/describeAge\(\s*version\.createdAt\s*\)/);
   });
 });
 

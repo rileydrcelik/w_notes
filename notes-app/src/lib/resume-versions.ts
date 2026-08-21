@@ -193,14 +193,21 @@ export function isOriginal(version: ResumeVersion, versions: ResumeVersion[]): b
 }
 
 /**
- * "2 min ago", "yesterday" — the age of a snapshot, for its list row.
+ * "2 min ago", "yesterday" — how long ago a moment was, for a version's list row.
+ *
+ * The row passes a version's `updatedAt`, not its `createdAt`: the question a
+ * history row answers is "how recently was this version touched", and a version
+ * you have spent the afternoon refining was created hours before it was last
+ * worth anything. The list's *order* still comes from `createdAt` — see
+ * {@link sortVersionsNewestFirst} — so a row's age can read younger than the row
+ * below it without the two swapping places as you type.
  *
  * Coarse on purpose. What matters when picking a version is roughly how far back
  * it was and how it sits relative to its neighbours; a timestamp to the second
  * would be more precise and less readable.
  */
-export function describeAge(createdAt: number, now = Date.now()): string {
-  const seconds = Math.floor((now - createdAt) / 1000);
+export function describeAge(at: number, now = Date.now()): string {
+  const seconds = Math.floor((now - at) / 1000);
   if (seconds < 45) return 'just now';
   const minutes = Math.round(seconds / 60);
   if (minutes < 60) return `${minutes} min ago`;
