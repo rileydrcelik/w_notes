@@ -186,8 +186,8 @@ type Option = {
  * Bottom action sheet for the selected note(s)/folder(s). Always mounted; the
  * inner content mounts while `targets` is non-empty so the slide/fade
  * transitions can play out on dismiss. Options adapt to the selection: rename is
- * single-only, move applies when every item is a note, and favorite/share/delete
- * act on the whole set.
+ * single-only, move applies when every item is a note or a folder, and
+ * favorite/share/delete act on the whole set.
  */
 function OptionsSheet({
   targets,

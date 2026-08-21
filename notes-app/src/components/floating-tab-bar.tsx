@@ -1650,9 +1650,11 @@ const styles = StyleSheet.create({
    * Out of flow they share the box and the swap is the cross-fade it was always
    * meant to be. No insets: an absolutely positioned child of a flex container
    * is placed by that container's `alignItems`/`justifyContent` (CSS Flexbox
-   * §4.1, and Yoga does the same), so `sideSlot` still centres it — which
-   * matters because the selection buttons are wider than the slot and pinning
-   * their edges would squash them.
+   * §4.1, and Yoga does the same), so `sideSlot` still centres it. Centring
+   * rather than pinning also leaves the buttons free to overhang: every one of
+   * them is the same 48px square today, but the selection variants carry a
+   * count badge positioned outside their own padding, and stretched edges would
+   * start clipping it.
    */
   slotItem: {
     position: 'absolute',
