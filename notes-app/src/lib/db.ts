@@ -15,6 +15,7 @@ import { whenDbOwner } from '@/lib/web-db-lock';
 import { parseTypeIds, planIssueCascade } from '@/lib/issue-cascade';
 import type { IssueMembership } from '@/lib/issue-cascade';
 import type { Folder, Issue, Note, ResumeVersion } from '@/data/notes';
+import { foldersToRehome } from '@/lib/folder-tree';
 import type { CopaItem } from '@/data/copa';
 
 /**
@@ -1873,6 +1874,32 @@ export const db = {
             f.kind ?? null,
             f.config ?? null,
           ],
+        );
+        changed += r.changes;
+      }
+      // Folder rows arrive one at a time and are applied last-writer-wins, so
+      // nothing on the way in ever looks at the shape they make together. Two
+      // devices briefly out of step can each move a folder into the other's,
+      // pass their own local guard, and land a pair that points at itself —
+      // after which neither folder, nor anything under it, has a path to Home
+      // on any device, and no screen can reach it to undo the move. Repair it
+      // here, where the whole tree is visible for the first time. See
+      // `lib/folder-tree.ts` for which side loses and why the answer has to be
+      // the same on every device.
+      const folderRows = await database.getAllAsync<{
+        id: string;
+        parent_id: string | null;
+        updated_at: number;
+      }>('SELECT id, parent_id, updated_at FROM folders');
+      const rehome = foldersToRehome(
+        folderRows.map((f) => ({ id: f.id, parentId: f.parent_id, updatedAt: f.updated_at })),
+      );
+      for (const id of rehome) {
+        // Dirty, so the repair reaches the other devices rather than each one
+        // discovering the cycle for itself.
+        const r = await database.runAsync(
+          'UPDATE folders SET parent_id = NULL, updated_at = ?, dirty = 1 WHERE id = ?',
+          [Date.now(), id],
         );
         changed += r.changes;
       }

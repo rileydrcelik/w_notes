@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import { canMoveFolder, folderSubtreeIds, invalidMoveTargets } from '@/lib/folder-tree';
+import {
+  canMoveFolder,
+  folderSubtreeIds,
+  foldersToRehome,
+  invalidMoveTargets,
+} from '@/lib/folder-tree';
 
 /** a > b > c, with d a sibling of a at the root. */
 const tree = [
@@ -84,5 +89,59 @@ describe('canMoveFolder', () => {
     // The one that a shallow "is this my direct child" check would let through,
     // detaching a>b>c from the root for good.
     expect(canMoveFolder(tree, 'a', 'c')).toBe(false);
+  });
+});
+
+describe('foldersToRehome', () => {
+  const dated = (id: string, parentId: string | null, updatedAt: number) => ({ id, parentId, updatedAt });
+
+  it('leaves a healthy tree alone', () => {
+    expect(
+      foldersToRehome([dated('a', null, 1), dated('b', 'a', 2), dated('c', 'b', 3)]),
+    ).toEqual([]);
+  });
+
+  it('breaks the two-folder cycle two devices can create', () => {
+    // Device 1 put a inside b; device 2, not yet aware, put b inside a. Both
+    // rows are valid on their own and last-writer-wins applies them both.
+    const cyclic = [dated('a', 'b', 100), dated('b', 'a', 200)];
+    // The older move loses, so the newer one (b into a) survives.
+    expect(foldersToRehome(cyclic)).toEqual(['a']);
+  });
+
+  it('breaks a longer cycle at its oldest link', () => {
+    expect(foldersToRehome([dated('a', 'c', 300), dated('b', 'a', 100), dated('c', 'b', 200)])).toEqual(['b']);
+  });
+
+  it('breaks a self-parented folder', () => {
+    expect(foldersToRehome([dated('a', 'a', 5)])).toEqual(['a']);
+  });
+
+  it('picks the same loser whichever device repairs it', () => {
+    // Both devices run this over the same rows, so the answer has to be a
+    // function of the rows alone — including when the timestamps tie.
+    const rows = [dated('b', 'a', 100), dated('a', 'b', 100)];
+    expect(foldersToRehome(rows)).toEqual(foldersToRehome([...rows].reverse()));
+  });
+
+  it('spares folders that merely hang off a cycle', () => {
+    // `d` is inside the cycle's subtree but is not itself part of the loop;
+    // cutting one link inside the loop is enough to give it a path to Home.
+    const rows = [dated('a', 'b', 100), dated('b', 'a', 200), dated('d', 'a', 300)];
+    expect(foldersToRehome(rows)).toEqual(['a']);
+  });
+
+  it('handles several independent cycles at once', () => {
+    const rows = [
+      dated('a', 'b', 100),
+      dated('b', 'a', 200),
+      dated('x', 'y', 400),
+      dated('y', 'x', 300),
+    ];
+    expect(foldersToRehome(rows).sort()).toEqual(['a', 'y']);
+  });
+
+  it('ignores a dangling parent rather than treating it as a loop', () => {
+    expect(foldersToRehome([dated('a', 'gone', 1)])).toEqual([]);
   });
 });
