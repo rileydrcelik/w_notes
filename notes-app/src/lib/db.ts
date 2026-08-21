@@ -1078,7 +1078,7 @@ export const db = {
 
   async updateFolder(
     id: string,
-    patch: Partial<Pick<Folder, 'name' | 'favorite' | 'config'>>,
+    patch: Partial<Pick<Folder, 'name' | 'favorite' | 'config' | 'parentId'>>,
   ): Promise<void> {
     dbCrumb('updateFolder', { id, fields: Object.keys(patch) });
     const database = await getDb();
@@ -1090,6 +1090,10 @@ export const db = {
     // A project's config (repo + attribute schema) is set after creation when the
     // user configures it; it syncs like any other column.
     if (patch.config !== undefined) (sets.push('config = ?'), args.push(patch.config));
+    // Re-parenting, i.e. moving a folder into another folder (or back to Home,
+    // which is `null` — a real value here, which is why every check in this
+    // method is against `undefined` rather than falsiness).
+    if (patch.parentId !== undefined) (sets.push('parent_id = ?'), args.push(patch.parentId));
     if (sets.length === 0) return;
     sets.push('updated_at = ?', 'dirty = 1');
     args.push(Date.now());

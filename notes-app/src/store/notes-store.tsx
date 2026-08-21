@@ -11,6 +11,7 @@ import { AppState } from 'react-native';
 
 import { Sentry } from '@/lib/sentry';
 import { db, type TrashEntry } from '@/lib/db';
+import { canMoveFolder, folderSubtreeIds } from '@/lib/folder-tree';
 import { isDbLockedError } from '@/lib/web-db-lock';
 import { requestSync, subscribeSynced, syncNow } from '@/lib/sync/sync-engine';
 import type { SentryTarget } from '@/lib/sentry-note';
@@ -144,6 +145,12 @@ type NotesContextValue = {
   updateFolder: (id: string, patch: Partial<Pick<Folder, 'name' | 'config'>>) => void;
   /** Moves a note into a folder, or to the home screen when folderId is null. */
   moveNote: (id: string, folderId: string | null) => void;
+  /**
+   * Moves a folder into another folder, or to the home screen when parentId is
+   * null. Refuses a move into the folder's own subtree, which would cut it (and
+   * everything under it) off from Home for good — see `lib/folder-tree.ts`.
+   */
+  moveFolder: (id: string, parentId: string | null) => void;
   /** Moves a note to the trash. */
   deleteNote: (id: string) => void;
   /** Moves a folder and its notes to the trash together. */
@@ -378,6 +385,19 @@ export function NotesProvider({ children }: { children: ReactNode }) {
     persist(db.updateNote(id, { folderId }));
   }, []);
 
+  const moveFolder = useCallback<NotesContextValue['moveFolder']>(
+    (id, parentId) => {
+      if (id === parentId) return;
+      // Checked here and not only in the sheet that offers the destinations: a
+      // cycle detaches the subtree from every screen at once, and no UI can then
+      // reach it to undo the move.
+      if (!canMoveFolder(folders, id, parentId)) return;
+      setFolders((prev) => prev.map((f) => (f.id === id ? { ...f, parentId } : f)));
+      persist(db.updateFolder(id, { parentId }));
+    },
+    [folders],
+  );
+
   const deleteNote = useCallback<NotesContextValue['deleteNote']>(
     (id) => {
       const note = notes.find((n) => n.id === id);
@@ -393,19 +413,10 @@ export function NotesProvider({ children }: { children: ReactNode }) {
     (id) => {
       const folder = folders.find((f) => f.id === id);
       if (!folder) return;
-      // Gather the whole subtree (this folder + every descendant folder) so the
-      // delete cascades and a restore brings the entire group back together.
-      const subtreeIds = new Set<string>([id]);
-      let grew = true;
-      while (grew) {
-        grew = false;
-        for (const f of folders) {
-          if (f.parentId && subtreeIds.has(f.parentId) && !subtreeIds.has(f.id)) {
-            subtreeIds.add(f.id);
-            grew = true;
-          }
-        }
-      }
+      // The whole subtree (this folder + every descendant) so the delete cascades
+      // and a restore brings the entire group back together. Shared with the move
+      // guard, which needs the same answer for the opposite reason.
+      const subtreeIds = folderSubtreeIds(folders, id);
       const descendantFolders = folders.filter((f) => f.id !== id && subtreeIds.has(f.id));
       const subtreeNotes = notes.filter((note) => note.folderId && subtreeIds.has(note.folderId));
 
@@ -514,6 +525,7 @@ export function NotesProvider({ children }: { children: ReactNode }) {
       updateNote,
       updateFolder,
       moveNote,
+      moveFolder,
       deleteNote,
       deleteFolder,
       deleteFolderIfEmpty,
@@ -538,6 +550,7 @@ export function NotesProvider({ children }: { children: ReactNode }) {
       updateNote,
       updateFolder,
       moveNote,
+      moveFolder,
       deleteNote,
       deleteFolder,
       deleteFolderIfEmpty,

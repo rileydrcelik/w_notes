@@ -28,6 +28,7 @@ import {
 import { parseTypeConfig, projectConfig, serializeTypeConfig, type AttrDef } from '@/lib/project';
 import { Sentry } from '@/lib/sentry';
 import { useIssues } from '@/store/issues-store';
+import { invalidMoveTargets } from '@/lib/folder-tree';
 import { useNotes } from '@/store/notes-store';
 import { noScrollbar } from '@/lib/scroll-style';
 
@@ -76,7 +77,7 @@ export function ItemOptionsProvider({ children }: { children: ReactNode }) {
   const { getNote, getFolder, deleteNote, deleteFolder } = useNotes();
   const [targets, setTargets] = useState<OptionsTarget[]>([]);
   const [renameTarget, setRenameTarget] = useState<OptionsTarget | null>(null);
-  const [moveTargets, setMoveTargets] = useState<string[] | null>(null);
+  const [moveTargets, setMoveTargets] = useState<OptionsTarget[] | null>(null);
   const [deleteTargets, setDeleteTargets] = useState<OptionsTarget[] | null>(null);
 
   const openOptions = useCallback((next: OptionsTarget[]) => {
@@ -87,9 +88,9 @@ export function ItemOptionsProvider({ children }: { children: ReactNode }) {
     setTargets([]);
     setRenameTarget(next);
   }, []);
-  const openMove = useCallback((ids: string[]) => {
+  const openMove = useCallback((next: OptionsTarget[]) => {
     setTargets([]);
-    setMoveTargets(ids);
+    setMoveTargets(next);
   }, []);
   const openDelete = useCallback((next: OptionsTarget[]) => {
     setTargets([]);
@@ -155,7 +156,7 @@ export function ItemOptionsProvider({ children }: { children: ReactNode }) {
         onDelete={openDelete}
       />
       <RenameDialog target={renameTarget} onClose={() => setRenameTarget(null)} />
-      <MoveSheet noteIds={moveTargets} onClose={() => setMoveTargets(null)} />
+      <MoveSheet targets={moveTargets} onClose={() => setMoveTargets(null)} />
       <ConfirmDialog
         open={deleteCount > 0}
         title={deleteTitle}
@@ -198,7 +199,7 @@ function OptionsSheet({
   targets: OptionsTarget[];
   onClose: () => void;
   onRename: (target: OptionsTarget) => void;
-  onMove: (ids: string[]) => void;
+  onMove: (targets: OptionsTarget[]) => void;
   onDelete: (targets: OptionsTarget[]) => void;
 }) {
   const colors = useTheme();
@@ -219,9 +220,11 @@ function OptionsSheet({
   const single = count === 1;
   const suffix = single ? '' : ` ${count}`;
   const anyIssueType = targets.some((t) => t.type === 'issuetype');
-  // Only plain notes carry a movable folderId; issue types are pinned to their
-  // project, so "move" is offered only when every target is a plain note.
-  const allNotes = targets.every((t) => t.type === 'note');
+  // Notes and folders both move; an issue type does not — it belongs to its
+  // project's tracker, not to a place in the folder tree — so one in the
+  // selection withdraws the option for the whole set rather than moving some of
+  // it and silently leaving the rest.
+  const allMovable = count > 0 && targets.every((t) => t.type === 'note' || t.type === 'folder');
   const isFavorited = (t: OptionsTarget) =>
     (t.type === 'folder' ? getFolder(t.id)?.favorite : getNote(t.id)?.favorite) ?? false;
   const allFavorited = count > 0 && targets.every(isFavorited);
@@ -266,7 +269,7 @@ function OptionsSheet({
     ...(issueType && typeRepo
       ? [{ key: 'github', label: typeConnected ? 'Stop tracking on GitHub' : 'Track with GitHub', icon: 'github' as FeatherName }]
       : []),
-    ...(allNotes ? [{ key: 'move', label: `Move${suffix} to folder`, icon: 'move' as FeatherName }] : []),
+    ...(allMovable ? [{ key: 'move', label: `Move${suffix} to folder`, icon: 'move' as FeatherName }] : []),
     ...(!anyIssueType ? [{ key: 'share', label: `Share${suffix}`, icon: 'share' as FeatherName }] : []),
     { key: 'delete', label: `Delete${suffix}`, icon: 'trash-2', destructive: true },
   ];
@@ -304,7 +307,7 @@ function OptionsSheet({
         onRename(targets[0]);
         break;
       case 'move':
-        onMove(targets.map((t) => t.id));
+        onMove(targets);
         break;
       case 'share': {
         onClose();
@@ -498,28 +501,46 @@ function RenameDialog({ target, onClose }: { target: OptionsTarget | null; onClo
 
 /**
  * Bottom sheet listing every folder (plus the home screen) as a destination for
- * the selected note(s). A destination is marked only when every moved note
- * already shares it; tapping a row moves them all there.
+ * the selected notes and folders. A destination is marked only when every moved
+ * item already shares it; tapping a row moves them all there.
+ *
+ * A folder being moved, and everything inside it, is left off the list — a
+ * folder can't be filed inside itself, and offering the row would be offering to
+ * lose the subtree (see `lib/folder-tree.ts`). They're omitted rather than shown
+ * disabled: the sheet answers "where does this go", and a place it can never go
+ * is not an answer worth the row.
  */
-function MoveSheet({ noteIds, onClose }: { noteIds: string[] | null; onClose: () => void }) {
+function MoveSheet({ targets, onClose }: { targets: OptionsTarget[] | null; onClose: () => void }) {
   const colors = useTheme();
   const insets = useSafeAreaInsets();
-  const { folders, getNote, moveNote } = useNotes();
+  const { folders, getNote, getFolder, moveNote, moveFolder } = useNotes();
 
-  const ids = noteIds ?? [];
-  const open = ids.length > 0;
-  // The common current folder across the moved notes, or `undefined` when they
-  // differ (so no row shows a checkmark). `null` is a real value here (Home).
-  const folderIds = new Set(ids.map((id) => getNote(id)?.folderId ?? null));
-  const commonFolderId = folderIds.size === 1 ? [...folderIds][0] : undefined;
+  const items = targets ?? [];
+  const open = items.length > 0;
+  const movingFolderIds = items.filter((t) => t.type === 'folder').map((t) => t.id);
+  // Where each item lives now: a note's folder, a folder's parent. One common
+  // answer earns the checkmark; a mixed selection gets none. `null` is a real
+  // value here (Home), which is why this compares against `undefined`.
+  const currentIds = new Set(
+    items.map((t) =>
+      t.type === 'folder' ? (getFolder(t.id)?.parentId ?? null) : (getNote(t.id)?.folderId ?? null),
+    ),
+  );
+  const commonFolderId = currentIds.size === 1 ? [...currentIds][0] : undefined;
 
+  const blocked = invalidMoveTargets(folders, movingFolderIds);
   const destinations: { id: string | null; name: string; icon: FeatherName }[] = [
     { id: null, name: 'Home', icon: 'home' },
-    ...folders.map((f) => ({ id: f.id, name: f.name || 'Untitled folder', icon: 'folder' as FeatherName })),
+    ...folders
+      .filter((f) => !blocked.has(f.id))
+      .map((f) => ({ id: f.id, name: f.name || 'Untitled folder', icon: 'folder' as FeatherName })),
   ];
 
   const onPick = (folderId: string | null) => {
-    ids.forEach((id) => moveNote(id, folderId));
+    items.forEach((t) => {
+      if (t.type === 'folder') moveFolder(t.id, folderId);
+      else moveNote(t.id, folderId);
+    });
     onClose();
   };
 
@@ -554,7 +575,7 @@ function MoveSheet({ noteIds, onClose }: { noteIds: string[] | null; onClose: ()
             style={[styles.sheetHost, { paddingBottom: insets.bottom + Spacing.three }]}>
             <GlassSurface intensity={75} tintOpacity={SHEET_TINT_OPACITY} style={styles.sheet}>
               <ThemedText style={styles.sheetTitle}>
-                {ids.length > 1 ? `Move ${ids.length} notes to…` : 'Move to…'}
+                {items.length > 1 ? `Move ${items.length} items to…` : 'Move to…'}
               </ThemedText>
               <View style={styles.moveListWrap}>
                 <ScrollView
