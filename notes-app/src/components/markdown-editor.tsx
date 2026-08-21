@@ -93,6 +93,47 @@ export function MarkdownEditor({
   const [initialValue] = useState(value);
   const [focused, setFocused] = useState(false);
 
+  /**
+   * The body is seeded through `setValue`, not through `defaultValue`.
+   *
+   * The native view measures a `defaultValue` down a different path from the one
+   * that measures typing, and that path parses the HTML *without* the normalizer
+   * the view itself renders with. So exactly the markup the normalizer exists to
+   * canonicalize — a list pasted from another app, `<ul data-type="checkbox">`,
+   * `<li checked>` — measures as a single line however many items it holds. The
+   * editor is then laid out at its `minHeight` while drawing the whole document,
+   * and a 35-item checklist becomes six visible rows with the rest scrolling
+   * inside that little box: the bug this exists to avoid.
+   *
+   * Seeding imperatively puts the content through the same path a keystroke
+   * takes, which measures what is actually rendered. It costs one frame of empty
+   * editor, which is invisible next to the note screen's own transition.
+   */
+  // The parent's handle when it passes one (the toolbar drives formatting through
+  // it), otherwise our own — either way this component needs a handle of its own
+  // to seed through. `EnrichedTextInput` takes a ref object, not a callback ref,
+  // so the two share one object rather than being merged.
+  const fallbackRef = useRef<EnrichedTextInputInstance | null>(null);
+  const editor = editorRef ?? fallbackRef;
+
+  // The seed comes back as a change event; that is the editor echoing what the
+  // store already holds, not the user typing, and reporting it would mark the
+  // note edited (see `onChangeBody` in the note screen) and re-commit the body.
+  const seeding = useRef(initialValue.length > 0);
+  useEffect(() => {
+    if (!initialValue) return;
+    editor.current?.setValue(initialValue);
+    // Backstop. If that event never arrives, stop swallowing changes — a
+    // swallowed *real* edit is lost text, which is far worse than a spurious
+    // commit of the body the store already has.
+    const timer = setTimeout(() => {
+      seeding.current = false;
+    }, 2000);
+    return () => clearTimeout(timer);
+    // `editor` is a ref object and never changes identity; listed to satisfy the
+    // exhaustive-deps rule without re-seeding.
+  }, [initialValue, editor]);
+
   // Watch for the native parser giving up on a paste. When it can't read the
   // pasted markup it drops the raw tags into the buffer as text (see the
   // `useHtmlNormalizer` note below), the next serialize escapes them, and the
@@ -120,14 +161,15 @@ export function MarkdownEditor({
   // no keyboard. While focused, treat a keyboard hide as a request to blur.
   useEffect(() => {
     if (!focused) return;
-    const sub = Keyboard.addListener('keyboardDidHide', () => editorRef?.current?.blur());
+    const sub = Keyboard.addListener('keyboardDidHide', () => editor.current?.blur());
     return () => sub.remove();
-  }, [focused, editorRef]);
+  }, [focused, editor]);
 
   return (
     <EnrichedTextInput
-      ref={editorRef}
-      defaultValue={initialValue}
+      ref={editor}
+      // Seeded imperatively after mount — see `seeding` above.
+      defaultValue=""
       placeholder={placeholder}
       placeholderTextColor={theme.textSecondary}
       cursorColor={theme.text}
@@ -155,6 +197,12 @@ export function MarkdownEditor({
       htmlStyle={html}
       style={base}
       onChangeHtml={(e) => {
+        // The seed echoing back, not a keystroke. One event only: anything after
+        // it is the user, and the flag is cleared on focus and by the backstop.
+        if (seeding.current) {
+          seeding.current = false;
+          return;
+        }
         watchForEscapedMarkup(e.nativeEvent.value);
         onChangeText(e.nativeEvent.value);
       }}
@@ -164,9 +212,12 @@ export function MarkdownEditor({
         onSelectionChange?.({ start, end, atEnd: end >= text.length });
       }}
       onFocus={() => {
+        // Whatever happened to the seed's event, anything typed from here is the
+        // user, so stop swallowing changes.
+        seeding.current = false;
         // The native editor isn't registered with RN's TextInputState, so the
         // navbar's "done" can't reach it via Keyboard.dismiss(). Expose a blur.
-        setActiveEditorDismiss(() => editorRef?.current?.blur());
+        setActiveEditorDismiss(() => editor.current?.blur());
         setFocused(true);
         onFocusChange?.(true);
       }}

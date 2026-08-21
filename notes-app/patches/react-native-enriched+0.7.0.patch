@@ -1,5 +1,5 @@
 diff --git a/node_modules/react-native-enriched/android/src/main/java/com/swmansion/enriched/textinput/EnrichedTextInputView.kt b/node_modules/react-native-enriched/android/src/main/java/com/swmansion/enriched/textinput/EnrichedTextInputView.kt
-index fe74a7f..2cdc011 100644
+index fe74a7f..22b3068 100644
 --- a/node_modules/react-native-enriched/android/src/main/java/com/swmansion/enriched/textinput/EnrichedTextInputView.kt
 +++ b/node_modules/react-native-enriched/android/src/main/java/com/swmansion/enriched/textinput/EnrichedTextInputView.kt
 @@ -345,8 +345,15 @@ class EnrichedTextInputView :
@@ -60,6 +60,25 @@ index fe74a7f..2cdc011 100644
    private fun parseText(text: CharSequence): CharSequence {
      val isInternalHtml = text.startsWith("<html>") && text.endsWith("</html>")
  
+@@ -983,6 +1023,18 @@ class EnrichedTextInputView :
+   }
+ 
+   private fun forceScrollToSelection() {
++    // Nothing to scroll when the host owns the scrolling. With `scrollEnabled`
++    // off this view is laid out at its full content height inside someone else's
++    // ScrollView, so an internal scroll offset can only hide the top of the text
++    // and leave the same amount of blank space below it.
++    //
++    // It goes wrong because the callers are prop-application paths (font size,
++    // line height, style rebuild) that run while the view still has its old,
++    // shorter height: `visibleTextHeight` is a fraction of the text, `maxScrollY`
++    // is therefore large, and a caret at the end of a seeded document scrolls the
++    // whole body out of view. Nothing resets it when the view then grows to fit.
++    if (!scrollEnabled) return
++
+     val textLayout = layout ?: return
+     val cursorOffset = selectionStart
+     if (cursorOffset <= 0) return
 diff --git a/node_modules/react-native-enriched/cpp/parser/GumboNormalizer.c b/node_modules/react-native-enriched/cpp/parser/GumboNormalizer.c
 index c4ece83..372e37f 100644
 --- a/node_modules/react-native-enriched/cpp/parser/GumboNormalizer.c
