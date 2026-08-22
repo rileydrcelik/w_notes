@@ -1,6 +1,7 @@
 #!/bin/sh
 #
-# Runs the mobile E2E flows before a push that touches native-relevant code.
+# Two gates before a push: the app version must move when shipped code moves,
+# and the mobile E2E flows run when native-relevant code changes.
 #
 # CI does carry mobile now (.github/workflows/mobile-e2e.yml), so this hook is no
 # longer the only thing standing between a native regression and main. It stays
@@ -19,7 +20,8 @@
 #
 # Bypass for a single push, when you know it's unrelated:
 #
-#     git push --no-verify
+#     git push --no-verify              # skips both gates
+#     ALLOW_STALE_VERSION=1 git push    # skips only the version gate
 #
 # If you find yourself reaching for --no-verify routinely, the filter below is
 # too broad — narrow it rather than living with a hook you always skip.
@@ -30,9 +32,11 @@ set -e
 NATIVE_PATHS='notes-app/src/lib/db\.ts|notes-app/src/.*\.native\.tsx?$|notes-app/android/|notes-app/package\.json|notes-app/\.maestro/'
 
 changed=''
+main_base=''
+main_sha=''
 
 # git feeds pre-push one line per ref: <local ref> <local sha> <remote ref> <remote sha>
-while read -r _local_ref local_sha _remote_ref remote_sha; do
+while read -r _local_ref local_sha remote_ref remote_sha; do
   # Deleting a branch — nothing to test.
   case "$local_sha" in
     0000000*) continue ;;
@@ -49,7 +53,99 @@ while read -r _local_ref local_sha _remote_ref remote_sha; do
     changed="$changed$(git diff --name-only "$base" "$local_sha" 2>/dev/null || true)
 "
   fi
+
+  # main is prod: pushing it is what ships. Remember that ref's range for the
+  # version gate below. The E2E gate only cares that a native path changed
+  # somewhere in the push; this one cares which branch is carrying it.
+  case "$remote_ref" in
+    refs/heads/main) main_base="$base"; main_sha="$local_sha" ;;
+  esac
 done
+
+# ---------------------------------------------------------------------------
+# Gate 1: the version must move when shipped code moves.
+#
+# Settings shows expo.version from notes-app/app.json as its last line, and it
+# is the number a bug report quotes. A push to main that changes what the app
+# does without changing what the app calls itself makes that number a lie --
+# two different builds both answering to 1.0.0.
+#
+# The filter is narrow on purpose, like the native one below: source, assets,
+# native config and patches ship; a workflow tweak or a README does not.
+# app.json and package.json are deliberately absent from it, so a bump commit
+# does not turn around and demand a second bump.
+# ---------------------------------------------------------------------------
+SHIPPED_PATHS='^notes-app/(src/|assets/|app\.config\.js$|patches/)'
+
+# Reads a version out of a JSON file at a revision: expo.version for app.json,
+# the top-level version for package.json. Empty if the file or key is missing.
+read_version() {
+  git show "$1:$2" 2>/dev/null | node -e '
+    let raw = "";
+    process.stdin.on("data", (chunk) => (raw += chunk));
+    process.stdin.on("end", () => {
+      try {
+        const json = JSON.parse(raw);
+        const version = (json.expo && json.expo.version) || json.version || "";
+        process.stdout.write(String(version));
+      } catch {
+        process.stdout.write("");
+      }
+    });
+  '
+}
+
+if [ -n "$main_sha" ] && [ -n "$main_base" ] && [ "${ALLOW_STALE_VERSION:-}" != "1" ]; then
+  main_changed=$(git diff --name-only "$main_base" "$main_sha" 2>/dev/null || true)
+
+  if printf '%s' "$main_changed" | grep -qE "$SHIPPED_PATHS"; then
+    old_version=$(read_version "$main_base" notes-app/app.json)
+    new_version=$(read_version "$main_sha" notes-app/app.json)
+    pkg_version=$(read_version "$main_sha" notes-app/package.json)
+
+    if [ -z "$new_version" ]; then
+      echo ""
+      echo "✗ couldn't read expo.version from notes-app/app.json — push aborted."
+      echo "  To push anyway: ALLOW_STALE_VERSION=1 git push"
+      echo ""
+      exit 1
+    fi
+
+    if [ "$new_version" = "$old_version" ]; then
+      echo ""
+      echo "✗ shipped code changed but the app version is still $new_version — push aborted."
+      printf '%s' "$main_changed" | grep -E "$SHIPPED_PATHS" | sed 's/^/    /' | sort -u
+      echo ""
+      echo "  Ask Claude for the version-bumper agent, or bump by hand:"
+      echo "    notes-app/app.json      expo.version"
+      echo "    notes-app/package.json  version   (must match)"
+      echo ""
+      echo "  To push anyway: ALLOW_STALE_VERSION=1 git push"
+      echo ""
+      exit 1
+    fi
+
+    if [ -n "$pkg_version" ] && [ "$pkg_version" != "$new_version" ]; then
+      echo ""
+      echo "✗ version mismatch — push aborted."
+      echo "    notes-app/app.json      $new_version"
+      echo "    notes-app/package.json  $pkg_version"
+      echo ""
+      echo "  One version, two files; they have to agree."
+      echo "  To push anyway: ALLOW_STALE_VERSION=1 git push"
+      echo ""
+      exit 1
+    fi
+
+    echo ""
+    echo "✓ app version $old_version → $new_version"
+    echo ""
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# Gate 2: mobile E2E on native-relevant changes.
+# ---------------------------------------------------------------------------
 
 if ! printf '%s' "$changed" | grep -qE "$NATIVE_PATHS"; then
   exit 0

@@ -21,6 +21,7 @@ import { Accent, Colors, hexToRgba, Spacing, type Palette } from '@/constants/th
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
 import { useTheme } from '@/hooks/use-theme';
 import { fetchAiKeyState, forgetAiKey, saveAiKey, type AiKeyState } from '@/lib/ai-key';
+import { appVersionLabel } from '@/lib/app-version';
 import { useAuth } from '@/lib/auth/auth-context';
 import type { CredentialProvider } from '@/lib/credentials';
 import { db } from '@/lib/db';
@@ -147,11 +148,31 @@ export default function SettingsScreen() {
             {/* Local sample content. `__DEV__` is false in a release build, so
                 this section doesn't exist in a shipped app. */}
             {__DEV__ && <DeveloperSection />}
+
+            {/* Last line on the screen, and deliberately the quietest one: the
+                version is what you read out when reporting a bug, not something
+                you came to Settings to change. */}
+            <VersionLine />
             </View>
           </ScrollView>
         </SafeAreaView>
       </ThemedView>
     </SwipeBackView>
+  );
+}
+
+/**
+ * The app's version, sitting under everything else. Renders nothing at all if
+ * the config carries no version — a "Version" label with nothing after it tells
+ * you less than the empty space would.
+ */
+function VersionLine() {
+  const label = appVersionLabel();
+  if (!label) return null;
+  return (
+    <ThemedText type="small" themeColor="textSecondary" style={styles.version}>
+      {label}
+    </ThemedText>
   );
 }
 
@@ -860,6 +881,13 @@ const styles = StyleSheet.create({
   },
   title: {
     marginBottom: Spacing.two,
+  },
+  // Smaller than `small`, and centered: a footer note, not a settings row.
+  version: {
+    fontSize: 11,
+    lineHeight: 16,
+    textAlign: 'center',
+    marginTop: Spacing.three,
   },
   sectionLabel: {
     letterSpacing: 1,
