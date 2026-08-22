@@ -10,8 +10,10 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 
+type RequestOptions = { signal?: AbortSignal; body?: { url?: string; text?: string } };
+
 /** What the next call does. Set per test. */
-let behaviour: (path: string, options: { signal?: AbortSignal }) => Promise<unknown> = () =>
+let behaviour: (path: string, options: RequestOptions) => Promise<unknown> = () =>
   Promise.resolve({ description: 'x' });
 
 vi.mock('@/lib/sync/api', () => ({
@@ -27,10 +29,12 @@ vi.mock('@/lib/sync/api', () => ({
       super(message);
     }
   },
-  apiFetch: (path: string, options: { signal?: AbortSignal }) => behaviour(path, options),
+  apiFetch: (path: string, options: RequestOptions) => behaviour(path, options),
 }));
 
-const { readJobPosting, looksLikeUrl } = await import('@/lib/latex/job-posting');
+const { readJobPosting, readPastedPosting, MAX_PASTED_PAGE_CHARS, looksLikeUrl } = await import(
+  '@/lib/latex/job-posting'
+);
 const { ApiError } = await import('@/lib/sync/api');
 
 describe('looksLikeUrl', () => {
@@ -130,6 +134,128 @@ describe('readJobPosting', () => {
   it('never throws — every failure is a message the sheet can show', async () => {
     behaviour = () => Promise.reject(new Error('network down'));
     const result = await readJobPosting('https://boards.example.com/jobs/1');
+    expect(result.ok).toBe(false);
+  });
+
+  it('sends a body with exactly one key: url, not text', async () => {
+    let sentBody: RequestOptions['body'];
+    behaviour = (_path, options) => {
+      sentBody = options.body;
+      return Promise.resolve({ description: 'x' });
+    };
+    await readJobPosting('https://boards.example.com/jobs/1');
+    expect(sentBody).toEqual({ url: 'https://boards.example.com/jobs/1' });
+  });
+});
+
+describe('readPastedPosting', () => {
+  it('returns what the pasted page said', async () => {
+    behaviour = () =>
+      Promise.resolve({
+        company: ' Acme ',
+        role: ' Senior Backend Engineer ',
+        description: ' Requires Kubernetes. ',
+      });
+    const result = await readPastedPosting('a whole careers page, pasted');
+    if (!result.ok) throw new Error(`expected success: ${result.message}`);
+    expect(result.posting.company).toBe('Acme');
+    expect(result.posting.role).toBe('Senior Backend Engineer');
+    expect(result.posting.description).toBe('Requires Kubernetes.');
+  });
+
+  it('refuses an empty paste locally, without a network call', async () => {
+    let called = false;
+    behaviour = () => {
+      called = true;
+      return Promise.resolve({ description: 'x' });
+    };
+    const result = await readPastedPosting('   ');
+    expect(result.ok).toBe(false);
+    expect(called).toBe(false);
+  });
+
+  it('refuses an oversized paste locally, without a network call', async () => {
+    let called = false;
+    behaviour = () => {
+      called = true;
+      return Promise.resolve({ description: 'x' });
+    };
+    const result = await readPastedPosting('x'.repeat(MAX_PASTED_PAGE_CHARS + 1));
+    expect(result.ok).toBe(false);
+    expect(called).toBe(false);
+  });
+
+  it('accepts a paste right at the limit', async () => {
+    behaviour = () => Promise.resolve({ description: 'Requires Go.' });
+    const result = await readPastedPosting('x'.repeat(MAX_PASTED_PAGE_CHARS));
+    expect(result.ok).toBe(true);
+  });
+
+  it('sends a body with exactly one key: text, not url', async () => {
+    let sentBody: RequestOptions['body'];
+    behaviour = (_path, options) => {
+      sentBody = options.body;
+      return Promise.resolve({ description: 'x' });
+    };
+    await readPastedPosting('  a pasted posting  ');
+    expect(sentBody).toEqual({ text: 'a pasted posting' });
+  });
+
+  it('prefers the server’s own detail on a 422', async () => {
+    behaviour = () =>
+      Promise.reject(
+        new ApiError(
+          '422 for /resume/job-posting',
+          422,
+          JSON.stringify({ detail: 'That paste is a list of ten openings, not one.' }),
+        ),
+      );
+    const result = await readPastedPosting('a list of jobs');
+    if (result.ok) throw new Error('expected failure');
+    expect(result.unreadable).toBe(true);
+    expect(result.message).toBe('That paste is a list of ten openings, not one.');
+  });
+
+  it('falls back to a paste-specific message on a 422 with no server detail', async () => {
+    behaviour = () =>
+      Promise.reject(new ApiError('422 for /resume/job-posting', 422, ''));
+    const result = await readPastedPosting('a pasted page');
+    if (result.ok) throw new Error('expected failure');
+    expect(result.unreadable).toBe(true);
+    // The paste-path fallback names a *posting*, unlike the link path's
+    // fallback, which talks about a *page*.
+    expect(result.message).toContain('single job posting');
+  });
+
+  it(
+    'treats its own timeout as readable-but-slow, NOT unreadable — pasting is ' +
+      'already the way forward, so there is nowhere further to send someone',
+    async () => {
+      vi.useFakeTimers();
+      try {
+        behaviour = (_path, options) =>
+          new Promise((_resolve, reject) => {
+            options.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+          });
+        const pending = readPastedPosting('a pasted posting');
+        await vi.advanceTimersByTimeAsync(90_000);
+        const result = await pending;
+        if (result.ok) throw new Error('expected a timeout');
+        // This is the property that was broken once: a link-path timeout is
+        // `unreadable: true` (fall back to pasting), but there is no further
+        // fallback from a paste, so it must NOT set the flag that reveals paste
+        // fields that are already showing.
+        expect(result.unreadable).toBe(false);
+        expect(result.message).toContain('too long');
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it('never throws — every failure is a message the sheet can show', async () => {
+    behaviour = () => Promise.reject(new Error('network down'));
+    const result = await readPastedPosting('a pasted posting');
     expect(result.ok).toBe(false);
   });
 });

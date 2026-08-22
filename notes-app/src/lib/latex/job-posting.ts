@@ -1,22 +1,31 @@
 /**
- * Reading a job posting off a link, so the tailor's form is one paste instead of
- * four fields.
+ * Turning one job posting into the three fields the tailor needs, from a paste or
+ * from a link.
  *
- * **Most job postings cannot be read**, and that is the fact this module is built
- * around rather than one it hides. Measured against the real fetch: a static
+ * **The paste is the default.** That is not a preference about typing, it is what
+ * the sites do — and it is the fact this module is built around rather than one
+ * it hides. Measured against the real fetch: a static
  * Greenhouse board or a company careers page reads fine; Ashby returns a bare
  * "you need to enable JavaScript" shell; Lever answers `url_not_accessible`;
  * LinkedIn and Workday are refused outright. Those are the sites people actually
  * apply through, so the unreadable case is not an edge — it is the common one,
  * and it has to land somewhere useful.
  *
- * So this is a *separate, short* call rather than a branch inside tailoring. A
- * link that can't be read costs about fifteen seconds and reveals the paste
- * fields; folded into the tailor it would have burned a whole document
- * generation and a TeX run first, to arrive at the same place two minutes later.
+ * So asking for a link first meant opening with the question that usually fails.
+ * `readPastedPosting` is what the sheet calls now: you paste the page you are
+ * already looking at, and the company, the title and the requirements are pulled
+ * out of that one paste. `readJobPosting` stays for the links that *do* read —
+ * a static Greenhouse board or a company careers page — where it saves the copy.
  *
- * The page is fetched by Anthropic's `web_fetch` tool, not by the backend and not
- * by the app — nothing on our side of the wire ever requests a URL a user typed.
+ * Either way this is a *separate, short* call rather than a branch inside
+ * tailoring. Reading costs about fifteen seconds and can be corrected before the
+ * long part starts; folded into the tailor, a bad read would have burned a whole
+ * document generation and a TeX run first, to arrive at the same place two
+ * minutes later.
+ *
+ * On the link path the page is fetched by Anthropic's `web_fetch` tool, not by
+ * the backend and not by the app — nothing on our side of the wire ever requests
+ * a URL a user typed. On the paste path nothing is fetched at all.
  */
 import { ApiError, apiFetch, syncConfigured } from '@/lib/sync/api';
 import { KEY_REQUIRED_MESSAGE } from '@/lib/ai-key';
@@ -32,11 +41,25 @@ export type JobPosting = {
 export type PostingResult =
   | { ok: true; posting: JobPosting }
   /**
-   * `unreadable` is the case the sheet acts on rather than just reports: it means
-   * the link was fine but the page can't be fetched, so the answer is to show the
-   * paste fields. Any other failure is a message and nothing more.
+   * `unreadable` is the case the sheet acts on rather than just reports.
+   *
+   * On the link path it means the link was fine but the page can't be fetched, so
+   * the answer is to fall back to pasting. On the paste path it means the paste
+   * didn't contain a posting — there is nowhere further to fall back to, so the
+   * sheet just says so and leaves the text for them to fix. Any other failure is
+   * a message and nothing more.
    */
   | { ok: false; unreadable: boolean; message: string };
+
+/**
+ * The most a pasted page may be before it is refused locally.
+ *
+ * Matches `_MAX_POSTING_PAGE_CHARS` in `backend/app/routers/resume.py`. Checked
+ * here as well as there so an obvious mistake — a whole site pasted in, a file
+ * dropped by accident — is answered instantly instead of after a round trip that
+ * bills the caller's key to reach the same conclusion.
+ */
+export const MAX_PASTED_PAGE_CHARS = 60_000;
 
 /**
  * How long to wait for a posting to be read.
@@ -56,6 +79,42 @@ export function looksLikeUrl(text: string): boolean {
   return host.includes('.') && host.length > 3;
 }
 
+/**
+ * Pull the company, title and requirements out of a pasted job page.
+ *
+ * The tailor's default way in. What gets pasted is raw — nav bar, cookie notice,
+ * "similar jobs" rail and all — and finding the posting inside that is the
+ * server's job, not something the person should have to do with a mouse.
+ *
+ * Fails as `unreadable` when the paste holds no single posting (a list of
+ * openings, a consent page, a stray clipboard). That is a real outcome rather
+ * than an error: the text stays on screen and they can fix it.
+ */
+export async function readPastedPosting(text: string): Promise<PostingResult> {
+  if (!syncConfigured) {
+    return {
+      ok: false,
+      unreadable: false,
+      message: 'This app is not connected to a server, so it cannot read job postings.',
+    };
+  }
+  const pasted = text.trim();
+  if (!pasted) {
+    return { ok: false, unreadable: false, message: 'Paste the job posting first.' };
+  }
+  // Refused here rather than at the server for the reason on the constant: an
+  // obvious mistake shouldn't cost a round trip and a bill to diagnose.
+  if (pasted.length > MAX_PASTED_PAGE_CHARS) {
+    return {
+      ok: false,
+      unreadable: false,
+      message:
+        'That paste is too long. Copy the posting itself rather than the whole page.',
+    };
+  }
+  return request({ text: pasted });
+}
+
 export async function readJobPosting(url: string): Promise<PostingResult> {
   if (!syncConfigured) {
     return {
@@ -71,7 +130,18 @@ export async function readJobPosting(url: string): Promise<PostingResult> {
       message: 'That doesn’t look like a link. It should start with http:// or https://.',
     };
   }
+  return request({ url: url.trim() });
+}
 
+/**
+ * The half both paths share: one request, one timeout, one reading of what came
+ * back. Only the body differs, and it differs by exactly one key.
+ */
+async function request(body: { url: string } | { text: string }): Promise<PostingResult> {
+  // Which way in this was. The two paths differ in what a failure *means* and so
+  // in what the sheet should do next; deriving it from the body keeps that from
+  // becoming a second argument the callers could disagree about.
+  const fromPaste = 'text' in body;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), POSTING_TIMEOUT_MS);
 
@@ -79,7 +149,7 @@ export async function readJobPosting(url: string): Promise<PostingResult> {
     const response = await apiFetch<JobPosting>('/resume/job-posting', {
       method: 'POST',
       signal: controller.signal,
-      body: { url: url.trim() },
+      body,
     });
     if (!response?.description?.trim()) {
       return { ok: false, unreadable: true, message: UNREADABLE };
@@ -94,15 +164,29 @@ export async function readJobPosting(url: string): Promise<PostingResult> {
     };
   } catch (e) {
     if (controller.signal.aborted) {
-      // A page that takes this long is one we're not going to get. Treated as
-      // unreadable rather than as an error, because the useful next step is the
-      // same either way: paste it.
-      return { ok: false, unreadable: true, message: UNREADABLE };
+      // A read that takes this long is one we're not going to get — but what to
+      // do about it differs by path, so the two do not share an answer.
+      //
+      // From a link it is `unreadable` in the sense that matters: we didn't get
+      // the page, and pasting is the way forward, which is exactly what that flag
+      // moves the sheet towards. From a paste there is no forward to move to, and
+      // claiming the text held no posting when in truth nobody finished looking
+      // would send someone off to rewrite text that was fine.
+      return fromPaste
+        ? { ok: false, unreadable: false, message: TIMED_OUT }
+        : { ok: false, unreadable: true, message: UNREADABLE };
     }
     // 422 is the server saying it read the page and there was no posting on it.
     // That is the case worth acting on, so it carries the server's own sentence.
     if (e instanceof ApiError && e.status === 422) {
-      return { ok: false, unreadable: true, message: detailOf(e) ?? UNREADABLE };
+      // The server writes a different sentence per path (`_UNPARSEABLE_PASTE` vs
+      // `_UNREADABLE_POSTING`), so its own detail is preferred over either
+      // fallback here.
+      return {
+        ok: false,
+        unreadable: true,
+        message: detailOf(e) ?? (fromPaste ? NOT_A_POSTING : UNREADABLE),
+      };
     }
     const message = e instanceof Error ? e.message : String(e);
     return { ok: false, unreadable: false, message: describeFailure(message) };
@@ -110,6 +194,12 @@ export async function readJobPosting(url: string): Promise<PostingResult> {
     clearTimeout(timer);
   }
 }
+
+const NOT_A_POSTING =
+  'That paste doesn’t look like a single job posting. Copy the posting page itself — title, description and requirements — rather than a list of openings.';
+
+const TIMED_OUT =
+  'Reading that posting took too long. Nothing has changed — try again.';
 
 const UNREADABLE =
   'That page couldn’t be read. Many job sites — LinkedIn and Workday among them — block automated readers. Paste the posting instead.';

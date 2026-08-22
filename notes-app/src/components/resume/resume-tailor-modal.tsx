@@ -41,7 +41,7 @@ import { useTheme } from '@/hooks/use-theme';
 import { ACCENT, ACCENT_FILL } from '@/components/resume/accent';
 import { SHEET_MAX_WIDTH, SHEET_TOP_GAP } from '@/components/resume/sheet';
 import { DiffView } from '@/components/resume/diff-view';
-import { looksLikeUrl, readJobPosting } from '@/lib/latex/job-posting';
+import { looksLikeUrl, readJobPosting, readPastedPosting } from '@/lib/latex/job-posting';
 import { emptyTailorDraft, type TailorDraft } from '@/lib/latex/tailor';
 import { noFocusOutline } from '@/lib/web-style';
 import { noScrollbar } from '@/lib/scroll-style';
@@ -115,14 +115,25 @@ export function ResumeTailorModal({
 
   const maxSheetHeight = windowHeight - insets.top - SHEET_TOP_GAP - tabBarInset;
 
+  // What the person actually provides: one paste of the job page. The company,
+  // the title and the requirements are read out of it — see `readPastedPosting`.
+  // `draft` is therefore derived rather than typed, and only exists between the
+  // read and the tailoring.
+  const [page, setPage] = useState('');
   const [draft, setDraft] = useState<TailorDraft>(emptyTailorDraft);
   const [link, setLink] = useState('');
-  // The paste fields start hidden and are revealed by a link that couldn't be
-  // read — which, for LinkedIn and Workday, is most of the time. Once shown they
-  // stay shown: having been sent back to pasting, being sent forward again to a
-  // link box you already know doesn't work would be the wrong direction.
-  const [pasting, setPasting] = useState(false);
+  // The link field starts hidden, which is the inverse of how this sheet used to
+  // work. Asking for a link first meant opening with the question that usually
+  // fails: LinkedIn and Workday refuse automated readers, Ashby serves a
+  // JavaScript shell, and those are the sites people apply through. So pasting is
+  // the way in, and a link is the shortcut for the static boards where it works.
+  const [usingLink, setUsingLink] = useState(false);
   const [stage, setStage] = useState<Stage>({ state: 'form' });
+  // What the form's scroll area can show, against what it has to show. Both are
+  // measured rather than assumed because the paste field grows with the text in
+  // it, so whether there is anything below the fold changes as someone types.
+  const [viewportHeight, setViewportHeight] = useState(0);
+  const [contentHeight, setContentHeight] = useState(0);
 
   // Bumped on every open and close, so an answer to a question that has since
   // been abandoned doesn't land on a form someone has started filling in again.
@@ -142,18 +153,18 @@ export function ResumeTailorModal({
   if (wasOpen !== open) {
     setWasOpen(open);
     if (open) {
+      setPage('');
       setDraft(emptyTailorDraft());
       setLink('');
-      setPasting(false);
+      setUsingLink(false);
       setStage({ state: 'form' });
     }
   }
 
-  // Either a link to read, or a posting already pasted in. The pasted path still
-  // needs a role, because a resume aimed at a description with no title attached
-  // has nothing to lead with.
-  const pasted = draft.role.trim().length > 0 && draft.jobDescription.trim().length > 0;
-  const canTailor = pasting ? pasted : looksLikeUrl(link) || pasted;
+  // Something to read: a pasted page, or a link worth trying. Nothing else is
+  // required of the person — the role and the company come out of the read, not
+  // out of a form.
+  const canTailor = usingLink ? looksLikeUrl(link) : page.trim().length > 0;
 
   const tailorWith = async (job: TailorDraft, started: number) => {
     setStage({ state: 'working' });
@@ -177,6 +188,10 @@ export function ResumeTailorModal({
   // so the button is always live there.
   const busy = stage.state === 'working' || stage.state === 'reading';
   const ready = stage.state === 'review' || (!busy && canTailor);
+  // A pixel of slack: both measurements are floats and a content box that exactly
+  // fills its viewport reports the two as trivially unequal often enough that a
+  // strict `>` would flicker the fade on and off while typing.
+  const overflowing = contentHeight > viewportHeight + 1;
 
   const applyTailored = async () => {
     if (stage.state !== 'review') return;
@@ -194,33 +209,38 @@ export function ResumeTailorModal({
     if (!canTailor) return;
     const started = runRef.current;
 
-    // A link that hasn't been read yet: read it first. This is the cheap step —
-    // if the page can't be fetched we find out in seconds and hand the person the
-    // paste fields, instead of spending a minute writing a resume against nothing.
-    if (!pasted && looksLikeUrl(link)) {
-      setStage({ state: 'reading' });
-      const result = await readJobPosting(link);
-      if (started !== runRef.current) return;
-      if (!result.ok) {
-        // Unreadable is the expected outcome for most job sites, so it opens the
-        // way forward rather than just reporting a failure.
-        if (result.unreadable) setPasting(true);
-        setStage({ state: 'failed', message: result.message });
-        return;
-      }
-      const filled: TailorDraft = {
-        company: result.posting.company,
-        role: result.posting.role,
-        jobDescription: result.posting.description,
-      };
-      // Kept, so the version label names the job and a retry after a tailoring
-      // failure doesn't re-read the page.
-      setDraft(filled);
-      await tailorWith(filled, started);
+    // A tailoring that already has its job read — the person pressed "Try again"
+    // after the *writing* failed, not the reading. Re-reading would spend a second
+    // call to learn what we already know.
+    if (draft.jobDescription.trim()) {
+      await tailorWith(draft, started);
       return;
     }
 
-    await tailorWith(draft, started);
+    // Read first. This is the cheap step: about fifteen seconds, against a minute
+    // or two for the writing, so a paste that turns out not to be a posting is
+    // caught before anything expensive happens.
+    setStage({ state: 'reading' });
+    const result = usingLink ? await readJobPosting(link) : await readPastedPosting(page);
+    if (started !== runRef.current) return;
+    if (!result.ok) {
+      // On the link path, unreadable is the expected outcome for most job sites,
+      // so it opens the way forward rather than just reporting a failure. On the
+      // paste path there is nowhere further to go — the text is already on screen
+      // and the message says what to fix — so it stays put.
+      if (result.unreadable && usingLink) setUsingLink(false);
+      setStage({ state: 'failed', message: result.message });
+      return;
+    }
+    const filled: TailorDraft = {
+      company: result.posting.company,
+      role: result.posting.role,
+      jobDescription: result.posting.description,
+    };
+    // Kept, so the version label names the job and a retry after a *tailoring*
+    // failure doesn't read the posting a second time.
+    setDraft(filled);
+    await tailorWith(filled, started);
   };
 
   // `backgroundElementAlt` for the same reason the entry sheet uses it: the glass
@@ -288,6 +308,8 @@ export function ResumeTailorModal({
                     style={styles.scroll}
                     contentContainerStyle={styles.scrollContent}
                     {...noScrollbar}
+                    onLayout={(e) => setViewportHeight(e.nativeEvent.layout.height)}
+                    onContentSizeChange={(_, height) => setContentHeight(height)}
                     keyboardShouldPersistTaps="handled">
                     {stage.state === 'failed' && (
                       <View
@@ -304,7 +326,7 @@ export function ResumeTailorModal({
                       posting&rsquo;s wording so an ATS can find it. Nothing is deleted.
                     </ThemedText>
 
-                    {!pasting && (
+                    {usingLink ? (
                       <>
                         <ThemedText type="small" themeColor="textSecondary">
                           Job posting link
@@ -322,89 +344,85 @@ export function ResumeTailorModal({
                           inputMode="url"
                         />
                         {/* Said before they try it, not after. Most postings live
-                            on sites that cannot be read, and someone who already
-                            knows that should not have to prove it first. The way
-                            out is a button, and it lives in the actions row with
-                            the other things you can press. */}
+                            on sites that cannot be read, and someone who chose
+                            this path anyway should know what they are betting on.
+                            The way back is a button, in the actions row with the
+                            other things you can press. */}
                         <ThemedText
                           type="small"
                           themeColor="textSecondary"
-                          style={styles.linkOut}>
+                          style={styles.fieldHint}>
                           LinkedIn and Workday links can&rsquo;t be read.
                         </ThemedText>
                       </>
-                    )}
-
-                    {pasting && (
+                    ) : (
                       <>
                         <ThemedText type="small" themeColor="textSecondary">
-                          Company
+                          Job posting
                         </ThemedText>
+                        {/* One field, and deliberately the whole page rather than
+                            three tidy ones. What someone has in front of them is a
+                            posting in a browser tab; asking them to pick the
+                            company out of it, then the title, then the
+                            requirements, is asking them to do by hand the reading
+                            the model is about to do anyway. Nav bars and cookie
+                            banners come along and are thrown away server-side. */}
                         <TextInput
-                          value={draft.company}
-                          onChangeText={(company) => setDraft((d) => ({ ...d, company }))}
-                          placeholder="Acme"
+                          value={page}
+                          onChangeText={setPage}
+                          placeholder="Paste the job page here — title, description and requirements."
                           placeholderTextColor={theme.textSecondary}
-                          style={fieldStyle}
-                          autoCapitalize="words"
-                        />
-
-                        <ThemedText type="small" themeColor="textSecondary">
-                          Role
-                        </ThemedText>
-                        <TextInput
-                          value={draft.role}
-                          onChangeText={(role) => setDraft((d) => ({ ...d, role }))}
-                          placeholder="Senior Backend Engineer"
-                          placeholderTextColor={theme.textSecondary}
-                          style={fieldStyle}
-                          autoCapitalize="words"
-                        />
-
-                        <ThemedText type="small" themeColor="textSecondary">
-                          Job description, including requirements
-                        </ThemedText>
-                        <TextInput
-                          value={draft.jobDescription}
-                          onChangeText={(jobDescription) =>
-                            setDraft((d) => ({ ...d, jobDescription }))
-                          }
-                          placeholder="Paste the posting here — the more of it the better."
-                          placeholderTextColor={theme.textSecondary}
-                          style={[...fieldStyle, styles.multiline]}
+                          style={[...fieldStyle, styles.page]}
                           multiline
                           textAlignVertical="top"
                         />
+                        <ThemedText
+                          type="small"
+                          themeColor="textSecondary"
+                          style={styles.fieldHint}>
+                          The company and job title are read from it.
+                        </ThemedText>
                       </>
                     )}
+
                   </ScrollView>
-                  {/* The job-description field is the tall one and sits at the
-                      bottom, so without this the form reads as if it ends above
-                      it. Same fade the entry sheet grew for the same reason. */}
-                  <LinearGradient
-                    pointerEvents="none"
-                    colors={[
-                      hexToRgba(theme.background, 0),
-                      hexToRgba(theme.background, SHEET_TINT_OPACITY),
-                    ]}
-                    style={styles.scrollFade}
-                  />
+                  {/* Only when something is actually below the fold.
+                      It used to be unconditional, which was fine when the form
+                      was three fields and a tall description box — that always
+                      overflowed. One paste field usually doesn't, and a fade over
+                      content that has nothing beneath it isn't a signal, it's a
+                      translucent band across the bottom of the box you're typing
+                      in, promising more that never arrives. */}
+                  {overflowing && (
+                    <LinearGradient
+                      pointerEvents="none"
+                      colors={[
+                        hexToRgba(theme.background, 0),
+                        hexToRgba(theme.background, SHEET_TINT_OPACITY),
+                      ]}
+                      style={styles.scrollFade}
+                    />
+                  )}
                 </View>
               )}
 
               <View style={styles.actions}>
-                {/* Only while a link is the thing on offer: once the paste
-                    fields are showing, this is where you already are. Sits at
-                    the left, away from the Cancel/Tailor pair on the right, so
-                    "go somewhere else" doesn't sit inside "finish or abandon".
+                {/* Swaps which of the two ways in is on screen. Sits at the
+                    left, away from the Cancel/Tailor pair on the right, so "go
+                    somewhere else" doesn't sit inside "finish or abandon".
                     Accent-on-tint rather than a filled squircle — it is a real
                     choice, not the primary one, and a second filled button would
-                    compete with Tailor for the same glance. */}
-                {!pasting && stage.state !== 'review' && (
+                    compete with Tailor for the same glance.
+                    Reversible in both directions, unlike the one-way trip this
+                    replaced: a link is a shortcut rather than a demotion, so
+                    trying one and coming back should cost nothing. */}
+                {stage.state !== 'review' && (
                   <Pressable
                     accessibilityRole="button"
-                    accessibilityLabel="Enter the job posting manually"
-                    onPress={() => setPasting(true)}
+                    accessibilityLabel={
+                      usingLink ? 'Paste the job posting instead' : 'Read the posting from a link'
+                    }
+                    onPress={() => setUsingLink((v) => !v)}
                     disabled={busy}
                     style={({ pressed }) => [
                       styles.secondaryButton,
@@ -413,9 +431,9 @@ export function ResumeTailorModal({
                       busy && styles.disabled,
                       pressed && styles.pressed,
                     ]}>
-                    <Feather name="edit-3" size={15} color={ACCENT} />
+                    <Feather name={usingLink ? 'clipboard' : 'link'} size={15} color={ACCENT} />
                     <ThemedText type="small" style={{ color: ACCENT }}>
-                      Enter it manually
+                      {usingLink ? 'Paste it instead' : 'Use a link'}
                     </ThemedText>
                   </Pressable>
                 )}
@@ -580,7 +598,7 @@ const styles = StyleSheet.create({
   },
   // The note above the manual-entry button. Text, not a control — it says why
   // you would want the button, and the button says what it does.
-  linkOut: {
+  fieldHint: {
     paddingBottom: Spacing.one,
   },
   // Borrows `secondaryButton`'s shape so the row reads as one control repeated
@@ -609,9 +627,11 @@ const styles = StyleSheet.create({
     marginBottom: Spacing.two,
     fontSize: 15,
   },
-  multiline: {
-    minHeight: 132,
-    textAlignVertical: 'top',
+  // Taller than the old description field: this one takes a whole page, and a
+  // box that looks like it wants a sentence invites a sentence.
+  page: {
+    minHeight: 168,
+    paddingTop: Spacing.two,
   },
   working: {
     alignItems: 'center',

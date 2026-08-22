@@ -1437,6 +1437,120 @@ async def test_posting_scopes_the_fetch_tool_to_that_host(
     assert tools[0]["max_uses"] == 1
 
 
+# --------------------------------------------------------------------------
+# Reading a job posting from a paste — the default path now.
+#
+# Same endpoint, opposite guard: a request must carry exactly one of `url` and
+# `text`, each mistake gets its own sentence, and the paste path must never be
+# handed a fetch tool, since there is nothing in a paste worth fetching and a
+# tool offered anyway is exactly the reach this module avoids everywhere else.
+# --------------------------------------------------------------------------
+
+
+async def _posting_paste(client, device, text="We are hiring a backend engineer. Requires Go."):
+    return await client.post("/resume/job-posting", json={"text": text}, headers=device)
+
+
+async def test_posting_rejects_both_a_link_and_a_paste(client, device, anthropic_key):
+    res = await client.post(
+        "/resume/job-posting",
+        json={"url": "https://boards.example.com/jobs/1", "text": "Some posting text."},
+        headers=device,
+    )
+    assert res.status_code == 400
+    assert res.json()["detail"] == "Send either a link or a pasted posting, not both."
+
+
+async def test_posting_rejects_neither_a_link_nor_a_paste(client, device, anthropic_key):
+    res = await client.post("/resume/job-posting", json={}, headers=device)
+    assert res.status_code == 400
+    assert res.json()["detail"] == "Paste the job posting, or give a link to it."
+
+
+async def test_posting_distinguishes_a_bad_link_from_no_input_at_all(
+    client, device, anthropic_key
+):
+    """A url that survives `.strip()` but not `_clean_links` is a different
+    mistake from sending nothing, and gets its own sentence."""
+    res = await client.post(
+        "/resume/job-posting", json={"url": "javascript:alert(1)"}, headers=device
+    )
+    assert res.status_code == 400
+    assert (
+        res.json()["detail"]
+        == "That doesn't look like a link. It should start with http:// or https://."
+    )
+
+
+async def test_posting_paste_rejects_an_oversized_page_without_asking_the_model(
+    client, device, anthropic_key
+):
+    """`no_real_anthropic_calls` is autouse, so reaching the model here would
+    itself fail — which is the assertion: an oversized paste costs nothing."""
+    huge = "x" * (resume._MAX_POSTING_PAGE_CHARS + 1)
+    res = await _posting_paste(client, device, text=huge)
+    assert res.status_code == 413
+
+
+async def test_posting_paste_returns_what_the_page_said(
+    client, device, anthropic_key, fake_anthropic
+):
+    fake_anthropic(
+        json.dumps(
+            {
+                "readable": True,
+                "company": "  Acme  ",
+                "role": " Senior Backend Engineer ",
+                "description": "Requires Kubernetes, Terraform and Postgres.",
+            }
+        )
+    )
+    res = await _posting_paste(client, device)
+    assert res.status_code == 200
+    body = res.json()
+    assert body["company"] == "Acme"
+    assert body["role"] == "Senior Backend Engineer"
+    assert "Kubernetes" in body["description"]
+
+
+async def test_posting_paste_refuses_with_the_paste_specific_message(
+    client, device, anthropic_key, fake_anthropic
+):
+    """The paste path's 422 must read differently from the link path's — "paste
+    it instead" is useless advice to someone who already pasted."""
+    fake_anthropic(
+        json.dumps({"readable": False, "company": "", "role": "", "description": ""})
+    )
+    res = await _posting_paste(client, device)
+    assert res.status_code == 422
+    assert res.json()["detail"] == resume._UNPARSEABLE_PASTE
+    assert res.json()["detail"] != resume._UNREADABLE_POSTING
+
+
+async def test_posting_paste_attaches_no_fetch_tool(
+    client, device, anthropic_key, fake_anthropic
+):
+    """There is nothing to fetch on the paste path, so no `web_fetch` tool is
+    ever offered — offering one anyway is exactly the reach this module avoids
+    everywhere else."""
+    fake_anthropic(
+        json.dumps(
+            {
+                "readable": True,
+                "company": "Acme",
+                "role": "Engineer",
+                "description": "Requires Go.",
+            }
+        )
+    )
+    res = await _posting_paste(
+        client, device, text="Apply at https://evil.test/x - requires Go."
+    )
+    assert res.status_code == 200
+    assert _calls[0]["tools"] == []
+    assert _calls[0]["system"] == resume._PASTED_POSTING_SYSTEM_PROMPT
+
+
 async def test_tailor_condenses_first_when_the_resume_is_over_a_page(
     client, device, anthropic_key, fake_anthropic, monkeypatch
 ):
