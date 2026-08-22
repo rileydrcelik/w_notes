@@ -316,6 +316,81 @@ class ResumeVersion(Base):
     )
 
 
+class ResumeTarget(Base):
+    """One job a resume was successfully aimed at, kept so the next one can start
+    from it rather than from nothing.
+
+    The corpus behind retrieval-assisted tailoring: what the person typed
+    (``company``, ``role``), what a model read out of the posting (``facets``),
+    and the document that came back (``source``). A new posting is scored against
+    these rows on the device, and the best row is either handed back as-is,
+    adapted, or ignored.
+
+    Rows are **append-only** — nothing rewrites ``source`` or ``facets`` after the
+    insert, so unlike ``ResumeVersion`` there is no "current row" that keeps
+    moving and therefore no last-writer-wins story to tell. Two devices tailoring
+    offline produce two rows with two client-generated ids and both land. The only
+    write a row ever sees after its insert is a tombstone.
+
+    ``base_hash`` is the guard on the cache. A stored tailoring was written
+    against the resume as it stood then; returning it verbatim after the person
+    has added a job would hand back a resume missing their newest experience. So
+    the hash of the document that was tailored travels with the result, and a row
+    that no longer matches the document in hand is barred from the reuse path —
+    it may still be adapted, which is a model call that reads the current source.
+
+    ``note_id`` deliberately carries **no ForeignKey**, matching ``Issue.note_id``
+    and ``ResumeVersion.note_id``: nothing here is ever hard-deleted, so a
+    database cascade would never fire, while an FK would impose an ordering
+    dependency between two independently-upserted sync batches whose order is
+    unspecified. It is provenance rather than a relationship — a row legitimately
+    outlives the note it names, and arrives before it on a fresh device.
+    """
+
+    __tablename__ = "resume_targets"
+
+    user_id: Mapped[str] = mapped_column(
+        String, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+
+    # The resume note this tailoring was applied to, for provenance only.
+    note_id: Mapped[str] = mapped_column(String, nullable=False, default="")
+    # The folder that note was in, snapshotted at write time. Masters are
+    # per-folder, so candidates are scoped the same way; denormalized for the
+    # same reason `source` is, so the row stays self-contained when the note
+    # later moves. Empty string means the home screen, not "unknown".
+    folder_id: Mapped[str] = mapped_column(String, nullable=False, default="")
+    # What the person typed into the form. Not derived from `facets` — these are
+    # their words, and the facets are a model's reading of the posting.
+    company: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    role: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    # The structured reading of the posting, as JSON. Opaque to the server: it is
+    # scored on the device, against rows sync has already delivered.
+    facets: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    # The posting this was aimed at, kept whole. Adapting a stored tailoring is
+    # a comparison — the old job is shown beside the new one and the model is
+    # asked what changed — so the text has to survive, not just its facets.
+    job_description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    # The tailored LaTeX this job produced.
+    source: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    # Fingerprint of the document that was tailored — see the class docstring.
+    base_hash: Mapped[str] = mapped_column(Text, nullable=False, default="")
+
+    created_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    updated_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    deleted_at: Mapped[int | None] = mapped_column(BigInteger)
+
+    server_seq: Mapped[int] = mapped_column(
+        BigInteger, server_default=SERVER_SEQ_DEFAULT, nullable=False
+    )
+
+    __table_args__ = (
+        Index("idx_resume_targets_user_seq", "user_id", "server_seq"),
+        Index("idx_resume_targets_user_note", "user_id", "note_id"),
+    )
+
+
 class UserSetting(Base):
     """One account-scoped preference, e.g. the chosen theme.
 

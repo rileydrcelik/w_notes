@@ -34,6 +34,7 @@ from app.models import (
     Folder,
     Issue,
     Note,
+    ResumeTarget,
     ResumeVersion,
     User,
     UserSetting,
@@ -47,6 +48,7 @@ from app.schemas import (
     PullResponse,
     PushRequest,
     PushResponse,
+    ResumeTargetIn,
     ResumeVersionIn,
     UserSettingIn,
 )
@@ -163,6 +165,10 @@ async def push(
     # Inside the same advisory lock and per-row savepoints as everything else, so
     # version rows get the seq-gap protection and poison-row isolation for free.
     await _upsert_batch(session, ResumeVersion, user.id, payload.resume_versions)
+    # Append-only rows, so unlike the versions above there is no "current"
+    # row that keeps moving — the upsert's UPDATE branch only ever fires on a
+    # re-sent push whose response was dropped, or on a tombstone.
+    await _upsert_batch(session, ResumeTarget, user.id, payload.resume_targets)
     await _upsert_batch(session, UserSetting, user.id, payload.user_settings)
 
     await session.flush()
@@ -221,13 +227,14 @@ async def pull(
     issues = await changed(Issue)
     sheets = await changed(FinanceSheet)
     versions = await changed(ResumeVersion)
+    targets = await changed(ResumeTarget)
     settings = await changed(UserSetting)
 
     # `settings` belongs in here with the rest. It arrived after the paging was
     # written, and a table left out of this tuple is invisible to both the
     # truncation check and the cutoff filter below — which is precisely how a
     # cursor gets handed back past rows that were never sent.
-    tables = (folders, notes, copa, issues, sheets, versions, settings)
+    tables = (folders, notes, copa, issues, sheets, versions, targets, settings)
 
     # A table that came back full is truncated — it has rows above its window we
     # haven't sent. The cursor may only advance to a point below which *every*
@@ -243,7 +250,7 @@ async def pull(
         tables = tuple([r for r in rows if r.server_seq <= cutoff] for rows in tables)
     else:
         cutoff = since
-    folders, notes, copa, issues, sheets, versions, settings = tables
+    folders, notes, copa, issues, sheets, versions, targets, settings = tables
 
     # New cursor = the highest server_seq in this page, or the caller's if empty.
     # Every table must feed this max: a table left out here can hand back a
@@ -263,6 +270,7 @@ async def pull(
         issues=[IssueIn.model_validate(r) for r in issues],
         finance_sheets=[FinanceSheetIn.model_validate(r) for r in sheets],
         resume_versions=[ResumeVersionIn.model_validate(r) for r in versions],
+        resume_targets=[ResumeTargetIn.model_validate(r) for r in targets],
         user_settings=[UserSettingIn.model_validate(r) for r in settings],
         server_seq=high,
         has_more=has_more,
@@ -279,6 +287,7 @@ async def _high_water(session: AsyncSession, user_id: str) -> int:
         Issue,
         FinanceSheet,
         ResumeVersion,
+        ResumeTarget,
         UserSetting,
     ):
         value = await session.scalar(

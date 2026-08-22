@@ -17,6 +17,7 @@
  * place for this job and commenting out what doesn't — and the server's prompt
  * requires that nothing is ever deleted, so the bench survives every round.
  */
+import type { ResumeFacets, ResumeTarget } from '@/data/notes';
 import type { LatexEngine } from '@/lib/latex/types';
 import { ApiError, apiFetch, syncConfigured } from '@/lib/sync/api';
 import { KEY_REQUIRED_MESSAGE } from '@/lib/ai-key';
@@ -64,11 +65,22 @@ const TAILOR_TIMEOUT_MS = 300_000;
  */
 type StreamedError = { error?: { status: number; detail: string } };
 
+/** The facets as the wire spells them — snake_case, like every other field. */
+type FacetsApiShape = {
+  role_family?: string;
+  seniority?: string;
+  sector?: string;
+  industry?: string;
+  requirements?: string[];
+};
+
 type TailorApiResponse = StreamedError & {
   latex: string;
   emphasis?: string;
   /** How many pages it actually came out at, per the TeX log. */
   pages?: number | null;
+  /** What the posting turned out to be. Absent from a server that predates it. */
+  facets?: FacetsApiShape;
 };
 
 export type TailoredResume = {
@@ -82,6 +94,12 @@ export type TailoredResume = {
    * asked for a one-page resume and this isn't one.
    */
   pages: number | null;
+  /**
+   * What the model read out of the posting, for the corpus row this tailoring
+   * becomes. Empty facets from a server that predates them, which costs the
+   * corpus one unscoreable row rather than the tailoring itself.
+   */
+  facets: ResumeFacets;
 };
 
 export type TailorResult =
@@ -101,6 +119,15 @@ export async function tailorResume(
   source: string,
   draft: TailorDraft,
   engine: LatexEngine,
+  /**
+   * A past tailoring for a similar job, if the device found one worth sending.
+   *
+   * Precedent, never a substitute for `source` — the server writes against the
+   * resume as it stands now and reads this beside it. See
+   * `lib/latex/corpus.ts` for how one is chosen, and `TailorRequest` in
+   * `backend/app/routers/resume.py` for why the two are not interchangeable.
+   */
+  prior?: ResumeTarget | null,
 ): Promise<TailorResult> {
   if (!syncConfigured) {
     return {
@@ -122,6 +149,13 @@ export async function tailorResume(
         role: draft.role,
         job_description: draft.jobDescription,
         engine,
+        // Empty strings rather than omitted keys: the server reads absence and
+        // emptiness the same way, and sending the shape every time keeps one
+        // request body rather than two.
+        prior_source: prior?.source ?? '',
+        prior_company: prior?.company ?? '',
+        prior_role: prior?.role ?? '',
+        prior_job_description: prior?.jobDescription ?? '',
       },
     });
 
@@ -139,6 +173,7 @@ export async function tailorResume(
         latex: response.latex,
         emphasis: response.emphasis?.trim() ?? '',
         pages: response.pages ?? null,
+        facets: toFacets(response.facets),
       },
     };
   } catch (e) {
@@ -161,6 +196,28 @@ export async function tailorResume(
   } finally {
     clearTimeout(timer);
   }
+}
+
+/**
+ * The wire's facets as the app's, with every field defaulted.
+ *
+ * Total rather than partial on purpose: a corpus row stores whatever this
+ * returns, and a facets object with a missing `requirements` array would throw
+ * at the point it is scored — days later, on a different posting, with nothing
+ * on screen to connect the two.
+ */
+function toFacets(raw: FacetsApiShape | undefined): ResumeFacets {
+  const seniority = raw?.seniority ?? '';
+  const known = ['intern', 'junior', 'mid', 'senior', 'staff', 'principal', 'lead'];
+  return {
+    roleFamily: raw?.role_family ?? '',
+    // An unrecognised rung reads as "not stated" rather than being carried
+    // through as a value nothing on the ladder can be compared against.
+    seniority: (known.includes(seniority) ? seniority : '') as ResumeFacets['seniority'],
+    sector: raw?.sector ?? '',
+    industry: raw?.industry ?? '',
+    requirements: Array.isArray(raw?.requirements) ? raw.requirements : [],
+  };
 }
 
 /** The `detail` FastAPI put in the body, if this was a refusal that carried one. */

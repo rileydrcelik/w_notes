@@ -13,6 +13,7 @@ import type { Folder, Note } from '@/data/notes';
 import { sentryTarget } from '@/lib/sentry-note';
 import { githubTarget } from '@/lib/github-note';
 import { isResumeNote, resumeSourceExcerpt, resumeTitle } from '@/lib/resume-note';
+import { isMasterResume } from '@/lib/resume-master';
 import { useCardPreviewLines, useTileHeight } from '@/lib/grid';
 import { projectConfig } from '@/lib/project';
 import { useContextMenu } from '@/hooks/use-context-menu';
@@ -309,13 +310,15 @@ function SentryNoteCard({ note }: { note: Note }) {
 /** A resume plugin note: opens the LaTeX editor/preview instead of the text editor. */
 function ResumeNoteCard({ note }: { note: Note }) {
   const router = useRouter();
-  const { toggleNoteFavorite } = useNotes();
+  const { toggleNoteFavorite, folders } = useNotes();
   const { active, isSelected, toggle } = useItemSelection();
   const selected = isSelected('note', note.id);
 
   // The body is LaTeX, so the preview is a plain source excerpt in monospace —
   // never htmlToPlainText, which would eat backslashes and braces as markup.
   const excerpt = resumeSourceExcerpt(note.body);
+  // Whether this is the superset its folder's other resumes are tailored from.
+  const master = isMasterResume(note, folders);
 
   const openOrFavorite = useDoubleTap(
     () => router.push({ pathname: '/resume/[id]', params: { id: note.id } }),
@@ -339,7 +342,16 @@ function ResumeNoteCard({ note }: { note: Note }) {
       onLongPress={onSelectToggle}>
       <ThemedView type="backgroundElementAlt" style={[styles.card, selected && styles.selected]}>
         <View style={styles.titleRow}>
-          <Feather name="file-text" size={15} color={RESUME_ACCENT} />
+          {/* The master wears a different glyph rather than a badge beside the
+              same one — it is the same kind of thing as every other resume, so
+              what changes is which thing it is, not how much furniture it has.
+              `award` is the icon the options sheet sets it with, so the two
+              read as one gesture. */}
+          <Feather
+            name={master ? 'award' : 'file-text'}
+            size={15}
+            color={RESUME_ACCENT}
+          />
           <ThemedText type="smallBold" numberOfLines={1} style={styles.titleText}>
             {resumeTitle(note)}
           </ThemedText>

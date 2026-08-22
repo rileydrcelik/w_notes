@@ -124,6 +124,93 @@ export type Issue = {
  * The oldest snapshot for a resume is "the original" and carries the resume's
  * title as its label; every later one describes what the add/edit/restore did.
  */
+/**
+ * What a model read out of one job posting: the handful of things that decide
+ * whether a resume written for *that* job is a sensible starting point for a
+ * different one.
+ *
+ * Filled in server-side, by the same call that writes the tailored resume — the
+ * model has already read the posting closely enough to rank experience against
+ * it, so naming what it found costs nothing extra. The query side needs no model
+ * call at all: a new posting is scored by looking for a stored row's
+ * `requirements` in the new posting's own text (see `lib/latex/corpus.ts`).
+ *
+ * Deliberately small. A field nothing scores against is dead weight in every
+ * synced row for ever, so each of these has to earn its place in the scoring.
+ */
+export type ResumeFacets = {
+  /**
+   * The canonical job-title bucket, e.g. "full stack software engineer" —
+   * seniority stripped out, since that is its own field. Empty when the model
+   * could not place the title.
+   */
+  roleFamily: string;
+  /** Where in a career ladder this sits. Empty when the posting doesn't say. */
+  seniority: '' | 'intern' | 'junior' | 'mid' | 'senior' | 'staff' | 'principal' | 'lead';
+  /** The broad sector, e.g. "finance", "healthcare". Empty when unclear. */
+  sector: string;
+  /** The narrower industry, e.g. "payments", "medical imaging". */
+  industry: string;
+  /**
+   * The concrete things the posting requires, as short canonical keywords —
+   * "kubernetes", not "k8s"; "distributed systems", not "experience working on
+   * large-scale distributed systems". Canonicalising at write time is what makes
+   * plain text matching on the query side work at all: the stored side has been
+   * normalised by a model, so only the new posting's phrasing is raw.
+   */
+  requirements: string[];
+};
+
+export type ResumeTarget = {
+  id: string;
+  /**
+   * The resume note this tailoring was applied to.
+   *
+   * Provenance, not a relationship. A corpus row carries its own `source` and
+   * `facets`, so it stays useful when the note is deleted, and it can arrive on
+   * a fresh device before that note does — there is no foreign key either way.
+   * Every read path treats "no such note" as ordinary rather than as corruption.
+   */
+  noteId: string;
+  /**
+   * The folder that note was in when this was written — the resume "family"
+   * this tailoring belongs to. Null is the home screen, not "unknown".
+   *
+   * Snapshotted rather than followed, so moving a resume between folders leaves
+   * past tailorings where they were rather than silently re-pointing them at a
+   * family they were never written for.
+   */
+  folderId: string | null;
+  /** Who the application was to, as the person typed it. May be empty. */
+  company: string;
+  /** The job title applied for, as the person typed it. */
+  role: string;
+  /** The model's structured reading of the posting — see `lib/latex/corpus.ts`. */
+  facets: ResumeFacets;
+  /**
+   * The posting itself, kept whole. Adapting a stored tailoring is a comparison
+   * — the old job is shown beside the new one and the model is asked what
+   * changed — so the text has to survive, not only the facets drawn from it.
+   */
+  jobDescription: string;
+  /** The tailored LaTeX this job produced. */
+  source: string;
+  /**
+   * Fingerprint of the document that was tailored.
+   *
+   * The guard on the cache. A stored tailoring was written against the resume as
+   * it stood that day; handing it back verbatim after the person has added a job
+   * would quietly return a resume with their newest experience missing. So a row
+   * whose hash no longer matches the document in hand is barred from being
+   * reused as-is — it can still be *adapted*, which is a model call that reads
+   * the current source.
+   */
+  baseHash: string;
+  /** Creation timestamp (ms) — the corpus's sort key, and the recency tiebreak. */
+  createdAt: number;
+  updatedAt: number;
+};
+
 export type ResumeVersion = {
   id: string;
   /** The resume note this belongs to. */

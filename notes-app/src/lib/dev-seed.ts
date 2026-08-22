@@ -443,5 +443,12 @@ export async function clearDevSeed(database: SQLite.SQLiteDatabase): Promise<voi
     await database.runAsync('DELETE FROM folders WHERE id LIKE ?', [like]);
     await database.runAsync('DELETE FROM finance_sheets WHERE id LIKE ?', [like]);
     await database.runAsync('DELETE FROM resume_versions WHERE note_id LIKE ?', [like]);
+    // Matched on `note_id` for the same reason the versions above are: the row's
+    // own id is app-generated and never carries the prefix. Left behind, a
+    // tailoring of the sample resume would outlive "Clear" — and because the
+    // seeded resume has no folder, it lands in the same corpus bucket a real
+    // home-screen resume reads from, where a high enough score would hand
+    // someone sample LaTeX as their own tailored resume.
+    await database.runAsync('DELETE FROM resume_targets WHERE note_id LIKE ?', [like]);
   });
 }
