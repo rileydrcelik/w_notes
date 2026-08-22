@@ -27,6 +27,8 @@ import {
 } from '@/lib/issue-github';
 import { parseTypeConfig, projectConfig, serializeTypeConfig, type AttrDef } from '@/lib/project';
 import { Sentry } from '@/lib/sentry';
+import { isResumeNote } from '@/lib/resume-note';
+import { folderConfigWithMaster, folderMasterResumeId } from '@/lib/resume-master';
 import { useIssues } from '@/store/issues-store';
 import { invalidMoveTargets } from '@/lib/folder-tree';
 import { useNotes } from '@/store/notes-store';
@@ -209,6 +211,7 @@ function OptionsSheet({
     getFolder,
     getNotesInFolder,
     updateNote,
+    updateFolder,
     toggleNoteFavorite,
     toggleFolderFavorite,
     markNoteShared,
@@ -236,6 +239,22 @@ function OptionsSheet({
   const projectCfg = project ? projectConfig(project) : null;
   const typeRepo = projectCfg?.repo;
   const typeConnected = issueType ? parseTypeConfig(issueType.pluginConfig).githubConnected : false;
+
+  // A single selected resume that lives in a folder: it can be that folder's
+  // master — the superset the folder's other resumes are tailored from.
+  //
+  // Offered only inside a folder, because the pointer lives on the folder row
+  // and the home screen has no row to hold one. A resume at the top level still
+  // tailors, it just tailors from itself, which is what every resume did before
+  // masters existed.
+  const resumeNote =
+    single && targets[0].type === 'note' ? getNote(targets[0].id) : undefined;
+  const resumeFolder =
+    resumeNote && isResumeNote(resumeNote) && resumeNote.folderId
+      ? getFolder(resumeNote.folderId)
+      : undefined;
+  const isMaster =
+    !!resumeFolder && !!resumeNote && folderMasterResumeId(resumeFolder) === resumeNote.id;
 
   // Open GitHub issues for every issue under a newly-connected type that was
   // never pushed (ghNumber == null). Best-effort; one alert if any fail.
@@ -269,6 +288,15 @@ function OptionsSheet({
     ...(issueType && typeRepo
       ? [{ key: 'github', label: typeConnected ? 'Stop tracking on GitHub' : 'Track with GitHub', icon: 'github' as FeatherName }]
       : []),
+    ...(resumeFolder
+      ? [
+          {
+            key: 'master',
+            label: isMaster ? 'Stop using as master resume' : 'Use as master resume',
+            icon: 'award' as FeatherName,
+          },
+        ]
+      : []),
     ...(allMovable ? [{ key: 'move', label: `Move${suffix} to folder`, icon: 'move' as FeatherName }] : []),
     ...(!anyIssueType ? [{ key: 'share', label: `Share${suffix}`, icon: 'share' as FeatherName }] : []),
     { key: 'delete', label: `Delete${suffix}`, icon: 'trash-2', destructive: true },
@@ -289,6 +317,17 @@ function OptionsSheet({
         if (next && typeRepo && projectCfg) {
           void backfillType(issueType.id, issueType.title, typeRepo, projectCfg.attributes);
         }
+        break;
+      }
+      case 'master': {
+        if (!resumeFolder || !resumeNote) break;
+        // Written through `folderConfigWithMaster` rather than as a fresh object:
+        // this folder's config may hold a whole project schema, and rebuilding it
+        // around one key is how the rest of it disappears.
+        updateFolder(resumeFolder.id, {
+          config: folderConfigWithMaster(resumeFolder, isMaster ? null : resumeNote.id),
+        });
+        onClose();
         break;
       }
       case 'favorite': {

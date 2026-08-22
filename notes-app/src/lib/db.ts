@@ -14,7 +14,15 @@ import { migrateThemeKey, THEME_RENAME_FLAG, THEME_SETTING_KEY } from '@/lib/the
 import { whenDbOwner } from '@/lib/web-db-lock';
 import { parseTypeIds, planIssueCascade } from '@/lib/issue-cascade';
 import type { IssueMembership } from '@/lib/issue-cascade';
-import type { Folder, Issue, Note, ResumeVersion } from '@/data/notes';
+import type {
+  Folder,
+  Issue,
+  Note,
+  ResumeFacets,
+  ResumeTarget,
+  ResumeVersion,
+} from '@/data/notes';
+import { emptyFacets } from '@/lib/latex/corpus';
 import { foldersToRehome } from '@/lib/folder-tree';
 import type { CopaItem } from '@/data/copa';
 
@@ -112,6 +120,35 @@ type ResumeVersionRow = {
   note_id: string;
   label: string;
   source: string;
+  created_at: number;
+  updated_at: number;
+  deleted_at: number | null;
+};
+
+/**
+ * One job a resume was successfully aimed at — the corpus a new tailoring is
+ * retrieved from.
+ *
+ * Append-only and immutable for the same reason `ResumeVersionRow` is, and with
+ * none of its exception: there is no "current" row here that keeps being
+ * rewritten, so two devices tailoring offline produce two rows and both land.
+ * The only write a row sees after its insert is a tombstone.
+ *
+ * `facets` is the model's structured reading of the posting, as JSON; `base_hash`
+ * fingerprints the document that was tailored, so a stored result can never be
+ * handed back verbatim once the resume behind it has moved on. See
+ * `lib/latex/corpus.ts` for what is in the facets and how a row is scored.
+ */
+type ResumeTargetRow = {
+  id: string;
+  note_id: string;
+  folder_id: string;
+  company: string;
+  role: string;
+  facets: string;
+  job_description: string;
+  source: string;
+  base_hash: string;
   created_at: number;
   updated_at: number;
   deleted_at: number | null;
@@ -249,6 +286,21 @@ export type ResumeVersionSync = {
   deleted_at: number | null;
 };
 
+export type ResumeTargetSync = {
+  id: string;
+  note_id: string;
+  folder_id: string;
+  company: string;
+  role: string;
+  facets: string;
+  job_description: string;
+  source: string;
+  base_hash: string;
+  created_at: number;
+  updated_at: number;
+  deleted_at: number | null;
+};
+
 /**
  * One account-scoped preference. `id` *is* the preference name (`themeKey`), so
  * the table is a key-value store that happens to sync, and a second preference
@@ -275,6 +327,7 @@ export type SyncPayload = {
   issues: IssueSync[];
   finance_sheets: FinanceSheetSync[];
   resume_versions: ResumeVersionSync[];
+  resume_targets: ResumeTargetSync[];
   user_settings: UserSettingSync[];
 };
 
@@ -415,6 +468,25 @@ async function open(): Promise<SQLite.SQLiteDatabase> {
       dirty       INTEGER NOT NULL DEFAULT 1
     );
 
+    -- The corpus of past tailorings (see ResumeTargetRow). Same vintage as
+    -- resume_versions and the same consequence: every column can be NOT NULL
+    -- from creation, so no ensureSyncColumns-style backfill is needed.
+    CREATE TABLE IF NOT EXISTS resume_targets (
+      id               TEXT PRIMARY KEY NOT NULL,
+      note_id          TEXT NOT NULL DEFAULT '',
+      folder_id        TEXT NOT NULL DEFAULT '',
+      company          TEXT NOT NULL DEFAULT '',
+      role             TEXT NOT NULL DEFAULT '',
+      facets           TEXT NOT NULL DEFAULT '{}',
+      job_description  TEXT NOT NULL DEFAULT '',
+      source           TEXT NOT NULL DEFAULT '',
+      base_hash        TEXT NOT NULL DEFAULT '',
+      created_at       INTEGER NOT NULL,
+      updated_at       INTEGER NOT NULL DEFAULT 0,
+      deleted_at       INTEGER,
+      dirty            INTEGER NOT NULL DEFAULT 1
+    );
+
     -- Account-scoped preferences (see UserSettingSync). New enough that every
     -- column can be NOT NULL from creation, so like resume_versions it needs no
     -- ensureSyncColumns-style backfill.
@@ -464,6 +536,7 @@ async function open(): Promise<SQLite.SQLiteDatabase> {
     CREATE INDEX IF NOT EXISTS idx_finance_dirty ON finance_sheets (dirty);
     CREATE INDEX IF NOT EXISTS idx_resume_versions_note_id ON resume_versions (note_id);
     CREATE INDEX IF NOT EXISTS idx_resume_versions_dirty ON resume_versions (dirty);
+    CREATE INDEX IF NOT EXISTS idx_resume_targets_dirty ON resume_targets (dirty);
     CREATE INDEX IF NOT EXISTS idx_user_settings_dirty ON user_settings (dirty);
   `);
   // Drop file paths that died with the last page session, before anything can
@@ -781,6 +854,39 @@ function toIssue(r: IssueRow): Issue {
     position: r.position,
     createdAt: r.created_at,
     updatedAt: ymd(r.updated_at),
+  };
+}
+
+function toResumeTarget(r: ResumeTargetRow): ResumeTarget {
+  let facets: ResumeFacets = emptyFacets();
+  try {
+    const parsed = JSON.parse(r.facets) as unknown;
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      facets = { ...emptyFacets(), ...(parsed as Partial<ResumeFacets>) };
+    }
+  } catch {
+    // A corrupt blob reads as no facets rather than throwing. A row that can't
+    // be scored simply never wins a match, which is the right failure: the
+    // tailoring falls back to writing from scratch, exactly as it did before
+    // this table existed.
+  }
+  // `requirements` is the one field scoring iterates, so a non-array from a
+  // hand-edited or newer-build row would throw at the call site rather than here.
+  if (!Array.isArray(facets.requirements)) facets = { ...facets, requirements: [] };
+  return {
+    id: r.id,
+    noteId: r.note_id,
+    // '' is how the home screen is stored — the column is NOT NULL — and null is
+    // how the app spells it, matching `Note.folderId`.
+    folderId: r.folder_id || null,
+    company: r.company,
+    role: r.role,
+    facets,
+    jobDescription: r.job_description,
+    source: r.source,
+    baseHash: r.base_hash,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at || r.created_at,
   };
 }
 
@@ -1615,6 +1721,86 @@ export const db = {
     );
   },
 
+  // ---- Resume tailoring corpus ----
+
+  /**
+   * Every past tailoring, newest first.
+   *
+   * Account-wide on purpose, unlike `listResumeVersions`: a version is the
+   * history *of one note*, but the value of a corpus is that a job you aimed a
+   * resume at last year can inform one you are aiming a different resume at
+   * today. Scoping this to a note would hide most of the corpus from most of the
+   * tailorings, for no gain.
+   *
+   * `created_at DESC` because recency breaks ties in scoring — a more recent
+   * tailoring reflects a more recent shape of the resume — and `id DESC` after
+   * it so two rows written in the same millisecond don't swap between reads.
+   */
+  async listResumeTargets(folderId: string | null): Promise<ResumeTarget[]> {
+    const database = await getDb();
+    const rows = await database.getAllAsync<ResumeTargetRow>(
+      `SELECT * FROM resume_targets
+       WHERE deleted_at IS NULL AND folder_id = ?
+       ORDER BY created_at DESC, id DESC`,
+      [folderId ?? ''],
+    );
+    return rows.map(toResumeTarget);
+  },
+
+  /**
+   * Record one tailoring. The only way a corpus row is ever written — there is no
+   * update counterpart, and that absence is the design: a row is what happened
+   * on a day, so nothing rewrites `source`, `facets` or `base_hash` afterwards.
+   * Two devices tailoring offline therefore produce two rows and both land.
+   */
+  async createResumeTarget({
+    id,
+    noteId,
+    folderId,
+    company,
+    role,
+    facets,
+    jobDescription,
+    source,
+    baseHash,
+  }: {
+    id: string;
+    noteId: string;
+    folderId: string;
+    company: string;
+    role: string;
+    facets: string;
+    jobDescription: string;
+    source: string;
+    baseHash: string;
+  }): Promise<void> {
+    dbCrumb('createResumeTarget', { id, noteId });
+    const database = await getDb();
+    const now = Date.now();
+    await database.runAsync(
+      `INSERT INTO resume_targets
+         (id, note_id, folder_id, company, role, facets, job_description, source,
+          base_hash, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [id, noteId, folderId, company, role, facets, jobDescription, source, baseHash, now, now],
+    );
+  },
+
+  /**
+   * Tombstones one corpus row, for someone pruning a tailoring they don't want
+   * suggested again. Soft-deleted rather than removed so the delete propagates;
+   * a hard delete would let a device that hadn't pulled yet push it straight back.
+   */
+  async deleteResumeTarget(id: string): Promise<void> {
+    dbCrumb('deleteResumeTarget', { id });
+    const database = await getDb();
+    const now = Date.now();
+    await database.runAsync(
+      'UPDATE resume_targets SET deleted_at = ?, updated_at = ?, dirty = 1 WHERE id = ?',
+      [now, now, id],
+    );
+  },
+
   // ---- Resume version history ----
 
   /**
@@ -1726,8 +1912,16 @@ export const db = {
   async getDirty(): Promise<SyncPayload> {
     const database = await getDb();
     const skipSeed = `${DEV_SEED_PREFIX}%`;
-    const [folders, notes, copa_items, issues, finance_sheets, resume_versions, user_settings] =
-      await Promise.all([
+    const [
+      folders,
+      notes,
+      copa_items,
+      issues,
+      finance_sheets,
+      resume_versions,
+      resume_targets,
+      user_settings,
+    ] = await Promise.all([
       database.getAllAsync<FolderSync>(
         `SELECT id, name, parent_id, favorite, created_at, updated_at, deleted_at,
                 trashed_with_folder_id, kind, config
@@ -1775,13 +1969,36 @@ export const db = {
          FROM resume_versions WHERE dirty = 1 AND note_id NOT LIKE ?`,
         [skipSeed],
       ),
+      database.getAllAsync<ResumeTargetSync>(
+        // Filtered on `note_id` for the same reason the versions query above is,
+        // and it is worth spelling out rather than inheriting by copy: a corpus
+        // row's own id is app-generated and never carries the seed prefix, so a
+        // guard on `id` would exclude nothing while looking exactly like one.
+        // Tailoring a seeded resume is a real path to reach here — it needs a
+        // server round trip, so it cannot happen on its own the way the first
+        // compile snapshots a version, but someone pressing Tailor on the sample
+        // resume would otherwise push sample LaTeX to their account as an orphan.
+        `SELECT id, note_id, folder_id, company, role, facets, job_description, source,
+                base_hash, created_at, updated_at, deleted_at
+         FROM resume_targets WHERE dirty = 1 AND note_id NOT LIKE ?`,
+        [skipSeed],
+      ),
       database.getAllAsync<UserSettingSync>(
         `SELECT id, value, created_at, updated_at, deleted_at
          FROM user_settings WHERE dirty = 1 AND id NOT LIKE ?`,
         [skipSeed],
       ),
     ]);
-    return { folders, notes, copa_items, issues, finance_sheets, resume_versions, user_settings };
+    return {
+      folders,
+      notes,
+      copa_items,
+      issues,
+      finance_sheets,
+      resume_versions,
+      resume_targets,
+      user_settings,
+    };
   },
 
   /**
@@ -1826,6 +2043,12 @@ export const db = {
         await database.runAsync(
           'UPDATE resume_versions SET dirty = 0 WHERE id = ? AND updated_at = ?',
           [v.id, v.updated_at],
+        );
+      }
+      for (const t of payload.resume_targets ?? []) {
+        await database.runAsync(
+          'UPDATE resume_targets SET dirty = 0 WHERE id = ? AND updated_at = ?',
+          [t.id, t.updated_at],
         );
       }
       for (const s of payload.user_settings ?? []) {
@@ -2051,8 +2274,45 @@ export const db = {
         );
         changed += r.changes;
       }
-      // `?? []` as above — this is now the newest table, so it is the one a
-      // client is most likely to have while the server it is talking to doesn't.
+      for (const t of payload.resume_targets ?? []) {
+        // The last-writer-wins guard is genuinely decorative here, unlike on the
+        // versions above where the current row keeps moving. Nothing ever
+        // rewrites a corpus row, so the only incoming row that can conflict with
+        // a stored one is a byte-identical copy of itself from a re-push after a
+        // dropped response — `>=` rather than `>` is what makes that resend a
+        // no-op instead of a skipped write. A tombstone is the one real update.
+        const r = await database.runAsync(
+          `INSERT INTO resume_targets
+             (id, note_id, folder_id, company, role, facets, job_description, source,
+              base_hash, created_at, updated_at, deleted_at, dirty)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+           ON CONFLICT(id) DO UPDATE SET
+             note_id = excluded.note_id, folder_id = excluded.folder_id,
+             company = excluded.company,
+             role = excluded.role, facets = excluded.facets,
+             job_description = excluded.job_description, source = excluded.source,
+             base_hash = excluded.base_hash, created_at = excluded.created_at,
+             updated_at = excluded.updated_at, deleted_at = excluded.deleted_at, dirty = 0
+           WHERE excluded.updated_at >= resume_targets.updated_at`,
+          [
+            t.id,
+            t.note_id,
+            t.folder_id,
+            t.company,
+            t.role,
+            t.facets,
+            t.job_description,
+            t.source,
+            t.base_hash,
+            t.created_at,
+            t.updated_at,
+            t.deleted_at,
+          ],
+        );
+        changed += r.changes;
+      }
+      // `?? []` as above — a client can have this table while the server it is
+      // talking to does not, during a staged rollout.
       for (const s of payload.user_settings ?? []) {
         const r = await database.runAsync(
           `INSERT INTO user_settings
@@ -2089,7 +2349,7 @@ export const db = {
     // clean, so signing in never claims them into the account and they stay
     // local to this one device for ever, with nothing on screen to say so.
     await database.execAsync(
-      'UPDATE folders SET dirty = 1; UPDATE notes SET dirty = 1; UPDATE copa_items SET dirty = 1; UPDATE issues SET dirty = 1; UPDATE finance_sheets SET dirty = 1; UPDATE resume_versions SET dirty = 1; UPDATE user_settings SET dirty = 1;',
+      'UPDATE folders SET dirty = 1; UPDATE notes SET dirty = 1; UPDATE copa_items SET dirty = 1; UPDATE issues SET dirty = 1; UPDATE finance_sheets SET dirty = 1; UPDATE resume_versions SET dirty = 1; UPDATE resume_targets SET dirty = 1; UPDATE user_settings SET dirty = 1;',
     );
   },
 
@@ -2111,7 +2371,7 @@ export const db = {
     // previous account's rows survive sign-out and show up under whoever signs
     // in next on this device.
     await database.execAsync(
-      'DELETE FROM folders; DELETE FROM notes; DELETE FROM copa_items; DELETE FROM issues; DELETE FROM finance_sheets; DELETE FROM resume_versions; DELETE FROM user_settings;',
+      'DELETE FROM folders; DELETE FROM notes; DELETE FROM copa_items; DELETE FROM issues; DELETE FROM finance_sheets; DELETE FROM resume_versions; DELETE FROM resume_targets; DELETE FROM user_settings;',
     );
   },
 
@@ -2279,6 +2539,8 @@ const WRITE_METHODS = [
   'createResumeVersion',
   'updateResumeVersion',
   'deleteResumeVersion',
+  'createResumeTarget',
+  'deleteResumeTarget',
   'markSynced',
   'applyServerRows',
   'markAllDirty',

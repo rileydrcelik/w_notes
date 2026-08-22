@@ -100,6 +100,34 @@ class ResumeVersionIn(_Syncable):
     source: str = ""
 
 
+class ResumeTargetIn(_Syncable):
+    """One job a resume was aimed at, kept as the corpus retrieval reads from.
+
+    Append-only: nothing rewrites a row after its insert, so two devices
+    tailoring offline produce two rows and both land. `facets` is opaque here —
+    the server stores and returns the JSON without reading it, because the
+    scoring that uses it runs on the device.
+
+    As with `ResumeVersionIn`, nothing is nullable-for-preservation because the
+    whole table is new — **a column added later must go in `_PRESERVE_IF_NULL` in
+    `routers/sync.py`**, or an older client that cannot send it will null it out
+    on every device.
+    """
+
+    note_id: str = ""
+    # The resume family this belongs to; "" is the home screen.
+    folder_id: str = ""
+    company: str = ""
+    role: str = ""
+    facets: str = "{}"
+    # The posting itself: adapting compares the old job to the new one.
+    job_description: str = ""
+    source: str = ""
+    # Fingerprint of the document that was tailored, so a stored result whose
+    # resume has moved on can't be handed back verbatim. See `ResumeTarget`.
+    base_hash: str = ""
+
+
 class UserSettingIn(_Syncable):
     """One account-scoped preference. `id` is the preference name.
 
@@ -128,6 +156,7 @@ class PushRequest(BaseModel):
     issues: list[IssueIn] = []
     finance_sheets: list[FinanceSheetIn] = []
     resume_versions: list[ResumeVersionIn] = []
+    resume_targets: list[ResumeTargetIn] = []
     user_settings: list[UserSettingIn] = []
 
 
@@ -145,6 +174,7 @@ class PullResponse(BaseModel):
     issues: list[IssueIn] = []
     finance_sheets: list[FinanceSheetIn] = []
     resume_versions: list[ResumeVersionIn] = []
+    resume_targets: list[ResumeTargetIn] = []
     user_settings: list[UserSettingIn] = []
     server_seq: int
     # True when this page stopped short of the server's high-water mark and the

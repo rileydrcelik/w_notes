@@ -157,7 +157,11 @@ import {
 import { describeHardenTarget, describeTailorTarget, originalLabel } from '@/lib/resume-versions';
 import { hardenResume, type HardenDraft } from '@/lib/latex/harden';
 import { tailorResume, type TailorDraft } from '@/lib/latex/tailor';
-import type { ResumeVersion } from '@/data/notes';
+import type { ResumeFacets, ResumeTarget, ResumeVersion } from '@/data/notes';
+import { db } from '@/lib/db';
+import { Sentry } from '@/lib/sentry';
+import { bestRetrieval, fingerprintSource } from '@/lib/latex/corpus';
+import { masterResumeFor } from '@/lib/resume-master';
 import { savePdfToDevice } from '@/lib/save-pdf';
 import { RESUME_READ_ONLY, openingResumeMode, type ResumeMode } from '@/lib/resume-mode';
 import { useSplitLayout } from '@/lib/split-layout';
@@ -199,6 +203,71 @@ function toPreviewPages(
 type Mode = ResumeMode;
 
 /**
+ * What a superseded tailoring says if anyone is still listening.
+ *
+ * Nothing normally is — the modal has already stopped watching for this run's
+ * answer — so this exists to give the abandoned path an honest return value
+ * rather than a fabricated success.
+ */
+const ABANDONED = 'That tailoring was replaced by a newer one.';
+
+/** A tailoring that has been produced but not yet applied, and so not yet filed. */
+type PendingTarget = {
+  noteId: string;
+  folderId: string | null;
+  company: string;
+  role: string;
+  facets: ResumeFacets;
+  jobDescription: string;
+  /** Fingerprint of the document this was written against — the staleness gate. */
+  baseHash: string;
+};
+
+/** How a corpus row names the job it was for, in a sentence. */
+function targetName(target: ResumeTarget): string {
+  const company = target.company.trim();
+  const role = target.role.trim();
+  if (company && role) return `${role} at ${company}`;
+  return company || role || 'an earlier application';
+}
+
+/**
+ * What to say when a stored tailoring is handed back unchanged.
+ *
+ * Said out loud rather than passed off as fresh work: someone who pressed a
+ * button that usually takes two minutes and got an answer at once is owed the
+ * reason, and "this is the resume you already sent for a job like this" is a
+ * thing they might reasonably disagree with.
+ */
+function reusedFrom(target: ResumeTarget): string {
+  return `This is the resume you tailored for ${targetName(target)} — that posting asks for the same things, and your resume hasn't changed since. Nothing was rewritten.`;
+}
+
+/**
+ * What to say when the document that got tailored was not the one on screen.
+ *
+ * Load-bearing rather than decorative: tailoring a resume and getting back
+ * something built from a *different* document is the single most surprising
+ * thing this screen can do, and the diff alone doesn't explain it — it shows
+ * what changed, not what it started from.
+ */
+function tailoredFromMaster(master: { title: string }): string {
+  const name = master.title.trim() || 'your master resume';
+  return `Tailored from ${name}, this folder's master resume — not from the document you were looking at.`;
+}
+
+/** What to say when a stored tailoring was used as a starting point. */
+function adaptedFrom(found: { target: ResumeTarget; demotedByEdit: boolean }): string {
+  const base = `Started from the resume you tailored for ${targetName(found.target)}, then rewritten for this posting.`;
+  // Worth distinguishing. "Close, but your resume has moved on" is a different
+  // statement about the match than "close enough to build on", and someone
+  // deciding whether to trust the result can act on the difference.
+  return found.demotedByEdit
+    ? `${base} It was close enough to reuse as-is, but your resume has changed since it was written.`
+    : base;
+}
+
+/**
  * What the preview pane is doing right now. A finished result remembers the
  * source *and the engine* it came from, because both decide what's on screen:
  * the same LaTeX under the other engine is a different document.
@@ -235,7 +304,7 @@ type Compilation =
 
 export default function ResumeScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
-  const { getNote, updateNote, deleteNote } = useNotes();
+  const { getNote, updateNote, deleteNote, folders, notes } = useNotes();
   const theme = useTheme();
   const insets = useSafeAreaInsets();
   const tabBarInset = useTabBarInset();
@@ -282,6 +351,28 @@ export default function ResumeScreen() {
   // handed back on close — otherwise tapping "Add entry" would drop you out of
   // the editor and leave the toolbar you just used nowhere to be seen.
   const holdEditorRef = useRef(false);
+  /**
+   * What the tailoring in flight should be recorded as, once it is applied.
+   *
+   * A ref rather than state because nothing renders from it and a re-render
+   * between "the server answered" and "the person pressed Apply" must not be
+   * able to lose it. It is written when a tailored document arrives and consumed
+   * exactly once, on apply — a run someone reviews and rejects records nothing,
+   * which is right: the corpus is a record of resumes that were actually used.
+   */
+  const pendingTarget = useRef<PendingTarget | null>(null);
+  /**
+   * Which tailoring run is the current one.
+   *
+   * Closing the sheet does not abort the request behind it — it only tells the
+   * modal to disregard the answer — so an abandoned run is still in flight and
+   * still going to resolve, minutes later, into this component. Without a
+   * generation stamp the loser of that race wins the write: start a run for job
+   * A, close, start one for job B, and if A lands after B it overwrites B's
+   * pending row. Pressing Apply would then file B's document under A's company,
+   * role and posting — permanently, since these rows are never rewritten.
+   */
+  const tailorRun = useRef(0);
   // The source and the preview scroll independently, so each tracks its own
   // position; the fade belongs to whichever one is on screen.
   const editorScroll = useScrolled();
@@ -876,25 +967,140 @@ export default function ResumeScreen() {
    * form in which that is actually reviewable.
    */
   const runTailor = async (draft: TailorDraft) => {
-    const result = await tailorResume(source, draft, engine);
+    // Claimed before the first await, so every later step can tell whether it is
+    // still the run whose answer the screen is waiting for.
+    const run = (tailorRun.current += 1);
+
+    // What gets tailored is the folder's master where there is one, not
+    // necessarily the document on screen — that is what "the others are tailored
+    // from the master" means. Tailoring a note that *is* the master, or one in a
+    // folder without one, is unchanged: it starts from itself.
+    const master = note ? masterResumeFor(note, folders, notes) : null;
+    const base = master && master.id !== id ? master.body : source;
+    const baseHash = fingerprintSource(base);
+
+    // The corpus is scoped to the folder for the same reason the master is: a
+    // tailoring written for a backend role has nothing to say about a design one
+    // filed next door.
+    const corpus = await db.listResumeTargets(note?.folderId ?? null);
+    const found = bestRetrieval(corpus, {
+      role: draft.role,
+      jobDescription: draft.jobDescription,
+      sourceHash: baseHash,
+    });
+
+    // The one path with no model call in it. A stored tailoring is handed back
+    // untouched only when the posting is effectively the same job *and* the
+    // resume has not moved since — see `bestRetrieval` for why the second half
+    // is not optional. It is still reviewed and still snapshotted; what is
+    // skipped is the writing, not the looking.
+    if (found?.tier === 'reuse') {
+      // Reading the corpus above was an await, so even this path — which never
+      // calls the model — can find that a newer run has started behind it.
+      if (run !== tailorRun.current) return { ok: false as const, message: ABANDONED };
+      pendingTarget.current = {
+        noteId: id,
+        folderId: note?.folderId ?? null,
+        company: draft.company,
+        role: draft.role,
+        // No model read this posting, so there is nothing fresher to record than
+        // what the matched row already knew. Carrying its facets forward is only
+        // defensible *because* the score was high enough to say the two postings
+        // ask for the same things — which is the same claim reuse itself rests on.
+        facets: found.target.facets,
+        jobDescription: draft.jobDescription,
+        baseHash,
+      };
+      return {
+        ok: true as const,
+        latex: found.target.source,
+        before: source,
+        pages: null,
+        label: describeTailorTarget(draft),
+        provenance: reusedFrom(found.target),
+      };
+    }
+
+    const result = await tailorResume(
+      base,
+      draft,
+      engine,
+      found?.tier === 'adapt' ? found.target : null,
+    );
     if (!result.ok) return { ok: false as const, message: result.message };
+    // A newer run started while this one was out: its answer is the one on
+    // screen, so this one must not touch what will be filed.
+    if (run !== tailorRun.current) return { ok: false as const, message: ABANDONED };
+    pendingTarget.current = {
+      noteId: id,
+      folderId: note?.folderId ?? null,
+      company: draft.company,
+      role: draft.role,
+      facets: result.resume.facets,
+      jobDescription: draft.jobDescription,
+      baseHash,
+    };
     return {
       ok: true as const,
       latex: result.resume.latex,
       // What it is diffed against: the document as it stood when Tailor was
       // pressed, so the diff describes *this* run rather than accumulated drift.
+      // Deliberately `source` and not `base` — the diff answers "what is about to
+      // happen to what I am looking at", which is true however the new document
+      // was arrived at.
       before: source,
       pages: result.resume.pages,
       label: describeTailorTarget(draft),
+      // Two separate surprises, so two separate sentences, and either can stand
+      // alone: where the document came from, and what it was built on top of.
+      provenance:
+        [
+          master && master.id !== id ? tailoredFromMaster(master) : null,
+          found ? adaptedFrom(found) : null,
+        ]
+          .filter(Boolean)
+          .join(' ') || undefined,
     };
   };
 
-  /** Apply a tailored resume the person has just looked at. */
+  /**
+   * Apply a tailored resume the person has just looked at, and record what it
+   * was aimed at so the next one can start from it.
+   *
+   * The corpus write is deliberately last and deliberately unable to fail the
+   * apply: it is an optimisation for a tailoring that hasn't happened yet, and
+   * losing one row costs a future run a head start. Losing the resume because
+   * the row wouldn't save would be a real loss, so the ordering says which of
+   * the two matters.
+   */
   const applyTailored = async (latex: string, label: string): Promise<string | null> => {
     if (!(await recordChange(source, latex, label))) {
       return "The tailored resume couldn't be saved to your version history, so it hasn't been applied. Nothing has changed.";
     }
     onChangeSource(latex);
+    const pending = pendingTarget.current;
+    pendingTarget.current = null;
+    if (pending) {
+      try {
+        await db.createResumeTarget({
+          id: `tgt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          noteId: pending.noteId,
+          folderId: pending.folderId ?? '',
+          company: pending.company.trim(),
+          role: pending.role.trim(),
+          facets: JSON.stringify(pending.facets),
+          jobDescription: pending.jobDescription.trim(),
+          source: latex,
+          baseHash: pending.baseHash,
+        });
+      } catch (e) {
+        // Swallowed on purpose, and reported rather than silent: the resume is
+        // already applied and safe, so there is nothing here for the person to
+        // do, but a corpus that quietly stops growing is a feature that quietly
+        // stops working.
+        Sentry.captureException(e);
+      }
+    }
     return null;
   };
 

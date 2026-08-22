@@ -69,6 +69,15 @@ type Stage =
       before: string;
       label: string;
       pages: number | null;
+      /**
+       * Where this document came from, when it didn't come from nowhere.
+       *
+       * Absent for an ordinary tailoring — that is the unremarkable case and
+       * needs no sentence. Present when a past tailoring was reused outright or
+       * used as a starting point, because both are things someone might
+       * reasonably want to overrule, and neither is visible in a diff.
+       */
+      provenance?: string;
     }
   | { state: 'failed'; message: string };
 
@@ -86,7 +95,14 @@ export function ResumeTailorModal({
    * closing on a resume that didn't change and looking like it worked.
    */
   onTailor: (draft: TailorDraft) => Promise<
-    | { ok: true; latex: string; before: string; pages: number | null; label: string }
+    | {
+        ok: true;
+        latex: string;
+        before: string;
+        pages: number | null;
+        label: string;
+        provenance?: string;
+      }
     | { ok: false; message: string }
   >;
   /** Apply the tailored resume the person has just read. */
@@ -153,6 +169,7 @@ export function ResumeTailorModal({
       before: result.before,
       label: result.label,
       pages: result.pages,
+      provenance: result.provenance,
     });
   };
 
@@ -254,6 +271,7 @@ export function ResumeTailorModal({
                   before={stage.before}
                   after={stage.latex}
                   pages={stage.pages}
+                  provenance={stage.provenance}
                 />
               ) : stage.state === 'reading' || stage.state === 'working' ? (
                 <View style={styles.working}>
@@ -457,14 +475,24 @@ function TailorReview({
   before,
   after,
   pages,
+  provenance,
 }: {
   before: string;
   after: string;
   pages: number | null;
+  provenance?: string;
 }) {
   const theme = useTheme();
   return (
     <View style={styles.scrollWrap}>
+      {/* Above the diff, not beside the page count: it explains where the whole
+          document came from, which is context for reading the diff rather than
+          another fact about it. */}
+      {provenance ? (
+        <ThemedText type="small" themeColor="textSecondary" style={styles.provenance}>
+          {provenance}
+        </ThemedText>
+      ) : null}
       <DiffView
         before={before}
         after={after}
@@ -564,6 +592,11 @@ const styles = StyleSheet.create({
   },
   diffContent: {
     paddingBottom: SCROLL_FADE_HEIGHT,
+  },
+  provenance: {
+    paddingHorizontal: Spacing.three,
+    paddingBottom: Spacing.two,
+    lineHeight: 18,
   },
   // Same shape as `resume-entry-modal.tsx`'s `field`, which is itself matched to
   // the app's other sheet forms (github-issue-compose, issue-attributes-sheet).
