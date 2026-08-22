@@ -1,9 +1,9 @@
 # Runs the test suites on every push and pull request.
 #
 # This is the point where the suites stop being something you remember to run
-# and start being something that runs itself. Two jobs, in parallel, both fast:
-# the backend integration tests against a real Postgres, and the client unit
-# tests in Node.
+# and start being something that runs itself. Three jobs, in parallel, all fast:
+# the backend integration tests against a real Postgres, the client unit tests in
+# Node, and the app-version gate.
 #
 # The slow/race tests are deliberately NOT here — see the `slow-tests` workflow.
 name: Tests
@@ -147,3 +147,96 @@ jobs:
           name: playwright-report
           path: notes-app/playwright-report/
           retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # The same gate `.githooks/pre-push` applies, applied where it actually bites.
+  #
+  # That hook only sees pushes to `refs/heads/main`, and nothing reaches main by
+  # that route any more — it arrives as a merged pull request, which the hook
+  # never observes. So the rule was real and the enforcement was not: PR #92
+  # shipped a whole feature to production still calling itself 1.0.0, and nobody
+  # found out until the next release tried to work out what was in it.
+  #
+  # This is the same comparison against the branch this PR would merge into. The
+  # hook keeps its own copy because it is worth failing in a second locally
+  # rather than in two minutes here; if you change one, change both.
+  # ---------------------------------------------------------------------------
+  version:
+    name: App version
+    runs-on: ubuntu-latest
+    # Pull requests only. A push to main has either come through a PR that has
+    # already been gated, or straight from a machine where the hook ran.
+    if: github.event_name == 'pull_request'
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # The merge base is on the base branch, which a shallow clone of the
+          # head does not contain — without this every comparison below reads an
+          # empty old version and the gate silently passes everything.
+          fetch-depth: 0
+
+      - name: Check the version moved with the shipped code
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+
+          # Narrow on purpose, and identical to the hook's list: source, assets,
+          # native config and patches ship; a workflow tweak or a README does not.
+          # app.json and package.json are absent so a bump commit does not turn
+          # around and demand a second bump.
+          SHIPPED_PATHS='^notes-app/(src/|assets/|app\.config\.js$|patches/)'
+
+          read_version() {
+            git show "$1:$2" 2>/dev/null | node -e '
+              let raw = "";
+              process.stdin.on("data", (chunk) => (raw += chunk));
+              process.stdin.on("end", () => {
+                try {
+                  const json = JSON.parse(raw);
+                  const version = (json.expo && json.expo.version) || json.version || "";
+                  process.stdout.write(String(version));
+                } catch {
+                  process.stdout.write("");
+                }
+              });
+            '
+          }
+
+          # The merge base, not the base branch tip: comparing against the tip
+          # would count everything that landed on main since this branch started
+          # as if this PR had changed it.
+          base=$(git merge-base "$BASE_SHA" "$HEAD_SHA")
+          changed=$(git diff --name-only "$base" "$HEAD_SHA")
+
+          if ! printf '%s' "$changed" | grep -qE "$SHIPPED_PATHS"; then
+            echo "No shipped code in this PR — nothing to version."
+            exit 0
+          fi
+
+          old_version=$(read_version "$base" notes-app/app.json)
+          new_version=$(read_version "$HEAD_SHA" notes-app/app.json)
+          pkg_version=$(read_version "$HEAD_SHA" notes-app/package.json)
+
+          if [ -z "$new_version" ]; then
+            echo "::error::couldn't read expo.version from notes-app/app.json"
+            exit 1
+          fi
+
+          if [ "$new_version" = "$old_version" ]; then
+            echo "::error::shipped code changed but the app version is still $new_version"
+            echo "Shipped files in this PR:"
+            printf '%s' "$changed" | grep -E "$SHIPPED_PATHS" | sed 's/^/    /' | sort -u
+            echo ""
+            echo "Bump notes-app/app.json (expo.version) and notes-app/package.json (version) — they must agree."
+            exit 1
+          fi
+
+          if [ -n "$pkg_version" ] && [ "$pkg_version" != "$new_version" ]; then
+            echo "::error::version mismatch — app.json says $new_version, package.json says $pkg_version"
+            exit 1
+          fi
+
+          echo "app version $old_version → $new_version"
