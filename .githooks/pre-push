@@ -29,9 +29,14 @@
 set -e
 
 # Paths where a change can plausibly break the native app but not the web build.
+# notes-app/package.json is here for its dependencies -- a new or upgraded native
+# module is exactly the kind of thing that builds green and crashes on device.
+# It is NOT here for its version field, which gate 1 makes move on every prod
+# push; see the version-only filter below.
 NATIVE_PATHS='notes-app/src/lib/db\.ts|notes-app/src/.*\.native\.tsx?$|notes-app/android/|notes-app/package\.json|notes-app/\.maestro/'
 
 changed=''
+pkg_diff=''
 main_base=''
 main_sha=''
 
@@ -51,6 +56,10 @@ while read -r _local_ref local_sha remote_ref remote_sha; do
 
   if [ -n "$base" ]; then
     changed="$changed$(git diff --name-only "$base" "$local_sha" 2>/dev/null || true)
+"
+    # Kept alongside the name list so gate 2 can tell a dependency change from a
+    # version bump. --unified=0 drops context lines, leaving only what moved.
+    pkg_diff="$pkg_diff$(git diff --unified=0 "$base" "$local_sha" -- notes-app/package.json 2>/dev/null || true)
 "
   fi
 
@@ -145,7 +154,23 @@ fi
 
 # ---------------------------------------------------------------------------
 # Gate 2: mobile E2E on native-relevant changes.
+#
+# Gate 1 above means every prod push moves package.json's version, and that file
+# is in NATIVE_PATHS -- so without this filter, the bump alone would build a
+# release APK and boot an emulator on every single push. It is in NATIVE_PATHS
+# for its dependencies, not its version, so a package.json whose only changed
+# lines are the version drops out of the list before gate 2 reads it. Change a
+# dependency in the same push and it stays in, because then a non-version line
+# moved too.
 # ---------------------------------------------------------------------------
+pkg_lines=$(printf '%s' "$pkg_diff" | grep -E '^[+-]' | grep -vE '^(\+\+\+|---)' || true)
+
+if [ -n "$pkg_lines" ]; then
+  pkg_other=$(printf '%s' "$pkg_lines" | grep -vE '^[+-][[:space:]]*"version":' || true)
+  if [ -z "$pkg_other" ]; then
+    changed=$(printf '%s' "$changed" | grep -vE '^notes-app/package\.json$' || true)
+  fi
+fi
 
 if ! printf '%s' "$changed" | grep -qE "$NATIVE_PATHS"; then
   exit 0
