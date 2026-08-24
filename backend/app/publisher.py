@@ -205,6 +205,17 @@ async def deliver(actions: list[PublishAction]) -> None:
                     if response.status_code == 404:
                         continue
                 response.raise_for_status()
+            except httpx.HTTPStatusError as exc:  # noqa: BLE001 — background task, isolate
+                log.warning(
+                    "publish: note %s (present=%s) failed: %s",
+                    action.note_id,
+                    action.present,
+                    exc,
+                )
+                # 404 indicates the ingest endpoint is missing/down (external issue),
+                # not a code bug. Log it but don't pollute Sentry with external failures.
+                if exc.response.status_code != 404:
+                    sentry_sdk.capture_exception(exc)
             except Exception as exc:  # noqa: BLE001 — background task, isolate
                 log.warning(
                     "publish: note %s (present=%s) failed: %s",
