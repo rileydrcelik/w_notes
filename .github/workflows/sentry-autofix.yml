@@ -49,6 +49,11 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          # The version bump below is pushed with these credentials. A push made
+          # with GITHUB_TOKEN cannot trigger workflows, so if the PR already
+          # exists its `synchronize` would never run Tests, and autofix-ship
+          # would wait forever for a run that cannot happen.
+          token: ${{ secrets.AUTOFIX_PAT || secrets.GITHUB_TOKEN }}
 
       # AUTOFIX_PAT, not GITHUB_TOKEN. A PR opened by github-actions[bot] is
       # treated as coming from a first-time contributor, so its `pull_request`
@@ -162,6 +167,109 @@ jobs:
             echo "$verdict"
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # The version gate (tests.yml, .githooks/pre-push) counts backend/ as
+      # shipped code on purpose: a deploy changes what the product does even
+      # though no app code moved, and one number should cover the whole release.
+      # A human bumps it by hand. The agent has no idea the rule exists, so every
+      # backend autofix failed "App version" — and autofix-ship only starts on a
+      # *green* Tests run, so the pipeline was dead for exactly the errors it
+      # gets most. PR #97 is the example.
+      #
+      # So the pipeline does what the human does. Deliberately not the agent's
+      # job: this is arithmetic on a known field, and asking a model to do it
+      # would add a way for the fix to be wrong without adding anything.
+      - name: Bump the app version
+        if: always()
+        env:
+          BRANCH: ${{ github.event.client_payload.branch }}
+        run: |
+          set -euo pipefail
+          # Kept in sync with tests.yml and .githooks/pre-push by hand. If they
+          # ever disagree, the gate is the one that decides — this only chooses
+          # whether to offer a bump, and a wrong guess costs a red PR, not a
+          # bad release.
+          SHIPPED_PATHS='^(notes-app/(src/|assets/|app\.config\.js$|patches/)|backend/)'
+          BINARY_PATHS='^notes-app/(android/|patches/|app\.config\.js$)'
+
+          git fetch origin main
+          if ! git fetch origin "$BRANCH"; then
+            echo "No branch $BRANCH — no fix was proposed. Nothing to version."
+            exit 0
+          fi
+          git checkout -B "$BRANCH" "origin/$BRANCH"
+
+          base=$(git merge-base origin/main HEAD)
+          changed=$(git diff --name-only "$base" HEAD)
+          if [ -z "$changed" ]; then
+            echo "Branch has no commits over main. Nothing to version."
+            exit 0
+          fi
+          if ! printf '%s\n' "$changed" | grep -qE "$SHIPPED_PATHS"; then
+            echo "Nothing shipped in this fix — the gate won't ask for a bump."
+            exit 0
+          fi
+
+          # Read it the way the gate reads it, so the two never disagree about
+          # what the current version is.
+          read_version() {
+            git show "$1:notes-app/app.json" 2>/dev/null | node -e '
+              let raw = "";
+              process.stdin.on("data", (chunk) => (raw += chunk));
+              process.stdin.on("end", () => {
+                try {
+                  const json = JSON.parse(raw);
+                  process.stdout.write(String((json.expo && json.expo.version) || ""));
+                } catch {
+                  process.stdout.write("");
+                }
+              });
+            '
+          }
+          old=$(read_version "$base")
+          cur=$(read_version HEAD)
+          if [ -z "$cur" ]; then
+            echo "::warning::couldn't read expo.version — leaving the version alone."
+            exit 0
+          fi
+          if [ "$old" != "$cur" ]; then
+            echo "The agent already moved the version ($old -> $cur). Leaving it."
+            exit 0
+          fi
+          if ! printf '%s' "$cur" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::warning::version $cur is not major.minor.patch — leaving it for a human."
+            exit 0
+          fi
+
+          major=${cur%%.*}; rest=${cur#*.}; minor=${rest%%.*}; patch=${rest##*.}
+          # android/, patches/ and app.config.js are compiled into the binary
+          # rather than shipped as JS, so the gate demands a new OTA lineage —
+          # the minor — not just any bump. Vanishingly rare for an autofix, but
+          # a patch bump there would fail the gate just as surely as none.
+          if printf '%s\n' "$changed" | grep -qE "$BINARY_PATHS"; then
+            new="$major.$((minor + 1)).0"
+            why="binary paths changed, so this needs a new OTA lineage and an eas build"
+          else
+            new="$major.$minor.$((patch + 1))"
+            why="ships via eas update"
+          fi
+
+          # sed, not jq: jq reprints the whole document, which would bury a
+          # one-line fix under a reindentation diff. Each file carries exactly
+          # one "version" line — assert that before trusting a substitution.
+          for f in notes-app/app.json notes-app/package.json; do
+            n=$(grep -cE '^[[:space:]]*"version":' "$f" || true)
+            [ "$n" = "1" ] || { echo "::error::$f has $n version lines, expected 1"; exit 1; }
+            sed -i -E 's/^([[:space:]]*"version":[[:space:]]*")[^"]*(",?)$/\1'"$new"'\2/' "$f"
+            grep -q "\"version\": \"$new\"" "$f" || { echo "::error::$f did not take the bump"; exit 1; }
+          done
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add notes-app/app.json notes-app/package.json
+          git commit -m "Bump the app version to $new" \
+            -m "The version gate counts this fix as shipped code ($why)."
+          git push origin "$BRANCH"
+          echo "app version $cur -> $new ($why)"
       # The action pushes the fix branch but, on a repository_dispatch trigger,
       # doesn't reliably open the PR itself (no comment thread to open it from).
       # This guarantees a PR exists whenever the branch has commits — idempotent,
