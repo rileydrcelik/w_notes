@@ -36,7 +36,42 @@ set -e
 NATIVE_PATHS='notes-app/src/lib/db\.ts|notes-app/src/.*\.native\.tsx?$|notes-app/android/|notes-app/package\.json|notes-app/\.maestro/'
 
 changed=''
-pkg_diff=''
+pkg_binary=''
+
+# package.json is watched because it holds the *dependencies*, which are
+# compiled into the binary. Two of its keys are not that: `version` is the bump
+# itself, and `scripts` are npm command definitions that never enter a bundle
+# on any platform. Comparing the file with both removed is what tells "a
+# dependency moved" from "someone added a deploy script".
+#
+# This is a structural exclusion, unlike app.json above. There, guessing whether
+# a key is native is brittle and the conservative default earns its keep. Here
+# there is nothing to guess: npm does not ship `scripts` to a device, so a
+# change confined to it cannot be the thing this gate exists to catch. Demanding
+# a minor for one is not merely noisy — it starts a new OTA lineage, which
+# orphans every installed binary from updates until a fresh build reaches it.
+pkg_json_binary_diff() {
+  _old=$(git show "$1:notes-app/package.json" 2>/dev/null || true)
+  _new=$(git show "$2:notes-app/package.json" 2>/dev/null || true)
+  OLD="$_old" NEW="$_new" node -e '
+    const strip = (raw) => {
+      const json = JSON.parse(raw || "{}");
+      delete json.version;
+      delete json.scripts;
+      return JSON.stringify(json);
+    };
+    try {
+      if (strip(process.env.OLD) !== strip(process.env.NEW)) {
+        process.stdout.write("changed");
+      }
+    } catch {
+      // Unparseable on either side: say it changed rather than waving it
+      // through. The gate should stay conservative when it cannot tell.
+      process.stdout.write("unparseable");
+    }
+  '
+}
+
 main_base=''
 main_sha=''
 
@@ -58,9 +93,11 @@ while read -r _local_ref local_sha remote_ref remote_sha; do
     changed="$changed$(git diff --name-only "$base" "$local_sha" 2>/dev/null || true)
 "
     # Kept alongside the name list so gate 2 can tell a dependency change from a
-    # version bump. --unified=0 drops context lines, leaving only what moved.
-    pkg_diff="$pkg_diff$(git diff --unified=0 "$base" "$local_sha" -- notes-app/package.json 2>/dev/null || true)
-"
+    # version bump or an npm script — neither of which is in the APK. Structural
+    # rather than line-based; see pkg_json_binary_diff() above.
+    if [ -n "$(pkg_json_binary_diff "$base" "$local_sha")" ]; then
+      pkg_binary=1
+    fi
   fi
 
   # main is prod: pushing it is what ships. Remember that ref's range for the
@@ -122,40 +159,6 @@ BINARY_PATHS='^notes-app/(android/|patches/|app\.config\.js$)'
 version_free_diff() {
   git diff --unified=0 "$1" "$2" -- "$3" 2>/dev/null |
     grep -E '^[+-]' | grep -vE '^(\+\+\+|---)' | grep -vE '^[+-][[:space:]]*"version":' || true
-}
-
-# package.json is watched because it holds the *dependencies*, which are
-# compiled into the binary. Two of its keys are not that: `version` is the bump
-# itself, and `scripts` are npm command definitions that never enter a bundle
-# on any platform. Comparing the file with both removed is what tells "a
-# dependency moved" from "someone added a deploy script".
-#
-# This is a structural exclusion, unlike app.json above. There, guessing whether
-# a key is native is brittle and the conservative default earns its keep. Here
-# there is nothing to guess: npm does not ship `scripts` to a device, so a
-# change confined to it cannot be the thing this gate exists to catch. Demanding
-# a minor for one is not merely noisy — it starts a new OTA lineage, which
-# orphans every installed binary from updates until a fresh build reaches it.
-pkg_json_binary_diff() {
-  _old=$(git show "$1:notes-app/package.json" 2>/dev/null || true)
-  _new=$(git show "$2:notes-app/package.json" 2>/dev/null || true)
-  OLD="$_old" NEW="$_new" node -e '
-    const strip = (raw) => {
-      const json = JSON.parse(raw || "{}");
-      delete json.version;
-      delete json.scripts;
-      return JSON.stringify(json);
-    };
-    try {
-      if (strip(process.env.OLD) !== strip(process.env.NEW)) {
-        process.stdout.write("changed");
-      }
-    } catch {
-      // Unparseable on either side: say it changed rather than waving it
-      // through. The gate should stay conservative when it cannot tell.
-      process.stdout.write("unparseable");
-    }
-  '
 }
 
 # The runtime lineage of a display version: 1.2.3 -> 1.2. Mirrors
@@ -310,18 +313,17 @@ fi
 # Gate 1 above means every prod push moves package.json's version, and that file
 # is in NATIVE_PATHS -- so without this filter, the bump alone would build a
 # release APK and boot an emulator on every single push. It is in NATIVE_PATHS
-# for its dependencies, not its version, so a package.json whose only changed
-# lines are the version drops out of the list before gate 2 reads it. Change a
-# dependency in the same push and it stays in, because then a non-version line
-# moved too.
+# for its dependencies, not its version and not its npm scripts, neither of
+# which is in the APK. So a package.json that moved only in those ways drops out
+# of the list before gate 2 reads it. Change a dependency in the same push and
+# it stays in.
+#
+# Same question gate 1 asks, so it uses the same answer: one definition of
+# "package.json changed in a way that reaches the binary", not two that can
+# drift apart.
 # ---------------------------------------------------------------------------
-pkg_lines=$(printf '%s' "$pkg_diff" | grep -E '^[+-]' | grep -vE '^(\+\+\+|---)' || true)
-
-if [ -n "$pkg_lines" ]; then
-  pkg_other=$(printf '%s' "$pkg_lines" | grep -vE '^[+-][[:space:]]*"version":' || true)
-  if [ -z "$pkg_other" ]; then
-    changed=$(printf '%s' "$changed" | grep -vE '^notes-app/package\.json$' || true)
-  fi
+if [ -z "$pkg_binary" ]; then
+  changed=$(printf '%s' "$changed" | grep -vE '^notes-app/package\.json$' || true)
 fi
 
 if ! printf '%s' "$changed" | grep -qE "$NATIVE_PATHS"; then
