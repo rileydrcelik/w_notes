@@ -31,7 +31,7 @@ You never edit source, tests, workflows, or terraform. If documenting something 
 
 Most changes land in **one** place. Pick it before you start:
 
-- A **new feature a user can see** → a section in `docs/features.md`, plus one line in the README's feature list.
+- A **new feature a user can see** → a section in `docs/features.md`, plus a row in the README's feature table.
 - A **new note kind / plugin** → a subsection under "Plugin notes" in `docs/features.md`, and a row in the plugin table in `docs/data-model.md` if it stores anything of its own.
 - A **new backend endpoint** → a row in `docs/api.md`, plus any new setting in that file's settings table.
 - A **new table or column** → `docs/data-model.md`; mention it in `docs/architecture.md` only if it changes how sync works.
@@ -39,6 +39,12 @@ Most changes land in **one** place. Pick it before you start:
 - A **new deploy step or workflow** → `docs/deployment.md`.
 
 Add a new file to `docs/` only when something genuinely fits nowhere above — and then link it from the README in the same pass. A page nothing links to does not exist.
+
+### The README's feature table mirrors `features.md`
+
+One row per section of `docs/features.md`, in the same order, each linking to that section's anchor (plugin sub-sections are `↳` rows). Keeping them in lockstep is the point: a row with no section behind it, or a section with no row, is drift you can see rather than drift someone discovers a year later.
+
+So a user-visible feature is never one edit — add the section, add the row, link it. And never give the README a fact that lives nowhere else: the table says what a thing *is*, in one line; the page says how it works.
 
 ## How to write
 

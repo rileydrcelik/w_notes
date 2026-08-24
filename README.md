@@ -14,21 +14,23 @@ issue in a project tracker.
 
 ## Features at a glance
 
+One row per section of [docs/features.md](docs/features.md) — follow a link for
+the detail.
+
 | | |
 |---|---|
-| **Notes and folders** | Rich text, nested folders, favorites, search, trash |
-| **Offline first** | On-device SQLite is the source of truth; sync is a background catch-up |
-| **Sync** | Delta sync across devices; anonymous until you sign in, then merged into your account |
-| **Copa** | A copy/paste feed of text snippets and files — one tap to copy or open |
-| **Finance** | A note that is a spreadsheet: formulas, CSV import and export |
-| **Resume** | A note that is LaTeX source, compiled to PDF server-side, with version history and AI tailoring |
-| **Task manager** | A folder that is an issue tracker, with two-way GitHub issue sync |
-| **GitHub plugin** | A note that browses and files issues in one repo |
-| **Sentry plugin** | A note that shows a project's live errors, and can hand one to an AI to fix |
-| **Publishing** | Mark a note published to mirror it onto a portfolio website |
-| **Export** | Save any note or compiled resume as a file, from the navbar |
-
-Each one is described in [docs/features.md](docs/features.md).
+| [Getting around](docs/features.md#getting-around) | One floating navbar. Editing, selecting and exporting are app-wide gestures, not per-screen buttons |
+| [Notes and folders](docs/features.md#notes-and-folders) | Rich text, nested folders, favorites, scored search, trash |
+| [Copa](docs/features.md#copa--the-copypaste-feed) | A copy/paste feed of text snippets and files — one tap to copy or open |
+| [Plugin notes](docs/features.md#plugin-notes) | A note can render live content instead of a body: |
+| ↳ [Finance](docs/features.md#finance-spreadsheet) | A spreadsheet — formulas, CSV import and export |
+| ↳ [Resume](docs/features.md#resume-latex) | LaTeX source, compiled to PDF server-side, with version history and AI tailoring |
+| ↳ [GitHub](docs/features.md#github-issues) | Browse and file issues in one repo |
+| ↳ [Sentry](docs/features.md#sentry-issues) | A project's live errors, and a Fix button that hands one to an AI |
+| [Task manager](docs/features.md#task-manager) | A folder that is an issue tracker, with two-way GitHub issue sync |
+| [Accounts and sync](docs/features.md#accounts-and-sync) | Works signed out; sign in with Google or Apple and the device's data merges in |
+| [Publishing](docs/features.md#publishing) | Mark a note published to mirror it onto a portfolio website |
+| [Settings](docs/features.md#settings) | Theme, editor hints, which plugins appear, and your own provider tokens |
 
 ## Quick start
 
