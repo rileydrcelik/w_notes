@@ -124,6 +124,40 @@ version_free_diff() {
     grep -E '^[+-]' | grep -vE '^(\+\+\+|---)' | grep -vE '^[+-][[:space:]]*"version":' || true
 }
 
+# package.json is watched because it holds the *dependencies*, which are
+# compiled into the binary. Two of its keys are not that: `version` is the bump
+# itself, and `scripts` are npm command definitions that never enter a bundle
+# on any platform. Comparing the file with both removed is what tells "a
+# dependency moved" from "someone added a deploy script".
+#
+# This is a structural exclusion, unlike app.json above. There, guessing whether
+# a key is native is brittle and the conservative default earns its keep. Here
+# there is nothing to guess: npm does not ship `scripts` to a device, so a
+# change confined to it cannot be the thing this gate exists to catch. Demanding
+# a minor for one is not merely noisy — it starts a new OTA lineage, which
+# orphans every installed binary from updates until a fresh build reaches it.
+pkg_json_binary_diff() {
+  _old=$(git show "$1:notes-app/package.json" 2>/dev/null || true)
+  _new=$(git show "$2:notes-app/package.json" 2>/dev/null || true)
+  OLD="$_old" NEW="$_new" node -e '
+    const strip = (raw) => {
+      const json = JSON.parse(raw || "{}");
+      delete json.version;
+      delete json.scripts;
+      return JSON.stringify(json);
+    };
+    try {
+      if (strip(process.env.OLD) !== strip(process.env.NEW)) {
+        process.stdout.write("changed");
+      }
+    } catch {
+      // Unparseable on either side: say it changed rather than waving it
+      // through. The gate should stay conservative when it cannot tell.
+      process.stdout.write("unparseable");
+    }
+  '
+}
+
 # The runtime lineage of a display version: 1.2.3 -> 1.2. Mirrors
 # runtimeVersionFor() in notes-app/app.config.js; if you change one, change both.
 lineage() {
@@ -169,7 +203,7 @@ if [ -n "$main_sha" ] && [ -n "$main_base" ] && [ "${ALLOW_STALE_VERSION:-}" != 
   # and is compiled into the binary, so each counts as a binary change -- the
   # case a name filter cannot see, because the same files also move for the bump.
   app_json_other=$(version_free_diff "$main_base" "$main_sha" notes-app/app.json)
-  pkg_json_other=$(version_free_diff "$main_base" "$main_sha" notes-app/package.json)
+  pkg_json_other=$(pkg_json_binary_diff "$main_base" "$main_sha")
 
   binary_changed=''
   if printf '%s' "$main_changed" | grep -qE "$BINARY_PATHS"; then
@@ -212,7 +246,7 @@ if [ -n "$main_sha" ] && [ -n "$main_base" ] && [ "${ALLOW_STALE_VERSION:-}" != 
         echo "    notes-app/app.json      (native config changed, not just the version)"
       fi
       if [ -n "$pkg_json_other" ]; then
-        echo "    notes-app/package.json  (dependencies changed, not just the version)"
+        echo "    notes-app/package.json  (dependencies changed, not just version/scripts)"
       fi
       echo ""
       echo "  Ask Claude for the version-bumper agent, or bump by hand:"
@@ -247,7 +281,7 @@ if [ -n "$main_sha" ] && [ -n "$main_base" ] && [ "${ALLOW_STALE_VERSION:-}" != 
           echo "    notes-app/app.json      (native config changed, not just the version)"
         fi
         if [ -n "$pkg_json_other" ]; then
-          echo "    notes-app/package.json  (dependencies changed, not just the version)"
+          echo "    notes-app/package.json  (dependencies changed, not just version/scripts)"
         fi
         echo ""
         echo "  Those are compiled into the app, not shipped as JS. Held at the same"
