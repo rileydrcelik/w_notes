@@ -183,11 +183,21 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Narrow on purpose, and identical to the hook's list: source, assets,
-          # native config and patches ship; a workflow tweak or a README does not.
-          # app.json and package.json are absent so a bump commit does not turn
-          # around and demand a second bump.
-          SHIPPED_PATHS='^notes-app/(src/|assets/|app\.config\.js$|patches/)'
+          # Narrow on purpose, and identical to the hook's list: app source,
+          # assets, native config, patches and the backend ship; a workflow tweak
+          # or a README does not.
+          #
+          # app.json and package.json are absent by name — they carry the version
+          # itself, so a bump commit would demand a second bump. They are picked
+          # up by content instead, via version_free_diff() below.
+          SHIPPED_PATHS='^(notes-app/(src/|assets/|app\.config\.js$|patches/)|backend/)'
+
+          # A subset: paths compiled into the binary rather than shipped as JS.
+          # These demand the MINOR, because notes-app/app.config.js derives the
+          # OTA runtime version from major.minor — holding the lineage steady
+          # would let an eas update land this JS on binaries that lack the native
+          # code it calls.
+          BINARY_PATHS='^notes-app/(android/|patches/|app\.config\.js$)'
 
           read_version() {
             git show "$1:$2" 2>/dev/null | node -e '
@@ -205,13 +215,47 @@ jobs:
             '
           }
 
+          # What changed in a version-carrying JSON file, ignoring the version
+          # line. Empty means the file moved for the bump and nothing else.
+          version_free_diff() {
+            git diff --unified=0 "$1" "$2" -- "$3" |
+              grep -E '^[+-]' | grep -vE '^(\+\+\+|---)' | grep -vE '^[+-][[:space:]]*"version":' || true
+          }
+
+          # The runtime lineage of a display version: 1.2.3 -> 1.2.
+          lineage() {
+            printf '%s' "$1" | cut -d. -f1,2
+          }
+
+          # The minor bump after a version, for the error message. Falls back to
+          # prose rather than doing arithmetic on something that isn't a number.
+          suggest_minor() {
+            _major=$(printf '%s' "$1" | cut -d. -f1 -s)
+            _minor=$(printf '%s' "$1" | cut -d. -f2 -s)
+            case "$_major.$_minor" in
+              *[!0-9.]* | '.' | .* | *.) printf 'the next minor' ;;
+              *) printf '%s.%s.0' "$_major" "$((_minor + 1))" ;;
+            esac
+          }
+
           # The merge base, not the base branch tip: comparing against the tip
           # would count everything that landed on main since this branch started
           # as if this PR had changed it.
           base=$(git merge-base "$BASE_SHA" "$HEAD_SHA")
           changed=$(git diff --name-only "$base" "$HEAD_SHA")
 
-          if ! printf '%s' "$changed" | grep -qE "$SHIPPED_PATHS"; then
+          app_json_other=$(version_free_diff "$base" "$HEAD_SHA" notes-app/app.json)
+          pkg_json_other=$(version_free_diff "$base" "$HEAD_SHA" notes-app/package.json)
+
+          binary_changed=''
+          if printf '%s' "$changed" | grep -qE "$BINARY_PATHS"; then
+            binary_changed=1
+          fi
+          if [ -n "$app_json_other" ] || [ -n "$pkg_json_other" ]; then
+            binary_changed=1
+          fi
+
+          if ! printf '%s' "$changed" | grep -qE "$SHIPPED_PATHS" && [ -z "$binary_changed" ]; then
             echo "No shipped code in this PR — nothing to version."
             exit 0
           fi
@@ -225,10 +269,23 @@ jobs:
             exit 1
           fi
 
+          # app.config.js derives runtimeVersion by slicing this string and
+          # throws on anything it can't parse. Fail here rather than at build.
+          if ! printf '%s' "$new_version" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::app version $new_version is not major.minor.patch — the OTA runtime version is derived from it"
+            exit 1
+          fi
+
           if [ "$new_version" = "$old_version" ]; then
             echo "::error::shipped code changed but the app version is still $new_version"
             echo "Shipped files in this PR:"
-            printf '%s' "$changed" | grep -E "$SHIPPED_PATHS" | sed 's/^/    /' | sort -u
+            printf '%s' "$changed" | grep -E "$SHIPPED_PATHS" | sed 's/^/    /' | sort -u || true
+            if [ -n "$app_json_other" ]; then
+              echo "    notes-app/app.json      (native config changed, not just the version)"
+            fi
+            if [ -n "$pkg_json_other" ]; then
+              echo "    notes-app/package.json  (dependencies changed, not just the version)"
+            fi
             echo ""
             echo "Bump notes-app/app.json (expo.version) and notes-app/package.json (version) — they must agree."
             exit 1
@@ -239,4 +296,23 @@ jobs:
             exit 1
           fi
 
-          echo "app version $old_version → $new_version"
+          if [ -n "$binary_changed" ]; then
+            if [ "$(lineage "$old_version")" = "$(lineage "$new_version")" ]; then
+              echo "::error::this PR needs a new binary but only moved the patch digit ($old_version -> $new_version, runtime lineage stays $(lineage "$new_version"))"
+              printf '%s' "$changed" | grep -E "$BINARY_PATHS" | sed 's/^/    /' | sort -u || true
+              if [ -n "$app_json_other" ]; then
+                echo "    notes-app/app.json      (native config changed, not just the version)"
+              fi
+              if [ -n "$pkg_json_other" ]; then
+                echo "    notes-app/package.json  (dependencies changed, not just the version)"
+              fi
+              echo ""
+              echo "Those are compiled into the app, not shipped as JS. Held at the same lineage,"
+              echo "an eas update would land this JS on binaries that lack it."
+              echo "Bump the minor instead: $(suggest_minor "$old_version")"
+              exit 1
+            fi
+            echo "app version $old_version -> $new_version (new runtime lineage $(lineage "$new_version") — needs eas build)"
+          else
+            echo "app version $old_version -> $new_version (runtime lineage $(lineage "$new_version") — ships via eas update)"
+          fi

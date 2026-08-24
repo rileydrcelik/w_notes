@@ -1,4 +1,5 @@
-// Dynamic Expo config: picks app name + package/bundle ids per variant.
+// Dynamic Expo config: picks app name + package/bundle ids per variant, and
+// derives the OTA runtime lineage from the display version.
 // Variant is selected via the APP_VARIANT env var, set per profile in eas.json
 // (and defaulting to "development" for local `expo run:*` builds).
 //
@@ -37,6 +38,41 @@ function variantConfig() {
   };
 }
 
+/**
+ * The OTA runtime lineage for a display version: `1.2.3` → `1.2`.
+ *
+ * These are two different numbers wearing one string, and conflating them is
+ * what `runtimeVersion: { policy: "appVersion" }` used to do here.
+ *
+ * `expo.version` is the *display* version. It moves on every push — the third
+ * digit covers backend deploys, OTA pushes and small fixes — because it is what
+ * Settings shows and what a bug report quotes.
+ *
+ * `runtimeVersion` is a *compatibility boundary*: an `eas update` only reaches
+ * devices whose installed binary was built at the same runtime version. Tying
+ * that to the full display version meant every third-digit bump started a fresh
+ * lineage, so each update shipped to a population of zero and the fix had to
+ * wait for a store build. Dropping the third digit is the whole fix: patches
+ * ride over the air to binaries already in the field, and a *minor* bump is the
+ * deliberate act of declaring "this needs a real build" — which is exactly what
+ * the second digit is for.
+ *
+ * Strict on purpose. A version this can't parse would silently pick some other
+ * lineage and quietly orphan every install, so it throws at config-eval time —
+ * before a build exists to be wrong.
+ */
+export function runtimeVersionFor(version) {
+  const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(String(version ?? ''));
+  if (!match) {
+    throw new Error(
+      `app.json expo.version must be major.minor.patch, got ${JSON.stringify(version)}. ` +
+        'The runtime version is derived from it, so an unparseable version would ' +
+        'orphan every installed build from OTA updates.',
+    );
+  }
+  return `${match[1]}.${match[2]}`;
+}
+
 export default ({ config }) => {
   const variant = variantConfig();
 
@@ -44,6 +80,7 @@ export default ({ config }) => {
     ...config,
     name: variant.name,
     scheme: variant.scheme,
+    runtimeVersion: runtimeVersionFor(config.version),
     ios: {
       ...config.ios,
       bundleIdentifier: variant.package,
