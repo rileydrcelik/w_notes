@@ -6,9 +6,12 @@
  * The live data lives in the copa store (`@/store/copa-store`), which hydrates
  * from and persists changes to on-device SQLite (`@/lib/db`).
  *
- * A block is a *file block* when `fileUri` is set. File bytes are stored locally
- * in the app's document directory (`@/lib/copa-files`) and are not synced — only
- * the row's label/favorite travel between devices.
+ * A block is a *file block* when `fileUri` is set. The bytes live in the app's
+ * document directory (`@/lib/copa-files`) and *do* travel between devices, but
+ * not through the sync payload: the row carries a `remote_key` and each device
+ * transfers the bytes directly to/from S3 over a presigned URL
+ * (`@/lib/sync/files.ts`). `fileUri` and `thumbUri` are local paths, so they
+ * stay on the device that wrote them; everything else on the row syncs.
  */
 
 export type CopaItem = {
