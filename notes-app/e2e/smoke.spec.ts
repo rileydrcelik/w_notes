@@ -25,6 +25,36 @@ async function ready(page: Page): Promise<void> {
   await page.getByLabel('Create').waitFor();
 }
 
+/**
+ * Wait until every optimistic write has actually committed to SQLite.
+ *
+ * The store renders a new note before its write reaches OPFS, so
+ * `getByText(title)` is not evidence the note is on disk. Reloading on that
+ * signal alone races the write: `page.reload()` destroys the JS context while
+ * the write is still in flight, so it never lands and the note is gone on the
+ * way back up. Both reload tests below failed exactly this way on main, in
+ * bursts, which is what made them look flaky rather than wrong.
+ *
+ * The store already tracks in-flight writes for its own hydrate; this waits on
+ * the same set. Fails loudly if the hook is missing rather than hanging until
+ * the suite times out.
+ */
+async function writesSettled(page: Page): Promise<void> {
+  await expect
+    .poll(() => page.evaluate(() => typeof window.__notesWritesSettled), {
+      message: 'notes-store never exposed __notesWritesSettled',
+    })
+    .toBe('function');
+  await page.evaluate(() => window.__notesWritesSettled());
+}
+
+declare global {
+  interface Window {
+    /** See notes-store.tsx — resolves once no local write is in flight. */
+    __notesWritesSettled: () => Promise<void>;
+  }
+}
+
 test('the app boots without crashing', async ({ page }) => {
   const consoleErrors: string[] = [];
   page.on('console', (msg) => {
@@ -63,6 +93,7 @@ test('a note survives a page reload', async ({ page }) => {
 
   await expect(page.getByText(title)).toBeVisible();
 
+  await writesSettled(page);
   await page.reload();
 
   await expect(page.getByText(title)).toBeVisible();
@@ -205,6 +236,7 @@ test('back from a directly-opened note goes home, not to copa', async ({ page })
   // races the write and lands on "This note could not be found" — a failure that
   // looks like a routing bug but isn't one. Surviving this reload means the note
   // is really on disk, so what follows tests routing and nothing else.
+  await writesSettled(page);
   await page.reload();
   await expect(page.getByText(title)).toBeVisible();
 
@@ -213,6 +245,7 @@ test('back from a directly-opened note goes home, not to copa', async ({ page })
 
   // The reported repro: reload while the note is open, so the stack is rebuilt
   // from the URL alone with nothing behind it.
+  await writesSettled(page);
   await page.reload();
   await expect(page.getByPlaceholder('Title')).toHaveValue(title);
 

@@ -1,7 +1,7 @@
 {
   "name": "notes-app",
   "main": "expo-router/entry",
-  "version": "1.1.2",
+  "version": "1.1.3",
   "dependencies": {
     "@expo/ui": "~56.0.16",
     "@expo/vector-icons": "^15.0.2",
@@ -84,6 +84,10 @@
     "test:e2e:ui": "playwright test --ui",
     "build:web": "node scripts/copy-pdfjs-worker.mjs && expo export -p web --clear && node scripts/fix-web-export.mjs && node scripts/verify-web-export.mjs",
     "verify:web": "node scripts/verify-web-export.mjs",
+    "verify:update": "node scripts/verify-update-env.mjs",
+    "ship:web": "npm run build:web && npx --yes wrangler@latest pages deploy dist --project-name=w-notes",
+    "ship:mobile": "npm run verify:update && npx --yes eas-cli@latest update --channel production --environment production",
+    "version:status": "node scripts/version-status.mjs",
     "postinstall": "patch-package && node scripts/copy-pdfjs-worker.mjs",
     "test:mobile": "node scripts/test-mobile.mjs",
     "emulator:clean": "node scripts/clean-emulator.mjs"

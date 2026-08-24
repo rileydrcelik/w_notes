@@ -238,10 +238,12 @@ class _FakeClient:
 
 @pytest.fixture
 def delivery(monkeypatch, publishing):
-    """Run `deliver` against a canned upstream status, capturing Sentry reports.
+    """Run `deliver` against a canned upstream response, capturing Sentry reports.
 
-    Returns a coroutine taking (action, status) and returning the list of
-    exceptions `deliver` reported.
+    Returns a coroutine taking (action, status, body) and returning the list of
+    exceptions `deliver` reported. `body` matters on a 404: the portfolio's own
+    reason for one is what separates "this note isn't embedded" from "the
+    endpoint is gone", so a test that only sets a status cannot tell them apart.
     """
     publishing(PUBLISHER)
     reported: list[Exception] = []
@@ -249,10 +251,14 @@ def delivery(monkeypatch, publishing):
         publisher.sentry_sdk, "capture_exception", lambda exc: reported.append(exc)
     )
 
-    async def run(action: PublishAction, status: int) -> list[Exception]:
-        response = httpx.Response(
-            status, request=httpx.Request("POST", "https://portfolio.test/ingest")
-        )
+    async def run(
+        action: PublishAction, status: int, body: object = NOT_EMBEDDED
+    ) -> list[Exception]:
+        request = httpx.Request("POST", "https://portfolio.test/ingest")
+        if isinstance(body, (bytes, str)):
+            response = httpx.Response(status, request=request, content=body)
+        else:
+            response = httpx.Response(status, request=request, json=body)
         calls: list[str] = []
         monkeypatch.setattr(
             publisher.httpx,
@@ -265,29 +271,70 @@ def delivery(monkeypatch, publishing):
     return run
 
 
+# What the portfolio actually answers for a note nobody embedded -- verified
+# against the live endpoint, not assumed. The bare {"detail": "Not Found"} below
+# is what an unrouted path returns instead, and the whole point of the
+# distinction is that these two arrive with the same status code.
+NOT_EMBEDDED = {"detail": "Note is not embedded anywhere"}
+ROUTE_MISSING = {"detail": "Not Found"}
+
+
 _UPSERT = PublishAction(note_id="n1", present=True, payload={"title": "t"})
 _DELETE = PublishAction(note_id="n1", present=False)
 
 
-async def test_delete_treats_404_as_success(delivery):
+async def test_delete_treats_not_embedded_404_as_success(delivery):
     """Most notes are not embedded anywhere, so a delete 404s routinely.
     Reporting those would bury real errors in noise."""
-    assert await delivery(_DELETE, 404) == []
+    assert await delivery(_DELETE, 404, NOT_EMBEDDED) == []
 
 
-async def test_upsert_reports_404(delivery):
-    """A regression guard for a silent failure that was live.
+async def test_upsert_treats_not_embedded_404_as_success(delivery):
+    """The upsert case, which used to be reported and should not be.
 
-    The 404-is-fine rule was shared by both branches, so an upsert 404 was
-    skipped too. But the portfolio's update endpoint returns 200 and does
-    nothing for a note that was never embedded — it never 404s for that reason.
-    A 404 here means the ingest endpoint is missing or misrouted, i.e. *every*
-    publish is failing, and it was being swallowed silently.
+    This pushes every edit without knowing which notes are embedded, so a 404
+    saying the note was never placed is the *ordinary* answer for most notes,
+    not a failure. Reporting it produced 838 Sentry events in a month against a
+    perfectly healthy endpoint, and buried the errors that did matter.
     """
-    reported = await delivery(_UPSERT, 404)
+    assert await delivery(_UPSERT, 404, NOT_EMBEDDED) == []
+
+
+async def test_upsert_reports_404_from_a_missing_route(delivery):
+    """The silent failure the old rule existed to catch, kept catchable.
+
+    If the endpoint is removed, renamed or misrouted, every publish stops and
+    nothing else says so. It 404s exactly like a note that isn't embedded, and
+    only the body tells them apart: an unrouted path never reaches the handler,
+    so it carries Starlette's bare {"detail": "Not Found"}.
+    """
+    reported = await delivery(_UPSERT, 404, ROUTE_MISSING)
 
     assert len(reported) == 1
     assert isinstance(reported[0], httpx.HTTPStatusError)
+
+
+async def test_delete_reports_404_from_a_missing_route(delivery):
+    """Deletes get the same discrimination, and always should have.
+
+    The old rule skipped *every* delete 404, so an endpoint that vanished took
+    every unpublish down with it silently -- the same hole that was closed for
+    upserts, still open here.
+    """
+    reported = await delivery(_DELETE, 404, ROUTE_MISSING)
+
+    assert len(reported) == 1
+
+
+async def test_reports_404_that_is_not_json(delivery):
+    """A proxy or a wrong host answers 404 with HTML, never reaching the app.
+
+    That is the "everything is failing" case wearing a different disguise, so
+    unparseable must not be read as ordinary.
+    """
+    reported = await delivery(_UPSERT, 404, b"<html><body>404 Not Found</body></html>")
+
+    assert len(reported) == 1
 
 
 async def test_upsert_reports_server_errors(delivery):

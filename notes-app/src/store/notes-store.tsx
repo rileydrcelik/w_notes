@@ -70,6 +70,24 @@ const writesSettled = async (): Promise<void> => {
 };
 
 /**
+ * The same signal, reachable from a Playwright page.
+ *
+ * The e2e suite reloads the browser to prove a note reached OPFS, but the UI
+ * renders optimistically: `getByText(title)` passes long before the write
+ * commits. Reloading on that alone tears down the JS context mid-write, the
+ * write never lands, and the note is simply gone on the way back up — which
+ * reads as a persistence bug and is really the test out-running the app. The
+ * in-page `reload` above already waits on `writesSettled`; a *browser* reload
+ * cannot, so the test has to wait before asking for one.
+ *
+ * Exposed unconditionally rather than behind `__DEV__`: a hook that exists in
+ * one build configuration and not another fails as a hang rather than an
+ * error, which is a worse trap than the negligible cost of one function
+ * reference in a production bundle.
+ */
+(globalThis as Record<string, unknown>).__notesWritesSettled = writesSettled;
+
+/**
  * Persist a write optimistically: report failures to Sentry and schedule a
  * (debounced) sync so the change propagates to the backend. Module-scoped so it
  * isn't a hook dependency.

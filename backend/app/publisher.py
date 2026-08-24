@@ -8,8 +8,11 @@ so this is a one-way replication over HTTP; w_notes is the source of truth.
 
 Crucially it never *creates* a post: this pushes every edit without knowing
 which notes are embedded, so creating here would put unplaced notes on the site
-unbidden. The portfolio's update endpoint matches on the note id and does
-nothing when a note was never embedded.
+unbidden. The portfolio's update endpoint matches on the note id and answers a
+note nobody embedded with `404 {"detail": "Note is not embedded anywhere"}` --
+the ordinary case, and the reason a 404 here is not on its own a failure. See
+:func:`_handler_said_not_embedded` for how that is told apart from the 404 that
+does matter.
 
 Shape of the integration:
 
@@ -169,6 +172,36 @@ async def collect_publish_actions(
     return actions
 
 
+def _handler_said_not_embedded(response: httpx.Response) -> bool:
+    """Whether a 404 came from the ingest handler, not from a missing route.
+
+    The portfolio is update-only by design: placement happens in its admin, and
+    this side pushes every edit without knowing what was placed. So it answers
+    an upsert or delete for an unplaced note with
+
+        404 {"detail": "Note is not embedded anywhere"}
+
+    which is the ordinary case for most notes, not a failure.
+
+    The failure worth shouting about 404s identically: if the endpoint is
+    removed, renamed or misrouted, every publish stops and nothing says so. What
+    separates them is who answered. The handler returns JSON naming its reason;
+    an unrouted path falls through to Starlette's bare ``{"detail": "Not
+    Found"}``, and a proxy or a wrong host returns HTML or nothing parseable.
+    Only the first is ordinary.
+
+    Deliberately keyed on "the application answered at all" rather than on the
+    exact sentence, which is the portfolio's to reword. Getting this wrong in
+    the safe direction costs one spurious Sentry report; the other direction
+    hides an outage, which is how this arrived here in the first place.
+    """
+    try:
+        detail = response.json().get("detail")
+    except ValueError:
+        return False
+    return isinstance(detail, str) and detail.strip().casefold() != "not found"
+
+
 async def deliver(actions: list[PublishAction]) -> None:
     """Apply `actions` against the portfolio's ingest API.
 
@@ -196,14 +229,21 @@ async def deliver(actions: list[PublishAction]) -> None:
                     response = await client.delete(
                         f"{base}/api/notes/ingest/{action.note_id}"
                     )
-                    # On a delete, 404 is the ordinary outcome rather than a
-                    # failure: it means the note is not embedded anywhere. That
-                    # is true of most notes on most deletes, so reporting it
-                    # would bury real errors in noise. An upsert is different —
-                    # a 404 there means the ingest endpoint itself is missing or
-                    # misrouted, and silently skipping it hid failed publishes.
-                    if response.status_code == 404:
-                        continue
+                # 404 is the ordinary outcome on both verbs: this pushes every
+                # edit without knowing which notes are embedded, and the
+                # portfolio answers for one nobody placed with
+                # `{"detail": "Note is not embedded anywhere"}`. Most notes are
+                # not embedded, so reporting those buries real errors in noise —
+                # 838 Sentry events in a month, and the endpoint was healthy the
+                # whole time.
+                #
+                # But a missing or misrouted endpoint 404s too, and that one
+                # means *every* publish is failing silently. The two are
+                # distinguishable at the body: the handler names its reason,
+                # while an unrouted path gets Starlette's bare
+                # `{"detail": "Not Found"}` and a proxy's gets HTML.
+                if response.status_code == 404 and _handler_said_not_embedded(response):
+                    continue
                 response.raise_for_status()
             except Exception as exc:  # noqa: BLE001 — background task, isolate
                 log.warning(

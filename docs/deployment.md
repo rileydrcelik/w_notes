@@ -63,6 +63,44 @@ cd terraform && terraform plan && terraform apply
 > second can take the service down — a task that references a parameter which
 > does not exist yet will not start.
 
+## Shipping a version bump
+
+The version gate makes `expo.version` move whenever shipped code changes. It
+does **not** ship it: web and mobile are both hand-run, so the repo can say
+1.1.2 while both surfaces still serve 1.1.0. That happened — for a day, and it
+was noticed by opening Settings on a phone and reading the number.
+
+A version in git is a claim that something shipped. Check the claim:
+
+```sh
+cd notes-app
+npm run version:status
+```
+
+```
+repo (app.json)  1.1.2
+web (live)       1.1.0
+mobile (OTA)     runtime 1.1 — "1.1.0 - ..."
+```
+
+Then ship whichever is behind:
+
+```sh
+npm run ship:web      # build:web (export → fix → verify) → wrangler deploy
+npm run ship:mobile   # verify:update → eas update --channel production
+```
+
+> A **patch** bump ships via `eas update` and needs no build — the runtime
+> lineage (`major.minor`) is unchanged, so it reaches binaries already in the
+> field. A **minor** bump is the deliberate "this needs a real build", and an
+> `eas update` alone will not reach anyone until that build is installed.
+
+> `ship:mobile` runs `verify:update` first, and that gate matters as much as the
+> web one. A stale `.env.local` baked `http://localhost:8000` into the web
+> bundle once; the same file poisons an OTA the same way, except a bad update
+> has already reached every phone on the channel and the fix is another update
+> those phones have to be working well enough to fetch.
+
 ## Web
 
 Cloudflare Pages, deployed with wrangler by hand:
