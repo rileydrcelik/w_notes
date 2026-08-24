@@ -72,19 +72,76 @@ while read -r _local_ref local_sha remote_ref remote_sha; do
 done
 
 # ---------------------------------------------------------------------------
-# Gate 1: the version must move when shipped code moves.
+# Gate 1: the version must move when shipped code moves, and the MINOR must move
+# when the binary has to be rebuilt.
 #
 # Settings shows expo.version from notes-app/app.json as its last line, and it
 # is the number a bug report quotes. A push to main that changes what the app
 # does without changing what the app calls itself makes that number a lie --
 # two different builds both answering to 1.0.0.
 #
-# The filter is narrow on purpose, like the native one below: source, assets,
-# native config and patches ship; a workflow tweak or a README does not.
-# app.json and package.json are deliberately absent from it, so a bump commit
-# does not turn around and demand a second bump.
+# The three digits are not interchangeable (see runtimeVersionFor() in
+# notes-app/app.config.js, which turns 1.2.3 into the runtime lineage 1.2):
+#
+#   major  rare, and never automatic -- a human decides.
+#   minor  a new binary is required. Moving it starts a new runtime lineage, so
+#          devices on the old one stop receiving OTA updates until they install
+#          a build. That is the point, and it is why it must not move casually.
+#   patch  everything else -- backend deploys, OTA pushes, small fixes. Rides
+#          over the air to binaries already in the field.
+#
+# The filter is narrow on purpose, like the native one below: app source,
+# assets, native config, patches and the backend all ship; a workflow tweak or a
+# README does not. backend/ is in there because a deploy changes what the
+# product does even though no app code moved, and one number should cover the
+# whole release.
+#
+# app.json and package.json are absent by name, because they carry the version
+# itself and a bump commit would turn around and demand a second bump. They are
+# picked up by content instead -- see version_free_diff() below -- since their
+# *other* keys very much ship: app.json holds the native config, package.json
+# holds the dependencies.
 # ---------------------------------------------------------------------------
-SHIPPED_PATHS='^notes-app/(src/|assets/|app\.config\.js$|patches/)'
+SHIPPED_PATHS='^(notes-app/(src/|assets/|app\.config\.js$|patches/)|backend/)'
+
+# A subset of the above: paths that are compiled into the binary rather than
+# shipped as JS. Changing one of these and then publishing an OTA update would
+# land JS on a binary that lacks the native code it calls -- green on every test,
+# a crash on the device. So these demand the minor, not just any bump.
+BINARY_PATHS='^notes-app/(android/|patches/|app\.config\.js$)'
+
+# What changed in a version-carrying JSON file, ignoring the version line: the
+# diff body with the +++/--- headers and any "version": line filtered out.
+# Empty means the file moved for the bump and nothing else.
+#
+# Whole-file rather than key-by-key on purpose. Deciding from a diff hunk
+# whether a given app.json key is native is brittle, and the two failure modes
+# are not symmetric: a false positive costs one unnecessary minor bump, a false
+# negative ships an OTA update onto binaries that never got the plugin. When it
+# really is a web-only key, ALLOW_STALE_VERSION=1 is the escape hatch.
+version_free_diff() {
+  git diff --unified=0 "$1" "$2" -- "$3" 2>/dev/null |
+    grep -E '^[+-]' | grep -vE '^(\+\+\+|---)' | grep -vE '^[+-][[:space:]]*"version":' || true
+}
+
+# The runtime lineage of a display version: 1.2.3 -> 1.2. Mirrors
+# runtimeVersionFor() in notes-app/app.config.js; if you change one, change both.
+lineage() {
+  printf '%s' "$1" | cut -d. -f1,2
+}
+
+# The minor bump after a version, for the abort message. Falls back to prose
+# rather than doing arithmetic on something that isn't a number -- old_version
+# has never been format-checked, and a shell error here would replace the
+# explanation the user actually needs.
+suggest_minor() {
+  _major=$(printf '%s' "$1" | cut -d. -f1 -s)
+  _minor=$(printf '%s' "$1" | cut -d. -f2 -s)
+  case "$_major.$_minor" in
+    *[!0-9.]* | '.' | .* | *.) printf 'the next minor' ;;
+    *) printf '%s.%s.0' "$_major" "$((_minor + 1))" ;;
+  esac
+}
 
 # Reads a version out of a JSON file at a revision: expo.version for app.json,
 # the top-level version for package.json. Empty if the file or key is missing.
@@ -107,7 +164,22 @@ read_version() {
 if [ -n "$main_sha" ] && [ -n "$main_base" ] && [ "${ALLOW_STALE_VERSION:-}" != "1" ]; then
   main_changed=$(git diff --name-only "$main_base" "$main_sha" 2>/dev/null || true)
 
-  if printf '%s' "$main_changed" | grep -qE "$SHIPPED_PATHS"; then
+  # The two version-carrying files, read by content rather than by name. A new
+  # config plugin, a changed permission or a new native dependency lives here
+  # and is compiled into the binary, so each counts as a binary change -- the
+  # case a name filter cannot see, because the same files also move for the bump.
+  app_json_other=$(version_free_diff "$main_base" "$main_sha" notes-app/app.json)
+  pkg_json_other=$(version_free_diff "$main_base" "$main_sha" notes-app/package.json)
+
+  binary_changed=''
+  if printf '%s' "$main_changed" | grep -qE "$BINARY_PATHS"; then
+    binary_changed=1
+  fi
+  if [ -n "$app_json_other" ] || [ -n "$pkg_json_other" ]; then
+    binary_changed=1
+  fi
+
+  if printf '%s' "$main_changed" | grep -qE "$SHIPPED_PATHS" || [ -n "$binary_changed" ]; then
     old_version=$(read_version "$main_base" notes-app/app.json)
     new_version=$(read_version "$main_sha" notes-app/app.json)
     pkg_version=$(read_version "$main_sha" notes-app/package.json)
@@ -120,10 +192,28 @@ if [ -n "$main_sha" ] && [ -n "$main_base" ] && [ "${ALLOW_STALE_VERSION:-}" != 
       exit 1
     fi
 
+    # app.config.js derives runtimeVersion by slicing this string, and throws on
+    # anything it can't parse. Better to fail here than at build time.
+    if ! printf '%s' "$new_version" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+      echo ""
+      echo "✗ app version \"$new_version\" is not major.minor.patch — push aborted."
+      echo "  The OTA runtime version is derived from it, so it has to parse."
+      echo ""
+      echo "  To push anyway: ALLOW_STALE_VERSION=1 git push"
+      echo ""
+      exit 1
+    fi
+
     if [ "$new_version" = "$old_version" ]; then
       echo ""
       echo "✗ shipped code changed but the app version is still $new_version — push aborted."
       printf '%s' "$main_changed" | grep -E "$SHIPPED_PATHS" | sed 's/^/    /' | sort -u
+      if [ -n "$app_json_other" ]; then
+        echo "    notes-app/app.json      (native config changed, not just the version)"
+      fi
+      if [ -n "$pkg_json_other" ]; then
+        echo "    notes-app/package.json  (dependencies changed, not just the version)"
+      fi
       echo ""
       echo "  Ask Claude for the version-bumper agent, or bump by hand:"
       echo "    notes-app/app.json      expo.version"
@@ -146,9 +236,37 @@ if [ -n "$main_sha" ] && [ -n "$main_base" ] && [ "${ALLOW_STALE_VERSION:-}" != 
       exit 1
     fi
 
-    echo ""
-    echo "✓ app version $old_version → $new_version"
-    echo ""
+    if [ -n "$binary_changed" ]; then
+      if [ "$(lineage "$old_version")" = "$(lineage "$new_version")" ]; then
+        echo ""
+        echo "✗ this push needs a new binary but only moved the patch digit — aborted."
+        echo "    $old_version → $new_version   (runtime lineage stays $(lineage "$new_version"))"
+        echo ""
+        printf '%s' "$main_changed" | grep -E "$BINARY_PATHS" | sed 's/^/    /' | sort -u
+        if [ -n "$app_json_other" ]; then
+          echo "    notes-app/app.json      (native config changed, not just the version)"
+        fi
+        if [ -n "$pkg_json_other" ]; then
+          echo "    notes-app/package.json  (dependencies changed, not just the version)"
+        fi
+        echo ""
+        echo "  Those are compiled into the app, not shipped as JS. Held at the same"
+        echo "  lineage, an eas update would land this JS on binaries that lack it."
+        echo "  Bump the minor instead: $(suggest_minor "$old_version")"
+        echo ""
+        echo "  To push anyway: ALLOW_STALE_VERSION=1 git push"
+        echo ""
+        exit 1
+      fi
+
+      echo ""
+      echo "✓ app version $old_version → $new_version (new runtime lineage $(lineage "$new_version") — needs eas build)"
+      echo ""
+    else
+      echo ""
+      echo "✓ app version $old_version → $new_version (runtime lineage $(lineage "$new_version") — ships via eas update)"
+      echo ""
+    fi
   fi
 fi
 
