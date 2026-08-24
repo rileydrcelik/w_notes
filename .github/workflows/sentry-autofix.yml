@@ -230,36 +230,40 @@ jobs:
           gh pr edit "$number" --add-label autofix
           echo "Labelled PR #$number as autofix."
 
-      # Once a PR exists for the fix, mark the Sentry issue resolved so it drops
-      # out of the unresolved list. If the error recurs, Sentry auto-reopens it on
-      # regression. Needs a SENTRY_API_TOKEN repo secret (event:write scope);
-      # skipped quietly if it's absent. Swap "resolved" for "resolvedInNextRelease"
-      # if you'd rather tie it to a release.
-      - name: Resolve Sentry issue
+      # A pull request is a proposal, not a fix. This step used to resolve the
+      # Sentry issue right here, which closed it on the strength of the branch
+      # existing: a PR that failed CI, or was rejected on review, left a live
+      # production error hidden behind a "resolved" chip with nothing shipped.
+      # PR #97 did exactly that — it reverted a deliberate fix, went red, was closed,
+      # and left the issue resolved the whole time.
+      #
+      # So this step only *records* which Sentry issue the PR answers.
+      # autofix-ship.yml reads the marker back and does the resolving once the
+      # fix has actually landed — and, for a backend fix, deployed. The id is
+      # written by the pipeline rather than scraped from the agent's prose, which
+      # is free-form and need not mention the numeric id at all.
+      - name: Record the Sentry issue on the pull request
         if: always()
         env:
           GH_TOKEN: ${{ secrets.AUTOFIX_PAT || secrets.GITHUB_TOKEN }}
-          SENTRY_API_TOKEN: ${{ secrets.SENTRY_API_TOKEN }}
           BRANCH: ${{ github.event.client_payload.branch }}
           ISSUE_ID: ${{ github.event.client_payload.issue_id }}
+          SHORT_ID: ${{ github.event.client_payload.short_id }}
         run: |
           set -euo pipefail
-          if [ -z "${SENTRY_API_TOKEN:-}" ]; then
-            echo "No SENTRY_API_TOKEN secret set — leaving the Sentry issue unresolved."
+          [ -n "${ISSUE_ID:-}" ] || { echo "No issue_id in the payload — nothing to record."; exit 0; }
+          number=$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number // empty')
+          if [ -z "$number" ]; then
+            echo "No open PR for $BRANCH — nothing to record the issue on."
             exit 0
           fi
-          if [ -z "$(gh pr list --head "$BRANCH" --state open --json number --jq '.[].number')" ]; then
-            echo "No open PR for $BRANCH — not resolving the Sentry issue."
-            exit 0
-          fi
-          echo "Resolving Sentry issue $ISSUE_ID"
-          code=$(curl -sS -X PUT "https://sentry.io/api/0/issues/$ISSUE_ID/" \
-            -H "Authorization: Bearer $SENTRY_API_TOKEN" \
-            -H "Content-Type: application/json" \
-            -d '{"status":"resolved"}' -o /dev/null -w "%{http_code}")
-          echo "Sentry responded $code"
-          # Don't fail the run if Sentry rejects it — the PR is the important part.
-          if [ "$code" -ge 400 ]; then echo "::warning::Sentry resolve returned $code"; fi
+          body=$(gh pr view "$number" --json body --jq '.body')
+          case "$body" in
+            *"w-notes:sentry-issue"*) echo "PR #$number already carries the marker."; exit 0 ;;
+          esac
+          printf '%s\n\n<!-- w-notes:sentry-issue id=%s short_id=%s -->\n' \
+            "$body" "$ISSUE_ID" "$SHORT_ID" | gh pr edit "$number" --body-file -
+          echo "Recorded Sentry issue $ISSUE_ID ($SHORT_ID) on PR #$number."
 
       # The other way an issue can be finished with: the agent proposed no fix
       # because the fix is already on `main`. That closes the issue too — but only

@@ -2,7 +2,8 @@
 #
 # Chain: sentry-autofix.yml opens the PR and labels it `autofix` -> Tests runs
 # on it -> this workflow fires when Tests finishes and, if everything below
-# holds, squash-merges and calls deploy-backend.yml.
+# holds, squash-merges, calls deploy-backend.yml, and only then resolves the
+# Sentry issue.
 #
 # Why deploy is a *job here* rather than deploy-backend.yml's own push trigger:
 # a merge performed with GITHUB_TOKEN produces a push that GitHub deliberately
@@ -51,6 +52,7 @@ jobs:
     outputs:
       merged: ${{ steps.merge.outputs.merged }}
       backend_changed: ${{ steps.inspect.outputs.backend_changed }}
+      number: ${{ steps.inspect.outputs.number }}
     steps:
       - name: Find and vet the pull request
         id: inspect
@@ -186,6 +188,52 @@ jobs:
     with:
       ref: main
     secrets: inherit
+
+  # Where the Sentry issue is actually closed. Not when the PR opens — that only
+  # says a machine had an idea — and not merely when it merges either: a backend
+  # fix sitting on main undeployed is the same hidden outage in a slower form,
+  # which is exactly what the `report` job below exists to shout about. So the
+  # bar is: merged, and either the fix ships as source (nothing under backend/)
+  # or its deploy succeeded.
+  #
+  # Best-effort by design. Sentry auto-reopens on regression, so a missed resolve
+  # costs a stale row in the unresolved list; a premature one hides a live error.
+  resolve:
+    name: Resolve the Sentry issue
+    needs: [merge, deploy]
+    if: >-
+      always() && needs.merge.outputs.merged == 'true' &&
+      (needs.merge.outputs.backend_changed != 'true' || needs.deploy.result == 'success')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve it
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SENTRY_API_TOKEN: ${{ secrets.SENTRY_API_TOKEN }}
+          REPO: ${{ github.repository }}
+          NUMBER: ${{ needs.merge.outputs.number }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SENTRY_API_TOKEN:-}" ]; then
+            echo "No SENTRY_API_TOKEN secret set — leaving the Sentry issue unresolved."
+            exit 0
+          fi
+          # The marker sentry-autofix.yml stamped on the PR when it opened it.
+          body=$(gh pr view "$NUMBER" --repo "$REPO" --json body --jq '.body')
+          ISSUE_ID=$(printf '%s' "$body" \
+            | sed -n 's/.*<!-- w-notes:sentry-issue id=\([0-9][0-9]*\).*/\1/p' | head -1)
+          if [ -z "$ISSUE_ID" ]; then
+            echo "::warning::PR #$NUMBER carries no Sentry issue marker — nothing to resolve."
+            exit 0
+          fi
+          echo "Resolving Sentry issue $ISSUE_ID"
+          code=$(curl -sS -X PUT "https://sentry.io/api/0/issues/$ISSUE_ID/" \
+            -H "Authorization: Bearer $SENTRY_API_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d '{"status":"resolved"}' -o /dev/null -w "%{http_code}")
+          echo "Sentry responded $code"
+          # Don't fail the run over this — the fix is live either way.
+          if [ "$code" -ge 400 ]; then echo "::warning::Sentry resolve returned $code"; fi
 
   # A merged fix that never reached production is the failure worth shouting
   # about — it looks shipped from the PR list but isn't live.
