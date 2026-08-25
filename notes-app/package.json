@@ -86,7 +86,7 @@
     "verify:web": "node scripts/verify-web-export.mjs",
     "verify:update": "node scripts/verify-update-env.mjs",
     "ship:web": "npm run build:web && npx --yes wrangler@latest pages deploy dist --project-name=w-notes",
-    "ship:mobile": "npm run verify:update && npx --yes eas-cli@latest update --channel production --environment production",
+    "ship:mobile": "node scripts/ship-mobile.mjs",
     "version:status": "node scripts/version-status.mjs",
     "postinstall": "patch-package && node scripts/copy-pdfjs-worker.mjs",
     "test:mobile": "node scripts/test-mobile.mjs",
