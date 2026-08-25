@@ -371,3 +371,48 @@ async def test_reports_a_missing_engine_as_a_server_problem(client, monkeypatch)
         headers={"Authorization": "Bearer device-key-1"},
     )
     assert res.status_code == 503
+
+
+class TestLogClamping:
+    """What survives when a TeX log is too big to hand back whole.
+
+    This is not a formatting nicety. The cap used to keep the *last*
+    `_MAX_LOG_CHARS`, and a real two-page resume logs about 36k — so the window
+    began past every `! LaTeX Error` line and past `Output written on`, leaving
+    the font dump. The client parses `!` lines out of what it is given, found
+    none, and showed "This document could not be compiled." with no message and
+    no line number, for a document whose log named the error twice.
+
+    So both ends have to survive: the head, where TeX reports what went wrong,
+    and the tail, where a successful run says how many pages it made.
+    """
+
+    def _oversized_log(self) -> str:
+        head = "! LaTeX Error: Missing \begin{document}.\n"
+        tail = "\nOutput written on main.pdf (2 pages, 111127 bytes).\n"
+        filler = "(/usr/share/texlive/texmf-dist/fonts/type1/public/amsfonts/cm/cmr10.pfb)\n"
+        middle = filler * ((latex._MAX_LOG_CHARS * 3) // len(filler))
+        return head + middle + tail
+
+    def test_a_log_within_the_cap_is_returned_untouched(self):
+        log = "! LaTeX Error: Undefined control sequence.\n"
+        assert latex._clamp_log(log) == log
+
+    def test_an_oversized_log_keeps_the_error_at_the_head(self):
+        clamped = latex._clamp_log(self._oversized_log())
+        assert "! LaTeX Error: Missing \begin{document}." in clamped
+
+    def test_an_oversized_log_keeps_the_page_count_at_the_tail(self):
+        clamped = latex._clamp_log(self._oversized_log())
+        # `page_count` reads this line; losing it costs the page count on a
+        # document that compiled perfectly well.
+        assert "Output written on main.pdf (2 pages," in clamped
+        assert latex.page_count(clamped) == 2
+
+    def test_an_oversized_log_says_that_it_was_cut(self):
+        clamped = latex._clamp_log(self._oversized_log())
+        assert "characters of log elided" in clamped
+
+    def test_the_clamped_log_never_exceeds_the_cap(self):
+        # The marker counts against the budget rather than being added on top.
+        assert len(latex._clamp_log(self._oversized_log())) <= latex._MAX_LOG_CHARS

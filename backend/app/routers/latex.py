@@ -98,9 +98,27 @@ _TIMEOUT_SECONDS = 60.0
 # absurd, and the limit exists so a request can't cost anything before TeX runs.
 _MAX_SOURCE_BYTES = 1_000_000
 
-# How much of the TeX log to hand back. The client only surfaces the first few
-# diagnostics, but the tail is where the errors are and it aids debugging.
+# How much of the TeX log to hand back.
+#
+# The tail is emphatically *not* where the errors are, which is what this used
+# to assume: it kept the last 20k characters and threw the rest away. A real
+# two-page resume logs ~36k, so on every document long enough to be worth
+# debugging the window began at 44% — past both `! LaTeX Error` lines (2% and
+# 26%) and past `Output written on` (22%), the line `page_count` reads. What
+# survived was the font dump and the PDF statistics. The client parses `!`
+# lines out of what it is given, found none, and fell back to "This document
+# could not be compiled." — no line number, no message, for a document whose
+# log said `! LaTeX Error: Missing egin{document}.` twice.
+#
+# So the cap keeps both ends now; see `_clamp_log`.
 _MAX_LOG_CHARS = 20_000
+
+# How the cap is split when it bites. Head-heavy because TeX reports an error
+# where it hits it and a document fails early far more often than late, but not
+# head-only: `Output written on main.pdf (N pages,` is the last thing written on
+# a *successful* run, and dropping it costs the page count on exactly the
+# documents that compiled fine.
+_LOG_HEAD_SHARE = 0.6
 
 # Compiling is CPU-bound and this service runs as a single small Fargate task
 # that also serves sync and its own health check. Without a cap, a handful of
@@ -374,6 +392,27 @@ async def _rasterise(directory: Path, page_width: int) -> tuple[list[RenderedPag
     return pages, None
 
 
+def _clamp_log(log: str) -> str:
+    """A TeX log cut to `_MAX_LOG_CHARS`, keeping the parts that explain it.
+
+    Both ends, with the middle elided: the head carries the errors and the font
+    warnings, the tail carries `Output written on` and the run statistics. A log
+    that already fits is returned untouched, so the common case is byte-for-byte
+    what TeX wrote.
+
+    The elision marker counts against the budget rather than being added on top,
+    so the result never exceeds the cap.
+    """
+    if len(log) <= _MAX_LOG_CHARS:
+        return log
+    elided = len(log) - _MAX_LOG_CHARS
+    marker = f"\n\n[... {elided} characters of log elided ...]\n\n"
+    budget = _MAX_LOG_CHARS - len(marker)
+    head = int(budget * _LOG_HEAD_SHARE)
+    tail = budget - head
+    return f"{log[:head]}{marker}{log[-tail:]}"
+
+
 async def _run_latexmk(directory: Path, engine: Engine) -> tuple[bool, str]:
     """Compile ``main.tex`` in ``directory``. Returns (succeeded, log)."""
     settings = get_settings()
@@ -459,7 +498,7 @@ async def _run_latexmk(directory: Path, engine: Engine) -> tuple[bool, str]:
     if tex_log.exists():
         log = f"{log}\n{tex_log.read_text(encoding='utf-8', errors='replace')}"
 
-    return process.returncode == 0, log[-_MAX_LOG_CHARS:]
+    return process.returncode == 0, _clamp_log(log)
 
 
 def page_count(log: str) -> int | None:
