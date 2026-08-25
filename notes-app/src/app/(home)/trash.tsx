@@ -14,6 +14,7 @@ import { ThemedView } from '@/components/themed-view';
 import { Spacing } from '@/constants/theme';
 import { trailingSpacers, useGridColumns, useGridColumnWidth, useGridEdgePadding, useTileHeight } from '@/lib/grid';
 import { rankMatches } from '@/lib/search';
+import { daysLeftInTrash, TRASH_RETENTION_DAYS } from '@/lib/trash-retention';
 import { useScrollToTop } from '@/hooks/use-scroll-to-top';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
 import { useTheme } from '@/hooks/use-theme';
@@ -31,6 +32,12 @@ function timeAgo(ms: number) {
   if (diff < hour) return `${Math.floor(diff / minute)}m ago`;
   if (diff < day) return `${Math.floor(diff / hour)}h ago`;
   return `${Math.floor(diff / day)}d ago`;
+}
+
+/** How long is left before an entry is deleted for good. */
+function daysLeft(deletedAt: number) {
+  const days = daysLeftInTrash(deletedAt);
+  return days === 1 ? '1 day left' : `${days} days left`;
 }
 
 export default function TrashScreen() {
@@ -98,6 +105,11 @@ export default function TrashScreen() {
               <ThemedText type="subtitle" style={styles.title}>
                 Trash
               </ThemedText>
+              {/* Says why cards leave on their own, so a missing one reads as
+                  the rule rather than as lost data. */}
+              <ThemedText type="small" themeColor="textSecondary" style={styles.caption}>
+                Items are deleted permanently {TRASH_RETENTION_DAYS} days after they were trashed.
+              </ThemedText>
               {/* Only offered when there is something to filter. */}
               {trash.length > 0 && (
                 <SearchBar value={query} onChangeText={setQuery} placeholder="Search trash" />
@@ -128,7 +140,7 @@ export default function TrashScreen() {
                         {name}
                       </ThemedText>
                       <ThemedText type="small" themeColor="textSecondary" numberOfLines={1}>
-                        Deleted {timeAgo(entry.deletedAt)}
+                        Deleted {timeAgo(entry.deletedAt)} · {daysLeft(entry.deletedAt)}
                       </ThemedText>
                     </View>
                   </ThemedView>
@@ -178,6 +190,9 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   title: {
+    paddingBottom: Spacing.one,
+  },
+  caption: {
     paddingBottom: Spacing.three,
   },
   cardWrapper: {

@@ -13,6 +13,7 @@ import { Sentry } from '@/lib/sentry';
 import { db, type TrashEntry } from '@/lib/db';
 import { canMoveFolder, folderSubtreeIds } from '@/lib/folder-tree';
 import { isDbLockedError } from '@/lib/web-db-lock';
+import { syncConfigured } from '@/lib/sync/api';
 import { requestSync, subscribeSynced, syncNow } from '@/lib/sync/sync-engine';
 import type { SentryTarget } from '@/lib/sentry-note';
 import type { GithubTarget } from '@/lib/github-note';
@@ -214,6 +215,13 @@ export function NotesProvider({ children }: { children: ReactNode }) {
       //
       // So: let in-flight writes commit, read, and if any *new* write started
       // during that pass, discard the now-stale snapshot and go again.
+
+      // Everything past its retention window goes before the read, so the
+      // snapshot below is already free of it. Runs on every hydrate rather than
+      // once at startup: a pull can land tombstones that were already expired
+      // when they arrived (a device that has been away, or one re-syncing from
+      // scratch), and this is the pass that notices.
+      await db.purgeExpiredTrash({ keepUnpushed: syncConfigured });
       for (let attempt = 0; attempt < 5; attempt++) {
         const startedBefore = writesStarted;
         await writesSettled();

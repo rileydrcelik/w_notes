@@ -9,6 +9,7 @@ import {
   DEV_SEED_PREFIX,
 } from '@/lib/dev-seed';
 import { runWelcomeSeed, WELCOME_PREFIX } from '@/lib/welcome-content';
+import { isTrashExpired, TRASH_RETENTION_MS } from '@/lib/trash-retention';
 import { worthKeepingInTrash } from '@/lib/trash-visibility';
 import { migrateThemeKey, THEME_RENAME_FLAG, THEME_SETTING_KEY } from '@/lib/theme-migrate';
 import { whenDbOwner } from '@/lib/web-db-lock';
@@ -1067,7 +1068,16 @@ async function buildTrash(database: SQLite.SQLiteDatabase): Promise<TrashEntry[]
     .filter((n) => !n.trashed_with_folder_id)
     .map((n) => ({ kind: 'note', id: n.id, deletedAt: n.deleted_at!, note: toNote(n) }));
 
+  // Expired entries are dropped here as well as swept from the tables by
+  // `purgeExpiredTrash`, because the two run on different clocks: the sweep is
+  // a write that a session only makes now and then, while this read happens
+  // every time the trash is shown. Filtering here is what makes an entry stop
+  // being offered the moment its window closes, whether or not its row is gone
+  // yet — and it is what a device whose tombstones are still unpushed (so not
+  // sweepable) shows instead.
+  const now = Date.now();
   return [...folderEntries, ...noteEntries]
+    .filter((entry) => !isTrashExpired(entry.deletedAt, now))
     .filter(worthKeepingInTrash)
     .sort((a, b) => b.deletedAt - a.deletedAt);
 }
@@ -1419,6 +1429,49 @@ export const db = {
         await reviveNoteChildren(database, [id], note.deleted_at, now);
       });
     }
+  },
+
+  /**
+   * Drops the rows behind trash entries whose retention window has closed (see
+   * `lib/trash-retention.ts`), returning how many rows went. This is the only
+   * hard delete in the module: everything else tombstones.
+   *
+   * Two things make that safe. First, `keepUnpushed` holds back any tombstone
+   * this device hasn't synced yet — dropping one of those would strand the
+   * delete here and let the other devices' copies live on forever, so an
+   * unpushed tombstone waits however long it has to. Second, the server is
+   * never told: a purge is a device reclaiming space, not a new delete, and the
+   * row it drops is one the server already has a tombstone for. That also means
+   * a device that re-pulls from scratch gets the old tombstones back — and
+   * sweeps them again on its next pass, since they are still expired.
+   *
+   * The note-owned side tables are swept by the same cutoff rather than by
+   * their owner's id: `trashNoteChildren` stamps them with the parent's
+   * `deleted_at`, so they expire in the same breath as the note they belong to,
+   * and one tombstoned by hand expires on its own schedule.
+   */
+  async purgeExpiredTrash({
+    now = Date.now(),
+    keepUnpushed = true,
+  }: { now?: number; keepUnpushed?: boolean } = {}): Promise<number> {
+    const database = await getDb();
+    const cutoff = now - TRASH_RETENTION_MS;
+    // `dirty = 0` is the "the server has this tombstone" test; a device with no
+    // backend configured never clears the flag, so it opts out of the guard
+    // rather than keeping every tombstone it ever made.
+    const pushed = keepUnpushed ? ' AND dirty = 0' : '';
+    let purged = 0;
+    await database.withTransactionAsync(async () => {
+      for (const table of ['notes', 'folders', 'issues', 'finance_sheets', 'resume_versions']) {
+        const r = await database.runAsync(
+          `DELETE FROM ${table} WHERE deleted_at IS NOT NULL AND deleted_at < ?${pushed}`,
+          [cutoff],
+        );
+        purged += r.changes;
+      }
+    });
+    if (purged > 0) dbCrumb('purgeExpiredTrash', { purged });
+    return purged;
   },
 
   async listCopa(): Promise<CopaItem[]> {
@@ -2526,6 +2579,7 @@ const WRITE_METHODS = [
   'deleteFolder',
   'deleteFolderIfEmpty',
   'restoreFromTrash',
+  'purgeExpiredTrash',
   'createCopa',
   'updateCopa',
   'deleteCopa',
