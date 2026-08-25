@@ -4,8 +4,8 @@
  * select / edit-attributes flows the whole project used to have — now scoped to
  * one type, since the project screen is a feed of these type-notes.
  *
- * When the type is GitHub-connected and the project has a repo, toggling an
- * issue's done flag also closes/reopens its mirrored GitHub issue (push-only).
+ * When the project has a repo, toggling a *mirrored* issue's done flag also
+ * closes/reopens its GitHub issue (push-only).
  */
 import Feather from '@expo/vector-icons/Feather';
 import * as Clipboard from 'expo-clipboard';
@@ -334,12 +334,21 @@ export default function IssueTypeScreen() {
     [editSingle],
   );
 
-  // Toggle done locally and, for a GitHub-connected mirrored issue, push the
-  // close/reopen to GitHub (best-effort — a failure leaves the local flag set).
+  // Toggle done locally and, for a mirrored issue, push the close/reopen to
+  // GitHub (best-effort — a failure leaves the local flag set).
+  //
+  // Keyed on the issue's own ghNumber, never on the viewed type's
+  // `githubConnected`. That flag decides whether NEW issues get mirrored; it
+  // says nothing about whether THIS issue already is. An issue can sit under a
+  // disconnected type while mirrored — as a secondary type on a multi-type
+  // issue, or under a type detracked after its issues were already pushed.
+  // Back-sync pulls every ghNumber'd issue regardless of any type flag, so
+  // gating the push here meant GitHub's stale "open" won on the next
+  // reconcile: checking off silently reverted, in that one category only.
   const syncDone = useCallback(
     (issue: Issue, done: boolean) => {
       setDone(issue.id, done);
-      if (connected && repo && issue.ghNumber != null) {
+      if (repo && issue.ghNumber != null) {
         setGithubIssueState(repo, issue.ghNumber, done).catch((e) => {
           Sentry.captureException(e, { tags: { source: 'issue-github', op: 'state' } });
           Alert.alert(
@@ -349,7 +358,7 @@ export default function IssueTypeScreen() {
         });
       }
     },
-    [setDone, connected, repo],
+    [setDone, repo],
   );
 
   // Register the selection-action handlers so the navbar menu can drive them.
@@ -405,7 +414,11 @@ export default function IssueTypeScreen() {
       typeTitles: string[],
       details?: { title: string; description: string },
     ) => {
-      if (!connected || !repo) return;
+      // Mirrored-issue-only, like syncDone — every caller already guards on
+      // `ghNumber != null`, and back-sync pulls title/attrs for any mirrored
+      // issue, so gating on the viewed type's flag would let GitHub's copy
+      // overwrite an edit that was never pushed.
+      if (!repo) return;
       const typeLabels = githubIssueLabels(typeTitles);
       const assignees = githubIssueAssignees(attributes, attrs);
       try {
@@ -428,7 +441,7 @@ export default function IssueTypeScreen() {
         Alert.alert('Changes not synced to GitHub', githubSyncErrorMessage(e));
       }
     },
-    [connected, repo, attributes, typeNames],
+    [repo, attributes, typeNames],
   );
 
   const applyEdit = useCallback(
