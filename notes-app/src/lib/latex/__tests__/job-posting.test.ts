@@ -228,6 +228,34 @@ describe('readPastedPosting', () => {
   });
 
   it(
+    'does not blame the paste for a 422 that is FastAPI rejecting the request ' +
+      'shape — a list-shaped `detail` means nothing was ever read',
+    async () => {
+      // The exact body a backend one commit behind the app returns: its
+      // `PostingRequest` still requires `url` and has no `text`, so a paste is
+      // refused instantly, before any model runs. Read as the endpoint's own
+      // verdict this said "that is not a job posting" about text that was fine.
+      behaviour = () =>
+        Promise.reject(
+          new ApiError(
+            '422 for /resume/job-posting',
+            422,
+            JSON.stringify({
+              detail: [
+                { type: 'missing', loc: ['body', 'url'], msg: 'Field required' },
+              ],
+            }),
+          ),
+        );
+      const result = await readPastedPosting('a perfectly good job posting');
+      if (result.ok) throw new Error('expected failure');
+      expect(result.unreadable).toBe(false);
+      expect(result.message).not.toContain('single job posting');
+      expect(result.message).toContain('older version');
+    },
+  );
+
+  it(
     'treats its own timeout as readable-but-slow, NOT unreadable — pasting is ' +
       'already the way forward, so there is nowhere further to send someone',
     async () => {

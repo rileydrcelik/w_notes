@@ -179,6 +179,17 @@ async function request(body: { url: string } | { text: string }): Promise<Postin
     // 422 is the server saying it read the page and there was no posting on it.
     // That is the case worth acting on, so it carries the server's own sentence.
     if (e instanceof ApiError && e.status === 422) {
+      // Except when it is not the server saying that at all. FastAPI answers a
+      // request whose *shape* it does not recognise with this same status, and
+      // its `detail` is a list of field errors rather than a sentence. That is
+      // this client and that server disagreeing about the request: nothing was
+      // ever read, and the paste is not at fault. Reporting it as “that is not a
+      // posting” sends someone off to rewrite text that was fine — which is
+      // exactly what a backend still on the pre-paste `PostingRequest` (`url`
+      // required, no `text`) did, instantly and convincingly.
+      if (isMalformedRequest(e)) {
+        return { ok: false, unreadable: false, message: WRONG_SHAPE };
+      }
       // The server writes a different sentence per path (`_UNPARSEABLE_PASTE` vs
       // `_UNREADABLE_POSTING`), so its own detail is preferred over either
       // fallback here.
@@ -198,11 +209,32 @@ async function request(body: { url: string } | { text: string }): Promise<Postin
 const NOT_A_POSTING =
   'That paste doesn’t look like a single job posting. Copy the posting page itself — title, description and requirements — rather than a list of openings.';
 
+const WRONG_SHAPE =
+  'The server rejected the request itself, so nothing was read — the paste is fine. This build is probably pointed at a server running an older version of the app.';
+
 const TIMED_OUT =
   'Reading that posting took too long. Nothing has changed — try again.';
 
 const UNREADABLE =
   'That page couldn’t be read. Many job sites — LinkedIn and Workday among them — block automated readers. Paste the posting instead.';
+
+/**
+ * True when a 422 is FastAPI rejecting the request's shape, not the endpoint
+ * judging its content. `detail` tells them apart: the endpoint writes a
+ * sentence, the framework writes a list of `{loc, msg, type}`. Only the list
+ * shape counts — a 422 with no body at all stays the endpoint's, since that is
+ * the one this client cannot distinguish and the posting-shaped reading is the
+ * likelier of the two.
+ */
+function isMalformedRequest(e: ApiError): boolean {
+  if (!e.body) return false;
+  try {
+    const parsed = JSON.parse(e.body) as { detail?: unknown };
+    return Array.isArray(parsed.detail);
+  } catch {
+    return false;
+  }
+}
 
 function detailOf(e: ApiError): string | null {
   if (!e.body) return null;
