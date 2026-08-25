@@ -10,6 +10,7 @@ import {
   describeHardenTarget,
   describeTailorTarget,
   isOriginal,
+  masterVersion,
   originalLabel,
   resolveAddLabel,
   resolveEditLabel,
@@ -310,5 +311,45 @@ describe('describeAge', () => {
   it('rolls over to months', () => {
     expect(ago(31 * 24 * 60 * 60_000)).toBe('a month ago');
     expect(ago(90 * 24 * 60 * 60_000)).toBe('3 months ago');
+  });
+});
+
+/**
+ * The master is what every tailoring is built from, so the cost of getting this
+ * wrong is silent: tailoring keeps working, it just starts from the wrong
+ * document — a resume already narrowed to one job instead of the superset. The
+ * fallbacks matter as much as the happy path, because they are what every
+ * resume that predates the feature gets.
+ */
+describe('masterVersion', () => {
+  const history = [version('c', 300), version('b', 200), version('a', 100)];
+
+  it('is the version the note points at', () => {
+    expect(masterVersion(history, 'b')?.id).toBe('b');
+  });
+
+  it('is the original when nothing has been chosen', () => {
+    expect(masterVersion(history, null)?.id).toBe('a');
+  });
+
+  it('falls back to the original when the chosen version has been deleted', () => {
+    expect(masterVersion([version('c', 300), version('b', 200)], 'a')?.id).toBe('b');
+  });
+
+  it('can be the newest version, if that is what was chosen', () => {
+    expect(masterVersion(history, 'c')?.id).toBe('c');
+  });
+
+  it('is null only for a history with nothing in it', () => {
+    expect(masterVersion([], null)).toBe(null);
+    expect(masterVersion([], 'a')).toBe(null);
+  });
+
+  it('reads the original by age, not by list position', () => {
+    // Sync hands rows over in whatever order it likes; the oldest is still the
+    // original.
+    expect(masterVersion([version('a', 100), version('c', 300), version('b', 200)], null)?.id).toBe(
+      'a',
+    );
   });
 });

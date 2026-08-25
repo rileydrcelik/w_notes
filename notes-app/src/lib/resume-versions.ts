@@ -187,9 +187,49 @@ export function sortVersionsNewestFirst(versions: ResumeVersion[]): ResumeVersio
  * a flag would be a second source of truth that sync could disagree with.
  */
 export function isOriginal(version: ResumeVersion, versions: ResumeVersion[]): boolean {
-  if (versions.length === 0) return false;
-  const oldest = sortVersionsNewestFirst(versions)[versions.length - 1];
-  return oldest.id === version.id;
+  const oldest = originalVersion(versions);
+  return !!oldest && oldest.id === version.id;
+}
+
+/** The oldest snapshot — "the original" — or `null` for an empty history. */
+export function originalVersion(versions: ResumeVersion[]): ResumeVersion | null {
+  if (versions.length === 0) return null;
+  return sortVersionsNewestFirst(versions)[versions.length - 1];
+}
+
+/**
+ * The master: the version a tailoring is built from, whatever is on screen.
+ *
+ * `pointerId` is the note's stored choice (`resumeMasterVersionId`). It is
+ * resolved rather than trusted, and both ways it can dangle fall back to the
+ * original instead of to "no master":
+ *
+ * - nothing has ever been chosen, which is every resume that existed before
+ *   this feature and every one whose author never opened the history. The
+ *   original is the default precisely because it is the document as it stood
+ *   before any tailoring pulled it toward one job — the superset, which is what
+ *   "master" means here;
+ * - the chosen version has been deleted. The pointer is deliberately not
+ *   cleared when that happens: clearing it would be a second write on a path
+ *   that is already destructive, and the fallback covers it for free.
+ *
+ * So the master only moves when someone moves it, with the one unavoidable
+ * exception of deleting the version that held it — at which point there is no
+ * honest answer except the original.
+ *
+ * Returns `null` only for a history with nothing in it, i.e. a resume that has
+ * never compiled. There is no master to build from then, and the caller uses
+ * the document on screen.
+ */
+export function masterVersion(
+  versions: ResumeVersion[],
+  pointerId: string | null,
+): ResumeVersion | null {
+  if (pointerId) {
+    const chosen = versions.find((v) => v.id === pointerId);
+    if (chosen) return chosen;
+  }
+  return originalVersion(versions);
 }
 
 /**

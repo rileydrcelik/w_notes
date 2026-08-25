@@ -9,8 +9,16 @@
  *
  * Restoring is immediate and needs no confirmation, which is only true because
  * the screen snapshots what it is about to replace first: every restore is itself
- * an entry in this list, so there is nothing here you can do that this list can't
- * undo. A confirm dialog would be asking about a decision that isn't final.
+ * an entry in this list, so restoring is a move this list can always undo. A
+ * confirm dialog would be asking about a decision that isn't final.
+ *
+ * Deleting is the opposite and does confirm — the host owns that dialog, see
+ * `app/(home)/resume/[id].tsx`. It is the one action here that leaves nothing
+ * behind, on any device, and the only one this list cannot walk back.
+ *
+ * The master version is *marked* here and *chosen* on the toolbar. A row shows
+ * whether it is the one tailoring builds from; picking a different one is an
+ * action on the document, so it lives with the document's other actions.
  *
  * The list scrolls and is height-capped against the window, since history has no
  * upper bound — there is deliberately no automatic pruning, because two devices
@@ -33,6 +41,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { GlassSurface } from '@/components/glass-surface';
 import { ThemedText } from '@/components/themed-text';
 import { hexToRgba, Spacing } from '@/constants/theme';
+import { ACCENT } from '@/components/resume/accent';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
 import { useTheme } from '@/hooks/use-theme';
 import type { ResumeVersion } from '@/data/notes';
@@ -48,6 +57,7 @@ export function VersionList({
   versions,
   /** Which version the editor is currently working in, so the list can mark it. */
   currentVersionId,
+  masterVersionId,
   onClose,
   onRestore,
   onDelete,
@@ -57,12 +67,20 @@ export function VersionList({
   /** Newest first. */
   versions: ResumeVersion[];
   currentVersionId: string | null;
+  /**
+   * The version tailoring builds from. Already resolved by the screen (see
+   * `masterVersion` in `lib/resume-versions.ts`), so this is never the raw
+   * stored pointer: a history with anything in it always has a master, and the
+   * list marks one row unconditionally.
+   */
+  masterVersionId: string | null;
   onClose: () => void;
   onRestore: (version: ResumeVersion) => void;
   onDelete: (version: ResumeVersion) => void;
   /**
    * Show the history without offering to change it. Restoring swaps the
-   * document's source and deleting drops a version for good — both are edits,
+   * document's source, deleting drops a version for good, and marking a master
+   * changes what every later tailoring is built from — all three are edits,
    * so on a screen that doesn't edit (the resume on mobile) the list still says
    * what exists and when, and stops there. The rows go inert rather than
    * disabled-looking: there's nothing broken about them, they just aren't
@@ -156,6 +174,7 @@ export function VersionList({
                     // row you most want to recognise reads as an error.
                     const isCurrent = version.id === currentVersionId;
                     const isOriginal = version.id === originalId;
+                    const isMaster = version.id === masterVersionId;
                     return (
                       <View key={version.id} style={styles.rowWrap}>
                       {/* Read-only rows are a plain View, not a disabled
@@ -180,6 +199,21 @@ export function VersionList({
                                 · original
                               </ThemedText>
                             )}
+                            {/* In the accent, unlike the other two markers.
+                                The age and "original" describe the row; this
+                                one says where every tailoring starts, which is
+                                what the sheet gets scanned for. Reported here
+                                and chosen on the toolbar — this list is the
+                                history, and the master is a property of the
+                                document rather than of the history. */}
+                            {isMaster && (
+                              <View style={styles.masterMark}>
+                                <Feather name="star" size={11} color={ACCENT} />
+                                <ThemedText type="small" style={{ color: ACCENT }}>
+                                  master
+                                </ThemedText>
+                              </View>
+                            )}
                           </View>
                         </View>
                         {isCurrent ? (
@@ -201,10 +235,10 @@ export function VersionList({
                         )}
                       </RowShell>
                       {/* Outside the row's Pressable, not inside it: nesting one
-                          pressable in another makes which one you hit a matter of
-                          a few pixels, and the two do very different things. The
-                          version you are working in has no delete — it is the
-                          document on screen, and removing it would leave the
+                          pressable in another makes which one you hit a matter
+                          of a few pixels, and the two do very different things. */}
+                      {/* The version you are working in has no delete — it is
+                          the document on screen, and removing it would leave the
                           editor holding text that belongs to nothing. */}
                       {!isCurrent && !readOnly && (
                         <Pressable
@@ -212,7 +246,7 @@ export function VersionList({
                           accessibilityLabel={`Delete version: ${version.label}`}
                           onPress={() => onDelete(version)}
                           hitSlop={8}
-                          style={({ pressed }) => [styles.delete, pressed && styles.pressed]}>
+                          style={({ pressed }) => [styles.iconButton, pressed && styles.pressed]}>
                           <Feather name="trash-2" size={15} color={theme.textSecondary} />
                         </Pressable>
                       )}
@@ -314,8 +348,8 @@ const styles = StyleSheet.create({
     paddingVertical: Spacing.two,
     fontSize: 15,
   },
-  // The row and its delete button, side by side. The delete sits outside the
-  // row's own Pressable so the two targets can't overlap.
+  // The row and its icon buttons, side by side. They sit outside the row's own
+  // Pressable so no two targets can overlap.
   rowWrap: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -331,7 +365,7 @@ const styles = StyleSheet.create({
     paddingVertical: Spacing.two,
   },
   // A 40px target, matching the app's other secondary icon buttons.
-  delete: {
+  iconButton: {
     width: 40,
     height: 40,
     alignItems: 'center',
@@ -344,7 +378,13 @@ const styles = StyleSheet.create({
   },
   metaRow: {
     flexDirection: 'row',
+    alignItems: 'center',
     gap: Spacing.one,
+  },
+  masterMark: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.half,
   },
   // A bordered chip, matching the entry sheet's category chips and the filter
   // chips on the GitHub issues screen — same 0.35 border, squircle, not a pill.

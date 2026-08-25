@@ -103,6 +103,7 @@ import { SwipeBackView } from '@/components/swipe-back-view';
 import { ResumeHardenModal } from '@/components/resume/resume-harden-modal';
 import { ResumeTailorModal } from '@/components/resume/resume-tailor-modal';
 import { VersionList } from '@/components/resume/version-list';
+import { ConfirmDialog } from '@/components/confirm-dialog';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { hexToRgba, Spacing } from '@/constants/theme';
@@ -148,13 +149,20 @@ import type {
 } from '@/lib/latex/types';
 import {
   resumeConfigWithEngine,
+  resumeConfigWithMasterVersion,
   resumeConfigWithVersion,
   resumeCurrentVersionId,
   resumeEnginePreference,
+  resumeMasterVersionId,
   resumePdfFileName,
   STARTER_RESUME,
 } from '@/lib/resume-note';
-import { describeHardenTarget, describeTailorTarget, originalLabel } from '@/lib/resume-versions';
+import {
+  describeHardenTarget,
+  describeTailorTarget,
+  masterVersion,
+  originalLabel,
+} from '@/lib/resume-versions';
 import { hardenResume, type HardenDraft } from '@/lib/latex/harden';
 import { tailorResume, type TailorDraft } from '@/lib/latex/tailor';
 import type { ResumeFacets, ResumeTarget, ResumeVersion } from '@/data/notes';
@@ -334,6 +342,8 @@ export default function ResumeScreen() {
   const [enginePickerOpen, setEnginePickerOpen] = useState(false);
   const [entryOpen, setEntryOpen] = useState(false);
   const [versionsOpen, setVersionsOpen] = useState(false);
+  // The version the trash icon was pressed on, held until it is confirmed.
+  const [deleteTarget, setDeleteTarget] = useState<ResumeVersion | null>(null);
   const [tailorOpen, setTailorOpen] = useState(false);
   const [hardenOpen, setHardenOpen] = useState(false);
   // Something the screen needs to say that isn't an error state of the preview:
@@ -443,6 +453,19 @@ export default function ResumeScreen() {
     },
     [],
   );
+
+  // Which version this resume is *built from*. Resolved rather than read: the
+  // stored pointer is only a preference, and an absent or deleted one falls back
+  // to the original — see `masterVersion`. So this is null only for a resume with
+  // no history at all, i.e. one that has never compiled.
+  const master = masterVersion(versions, note ? resumeMasterVersionId(note) : null);
+  const setMasterVersion = useCallback((versionId: string) => {
+    const current = snapshot.current.stored;
+    if (!current) return;
+    snapshot.current.updateNote(current.id, {
+      pluginConfig: resumeConfigWithMasterVersion(current, versionId),
+    });
+  }, []);
 
   // Read by the debounced commit. Through refs so that changing version — or the
   // hook handing back a new callback — doesn't re-arm the timer and delay the
@@ -974,9 +997,17 @@ export default function ResumeScreen() {
     // What gets tailored is the folder's master where there is one, not
     // necessarily the document on screen — that is what "the others are tailored
     // from the master" means. Tailoring a note that *is* the master, or one in a
-    // folder without one, is unchanged: it starts from itself.
-    const master = note ? masterResumeFor(note, folders, notes) : null;
-    const base = master && master.id !== id ? master.body : source;
+    // folder without one, starts from itself.
+    //
+    // "Itself" means this resume's master *version*, not the text on screen: the
+    // point of marking one is that later tailorings keep starting from the
+    // superset rather than from whichever job-specific document was left open.
+    // The exception is when the master is the version being edited, where the
+    // stored snapshot trails the editor by a debounce and the live text is the
+    // same document, only fresher.
+    const masterNote = note ? masterResumeFor(note, folders, notes) : null;
+    const ownBase = !master || master.id === currentVersionId ? source : master.source;
+    const base = masterNote && masterNote.id !== id ? masterNote.body : ownBase;
     const baseHash = fingerprintSource(base);
 
     // The corpus is scoped to the folder for the same reason the master is: a
@@ -1055,7 +1086,7 @@ export default function ResumeScreen() {
       // alone: where the document came from, and what it was built on top of.
       provenance:
         [
-          master && master.id !== id ? tailoredFromMaster(master) : null,
+          masterNote && masterNote.id !== id ? tailoredFromMaster(masterNote) : null,
           found ? adaptedFrom(found) : null,
         ]
           .filter(Boolean)
@@ -1370,6 +1401,14 @@ export default function ResumeScreen() {
         <ResumeToolbar
           visible={(split || editing) && !sheetOpen}
           compilerLabel={engineLabel(engine)}
+          // `master` is resolved, so it is set for any resume with a history —
+          // but the version on screen is only *the* master when they are the
+          // same row. A resume that has never compiled has neither.
+          isMaster={master !== null && master.id === currentVersionId}
+          canSetMaster={currentVersionId !== null}
+          onSetMaster={() => {
+            if (currentVersionId) setMasterVersion(currentVersionId);
+          }}
           stale={stale}
           compiling={shown.state === 'running'}
           onRecompile={() => void runCompile(source)}
@@ -1459,13 +1498,39 @@ export default function ResumeScreen() {
           open={versionsOpen}
           versions={versions}
           currentVersionId={currentVersionId}
+          masterVersionId={master?.id ?? null}
           onClose={() => closeOverEditor(setVersionsOpen)}
           onRestore={restoreVersion}
-          onDelete={(version) => void removeVersion(version.id)}
+          onDelete={setDeleteTarget}
           // The history is worth reading on a phone — which versions exist, when
-          // they were made, which one is on screen. Restoring or deleting one is
-          // an edit, so those stay on web.
+          // they were made, which one is on screen. Restoring, deleting or
+          // marking a master is an edit, so those stay on web.
           readOnly={readOnly}
+        />
+
+        {/* Deleting a version is the one action in the history sheet that
+            can't be taken back. Restoring needs no confirmation because the
+            screen snapshots what it is about to replace first, so every restore
+            is itself an entry in the list — but a deleted snapshot is gone from
+            every device, and a history is exactly the thing you reach for after
+            a mistake. The dialog is the difference between a slip and a loss.
+
+            Rendered after the sheet so it layers above it: both are absolutely
+            positioned fills, and the later sibling wins. */}
+        <ConfirmDialog
+          open={deleteTarget !== null}
+          title="Delete version?"
+          message={
+            deleteTarget
+              ? `“${deleteTarget.label}” will be removed from this resume's history on every device. This can't be undone.`
+              : undefined
+          }
+          confirmLabel="Delete"
+          onConfirm={() => {
+            if (deleteTarget) void removeVersion(deleteTarget.id);
+            setDeleteTarget(null);
+          }}
+          onCancel={() => setDeleteTarget(null)}
         />
 
         <EnginePicker

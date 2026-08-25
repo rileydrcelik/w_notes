@@ -5,9 +5,11 @@
  * renderer — hence the `pluginType` branch on the note cards, which keeps a
  * resume out of `TextNoteCard` entirely.
  *
- * The note's `pluginConfig` carries one thing: which TeX engine to compile with,
- * and only when the author overrode the engine the source implies. Absent means
- * "decide from the source" — see `lib/latex/engine-choice.ts`.
+ * The note's `pluginConfig` carries three things, each with its own accessor
+ * pair below: which TeX engine to compile with (absent means "decide from the
+ * source" — see `lib/latex/engine-choice.ts`), which version of its history is
+ * on screen, and which version is its master. Every writer copies the keys it
+ * doesn't own through untouched.
  */
 import type { Note } from '@/data/notes';
 import type { EnginePreference } from '@/lib/latex/engine-choice';
@@ -116,6 +118,72 @@ export function resumeConfigWithVersion(
   }
   if (versionId === null) delete config.versionId;
   else config.versionId = versionId;
+  return JSON.stringify(config);
+}
+
+/**
+ * Which version of its history this resume is *built from* — the master.
+ *
+ * The one a tailoring starts from, whatever document happens to be on screen.
+ * Alongside `versionId` rather than replacing it, because the two answer
+ * different questions: `versionId` is "which snapshot am I editing right now"
+ * and moves constantly, while this one is a deliberate choice that moves only
+ * when someone makes it.
+ *
+ * On the note, not on the versions table, for the reason
+ * `lib/resume-master.ts` spells out at length for the folder-level pointer:
+ * one row holding one key means "exactly one master" is structural rather than
+ * an invariant anyone has to enforce, and two devices choosing different
+ * masters offline is then an ordinary last-writer-wins conflict on one column.
+ * A flag on each version row would be two writes that both succeed, leaving a
+ * resume with two masters and nothing in the sync protocol able to notice.
+ *
+ * `plugin_config` is in `_PRESERVE_IF_NULL` on the server
+ * (`backend/app/routers/sync.py`), so a build that predates this key cannot
+ * null it out by syncing.
+ *
+ * Absent means "no explicit choice" — see `masterVersion` in
+ * `lib/resume-versions.ts`, which falls back to the original.
+ */
+export function resumeMasterVersionId(
+  note: Pick<Note, 'pluginType' | 'pluginConfig'>,
+): string | null {
+  if (note.pluginType !== 'resume' || !note.pluginConfig) return null;
+  try {
+    const parsed = JSON.parse(note.pluginConfig) as { masterVersionId?: unknown };
+    if (typeof parsed?.masterVersionId === 'string' && parsed.masterVersionId) {
+      return parsed.masterVersionId;
+    }
+  } catch {
+    // A corrupt config reads as "no master chosen".
+  }
+  return null;
+}
+
+/**
+ * `pluginConfig` with the master version set (or cleared, for `null`).
+ *
+ * Every other key is copied through untouched — the engine and the current
+ * version both live in here, and a config object that drops what it didn't
+ * recognise is how a future field gets deleted by an old screen.
+ */
+export function resumeConfigWithMasterVersion(
+  note: Pick<Note, 'pluginConfig'>,
+  versionId: string | null,
+): string {
+  let config: Record<string, unknown> = {};
+  if (note.pluginConfig) {
+    try {
+      const parsed = JSON.parse(note.pluginConfig) as unknown;
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        config = parsed as Record<string, unknown>;
+      }
+    } catch {
+      // A corrupt config is replaced rather than propagated.
+    }
+  }
+  if (versionId === null) delete config.masterVersionId;
+  else config.masterVersionId = versionId;
   return JSON.stringify(config);
 }
 

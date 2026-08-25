@@ -23,6 +23,7 @@ import { Pressable, StyleSheet, useWindowDimensions, View } from 'react-native';
 import Animated, { FadeIn, FadeOut } from 'react-native-reanimated';
 
 import { GlassSurface } from '@/components/glass-surface';
+import { ACCENT } from '@/components/resume/accent';
 import { RecompileButton } from '@/components/resume/recompile-button';
 import { ThemedText } from '@/components/themed-text';
 import { hexToRgba, Spacing, TabBar } from '@/constants/theme';
@@ -45,6 +46,9 @@ export function ResumeToolbar({
   onRecompile,
   onChooseCompiler,
   compilerLabel,
+  isMaster,
+  canSetMaster,
+  onSetMaster,
   stale,
   compiling,
 }: {
@@ -65,6 +69,12 @@ export function ResumeToolbar({
   onChooseCompiler: () => void;
   /** The engine in force right now, e.g. "pdfLaTeX". */
   compilerLabel: string;
+  /** The version on screen is already the one tailoring builds from. */
+  isMaster: boolean;
+  /** False for a resume with no history yet — there is no version to mark. */
+  canSetMaster: boolean;
+  /** Make the version on screen the master. */
+  onSetMaster: () => void;
   /** The source has moved past the PDF on screen; recompiling would change it. */
   stale: boolean;
   /** A compile is running, so the button reports it rather than starting another. */
@@ -76,13 +86,13 @@ export function ResumeToolbar({
 
   if (!visible) return null;
 
-  // See `resume-toolbar.tsx` — six buttons, and every label at once needs ~900px.
-  const showCompilerLabel = width >= 445;
-  const showEntryLabels = width >= 780;
-  const showRecompileLabel = width >= 920;
-  // See `resume-toolbar.tsx`: below this the six icons alone overflow the bar,
+  // See `resume-toolbar.tsx` — seven buttons, and every label at once needs ~980px.
+  const showCompilerLabel = width >= 505;
+  const showEntryLabels = width >= 840;
+  const showRecompileLabel = width >= 980;
+  // See `resume-toolbar.tsx`: below this the seven icons alone overflow the bar,
   // and the dividers are the only part of its width that isn't a touch target.
-  const showDividers = width >= 360;
+  const showDividers = width >= 415;
 
   return (
     <Animated.View
@@ -208,6 +218,50 @@ export function ResumeToolbar({
             </ThemedText>
           )}
         </Pressable>
+
+        {showDividers && (
+          <View style={[styles.divider, { backgroundColor: hexToRgba(theme.textSecondary, 0.3) }]} />
+        )}
+
+        {/* The master: the version every tailoring is built from, whatever is on
+            screen. It sits last, past the compiler, because it is the only
+            button here that changes nothing about the document — it changes what
+            *later* work starts from.
+
+            Three states, and only one of them is a button. Already the master:
+            an accent star and no press, because the honest way to say "this
+            isn't a control right now" is to not be one (the same reasoning as
+            the read-only rows in `version-list.tsx`). Nothing to mark yet — a
+            resume that has never compiled and so has no history — dimmed, like
+            Edit on an empty document. Otherwise: press to make the version on
+            screen the master.
+
+            Icon-only at every width, unlike its neighbours. A seventh label
+            would push the all-labels width past 1000px, and the star is already
+            explained by the marker it puts on a row in the history sheet. */}
+        {/* The marker wears `styles.button` and nothing else, so it keeps the
+            exact box the Pressable had and the bar doesn't re-flow under the
+            cursor at the moment you press it. */}
+        {isMaster ? (
+          <View accessibilityLabel="This version is the master" style={styles.button}>
+            <Feather name="star" size={18} color={ACCENT} />
+          </View>
+        ) : (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Use this version as the master"
+            accessibilityState={{ disabled: !canSetMaster }}
+            onPress={() => {
+              if (canSetMaster) onSetMaster();
+            }}
+            style={({ pressed }) => [
+              styles.button,
+              pressed && canSetMaster && styles.pressed,
+              !canSetMaster && styles.disabled,
+            ]}>
+            <Feather name="star" size={18} color={theme.textSecondary} />
+          </Pressable>
+        )}
       </GlassSurface>
     </Animated.View>
   );
