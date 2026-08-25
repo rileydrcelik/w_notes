@@ -1,14 +1,15 @@
 import Feather from '@expo/vector-icons/Feather';
 import { useRouter } from 'expo-router';
 import { Pressable, StyleSheet, View } from 'react-native';
+import Animated from 'react-native-reanimated';
 
 import { FavoriteStar } from '@/components/favorite-star';
+import { FolderShape } from '@/components/notes/folder-shape';
 import { MatchSnippet } from '@/components/notes/match-snippet';
 import { SheetGlyph } from '@/components/notes/sheet-glyph';
 import { ACCENT as RESUME_ACCENT } from '@/components/resume/accent';
 import { ThemedText } from '@/components/themed-text';
-import { ThemedView } from '@/components/themed-view';
-import { Fonts, hexToRgba, Spacing } from '@/constants/theme';
+import { Fonts, Spacing } from '@/constants/theme';
 import type { Folder, Note } from '@/data/notes';
 import { sentryTarget } from '@/lib/sentry-note';
 import { githubTarget } from '@/lib/github-note';
@@ -18,9 +19,9 @@ import { useCardPreviewLines, useTileHeight } from '@/lib/grid';
 import { projectConfig } from '@/lib/project';
 import { useContextMenu } from '@/hooks/use-context-menu';
 import { useDoubleTap } from '@/hooks/use-double-tap';
-import { useTheme } from '@/hooks/use-theme';
 import { htmlToPlainText } from '@/lib/html-text';
 import { matchSnippet } from '@/lib/search';
+import { useSelectionSurface } from '@/hooks/use-selection-fade';
 import { useItemSelection } from '@/store/item-selection-store';
 import { useNotes } from '@/store/notes-store';
 
@@ -31,7 +32,6 @@ const FINANCE_ACCENT = '#2f9e6e';
 // The resume's is imported rather than repeated: that hex lives in
 // `components/resume/accent.ts` because copies of it drifted once already.
 /** Accent for a long-pressed/right-clicked (selected) card. */
-const SELECT_ACCENT = '#7a89b8';
 const PREVIEW_TEXT = { fontSize: 14, lineHeight: 20, fontWeight: '500' } as const;
 /**
  * Most lines of preview a card will show once the tile is tall enough for them.
@@ -52,7 +52,6 @@ function PlainFolderCard({ folder }: { folder: Folder }) {
   const router = useRouter();
   const { getNotesInFolder, toggleFolderFavorite } = useNotes();
   const { active, isSelected, toggle } = useItemSelection();
-  const theme = useTheme();
   const count = getNotesInFolder(folder.id).length;
   const selected = isSelected('folder', folder.id);
 
@@ -74,28 +73,19 @@ function PlainFolderCard({ folder }: { folder: Folder }) {
       style={({ pressed }) => [styles.cardWrapper, { height: tileHeight }, pressed && styles.pressed]}
       onPress={active ? onSelectToggle : openOrFavorite}
       onLongPress={onSelectToggle}>
-      <ThemedView style={styles.folder}>
-        {/* Tab: flat top that slopes down to the body at 45° on the right. */}
-        <View style={styles.folderTabRow}>
-          <View style={[styles.folderTabFlat, { backgroundColor: theme.backgroundElement }]} />
-          <View style={[styles.folderTabSlant, { borderBottomColor: theme.backgroundElement }]} />
-        </View>
-        <ThemedView
-          type="backgroundElement"
-          style={[styles.folderBody, selected && styles.selected]}>
-          <ThemedView type="backgroundElement" style={styles.cardFooter}>
-            <View style={styles.titleRow}>
-              <ThemedText type="smallBold" numberOfLines={1} style={styles.titleText}>
-                {folder.name}
-              </ThemedText>
-              {folder.favorite && <FavoriteStar size={13} />}
-            </View>
-            <ThemedText type="small" themeColor="textSecondary">
-              {count} {count === 1 ? 'note' : 'notes'}
+      <FolderShape selected={selected}>
+        <View style={styles.cardFooter}>
+          <View style={styles.titleRow}>
+            <ThemedText type="smallBold" numberOfLines={1} style={styles.titleText}>
+              {folder.name}
             </ThemedText>
-          </ThemedView>
-        </ThemedView>
-      </ThemedView>
+            {folder.favorite && <FavoriteStar size={13} />}
+          </View>
+          <ThemedText type="small" themeColor="textSecondary">
+            {count} {count === 1 ? 'note' : 'notes'}
+          </ThemedText>
+        </View>
+      </FolderShape>
     </Pressable>
   );
 }
@@ -105,7 +95,6 @@ function ProjectFolderCard({ folder }: { folder: Folder }) {
   const router = useRouter();
   const { toggleFolderFavorite } = useNotes();
   const { active, isSelected, toggle } = useItemSelection();
-  const theme = useTheme();
   const selected = isSelected('folder', folder.id);
   const config = projectConfig(folder);
 
@@ -123,27 +112,21 @@ function ProjectFolderCard({ folder }: { folder: Folder }) {
       style={({ pressed }) => [styles.cardWrapper, { height: tileHeight }, pressed && styles.pressed]}
       onPress={active ? onSelectToggle : openOrFavorite}
       onLongPress={onSelectToggle}>
-      <ThemedView style={styles.folder}>
-        {/* Same folder silhouette as a plain folder, marked as a task manager. */}
-        <View style={styles.folderTabRow}>
-          <View style={[styles.folderTabFlat, { backgroundColor: theme.backgroundElement }]} />
-          <View style={[styles.folderTabSlant, { borderBottomColor: theme.backgroundElement }]} />
-        </View>
-        <ThemedView type="backgroundElement" style={[styles.folderBody, selected && styles.selected]}>
-          <ThemedView type="backgroundElement" style={styles.cardFooter}>
-            <View style={styles.titleRow}>
-              <Feather name="columns" size={13} color={PROJECT_ACCENT} />
-              <ThemedText type="smallBold" numberOfLines={1} style={styles.titleText}>
-                {folder.name || 'Project'}
-              </ThemedText>
-              {folder.favorite && <FavoriteStar size={13} />}
-            </View>
-            <ThemedText type="small" themeColor="textSecondary" numberOfLines={1}>
-              Task manager{config?.repo ? ` · ${config.repo}` : ''}
+      {/* Same folder silhouette as a plain folder, marked as a task manager. */}
+      <FolderShape selected={selected}>
+        <View style={styles.cardFooter}>
+          <View style={styles.titleRow}>
+            <Feather name="columns" size={13} color={PROJECT_ACCENT} />
+            <ThemedText type="smallBold" numberOfLines={1} style={styles.titleText}>
+              {folder.name || 'Project'}
             </ThemedText>
-          </ThemedView>
-        </ThemedView>
-      </ThemedView>
+            {folder.favorite && <FavoriteStar size={13} />}
+          </View>
+          <ThemedText type="small" themeColor="textSecondary" numberOfLines={1}>
+            Task manager{config?.repo ? ` · ${config.repo}` : ''}
+          </ThemedText>
+        </View>
+      </FolderShape>
     </Pressable>
   );
 }
@@ -176,6 +159,7 @@ function FinanceNoteCard({ note }: { note: Note }) {
   const { toggleNoteFavorite } = useNotes();
   const { active, isSelected, toggle } = useItemSelection();
   const selected = isSelected('note', note.id);
+  const surface = useSelectionSurface(selected, 'backgroundElementAlt');
 
   const openOrFavorite = useDoubleTap(
     () => router.push({ pathname: '/finance/[id]', params: { id: note.id } }),
@@ -191,7 +175,7 @@ function FinanceNoteCard({ note }: { note: Note }) {
       style={({ pressed }) => [styles.cardWrapper, { height: tileHeight }, pressed && styles.pressed]}
       onPress={active ? onSelectToggle : openOrFavorite}
       onLongPress={onSelectToggle}>
-      <ThemedView type="backgroundElementAlt" style={[styles.card, selected && styles.selected]}>
+      <Animated.View style={[styles.card, surface]}>
         <View style={styles.titleRow}>
           <Feather name="grid" size={15} color={FINANCE_ACCENT} />
           <ThemedText type="smallBold" numberOfLines={1} style={styles.titleText}>
@@ -200,7 +184,7 @@ function FinanceNoteCard({ note }: { note: Note }) {
           {note.favorite && <FavoriteStar size={13} />}
         </View>
         <SheetGlyph />
-      </ThemedView>
+      </Animated.View>
     </Pressable>
   );
 }
@@ -210,6 +194,7 @@ function TextNoteCard({ note, query }: { note: Note; query?: string }) {
   const { toggleNoteFavorite } = useNotes();
   const { active, isSelected, toggle } = useItemSelection();
   const selected = isSelected('note', note.id);
+  const surface = useSelectionSurface(selected, 'backgroundElementAlt');
 
   // Tap opens the note; double-tap favorites it. In selection mode a click
   // instead toggles this card's selection.
@@ -243,7 +228,7 @@ function TextNoteCard({ note, query }: { note: Note; query?: string }) {
       style={({ pressed }) => [styles.cardWrapper, { height: tileHeight }, pressed && styles.pressed]}
       onPress={active ? onSelectToggle : openOrFavorite}
       onLongPress={onSelectToggle}>
-      <ThemedView type="backgroundElementAlt" style={[styles.card, selected && styles.selected]}>
+      <Animated.View style={[styles.card, surface]}>
         <View style={styles.titleRow}>
           <ThemedText type="smallBold" numberOfLines={1} style={styles.titleText}>
             {note.title}
@@ -262,7 +247,7 @@ function TextNoteCard({ note, query }: { note: Note; query?: string }) {
               {preview}
             </ThemedText>
           ) : null)}
-      </ThemedView>
+      </Animated.View>
     </Pressable>
   );
 }
@@ -273,6 +258,7 @@ function SentryNoteCard({ note }: { note: Note }) {
   const { toggleNoteFavorite } = useNotes();
   const { active, isSelected, toggle } = useItemSelection();
   const selected = isSelected('note', note.id);
+  const surface = useSelectionSurface(selected, 'backgroundElementAlt');
 
   const target = sentryTarget(note);
 
@@ -291,7 +277,7 @@ function SentryNoteCard({ note }: { note: Note }) {
       style={({ pressed }) => [styles.cardWrapper, { height: tileHeight }, pressed && styles.pressed]}
       onPress={active ? onSelectToggle : openOrFavorite}
       onLongPress={onSelectToggle}>
-      <ThemedView type="backgroundElementAlt" style={[styles.card, selected && styles.selected]}>
+      <Animated.View style={[styles.card, surface]}>
         <View style={styles.titleRow}>
           <Feather name="alert-triangle" size={15} color={SENTRY_ACCENT} />
           <ThemedText type="smallBold" numberOfLines={1} style={styles.titleText}>
@@ -302,7 +288,7 @@ function SentryNoteCard({ note }: { note: Note }) {
         <ThemedText type="small" themeColor="textSecondary" numberOfLines={1}>
           Live issues{target?.org ? ` · ${target.org}` : ''}
         </ThemedText>
-      </ThemedView>
+      </Animated.View>
     </Pressable>
   );
 }
@@ -313,6 +299,7 @@ function ResumeNoteCard({ note }: { note: Note }) {
   const { toggleNoteFavorite, folders } = useNotes();
   const { active, isSelected, toggle } = useItemSelection();
   const selected = isSelected('note', note.id);
+  const surface = useSelectionSurface(selected, 'backgroundElementAlt');
 
   // The body is LaTeX, so the preview is a plain source excerpt in monospace —
   // never htmlToPlainText, which would eat backslashes and braces as markup.
@@ -340,7 +327,7 @@ function ResumeNoteCard({ note }: { note: Note }) {
       style={({ pressed }) => [styles.cardWrapper, { height: tileHeight }, pressed && styles.pressed]}
       onPress={active ? onSelectToggle : openOrFavorite}
       onLongPress={onSelectToggle}>
-      <ThemedView type="backgroundElementAlt" style={[styles.card, selected && styles.selected]}>
+      <Animated.View style={[styles.card, surface]}>
         <View style={styles.titleRow}>
           {/* The master wears a different glyph rather than a badge beside the
               same one — it is the same kind of thing as every other resume, so
@@ -371,7 +358,7 @@ function ResumeNoteCard({ note }: { note: Note }) {
               LaTeX resume
             </ThemedText>
           ))}
-      </ThemedView>
+      </Animated.View>
     </Pressable>
   );
 }
@@ -382,6 +369,7 @@ function GithubNoteCard({ note }: { note: Note }) {
   const { toggleNoteFavorite } = useNotes();
   const { active, isSelected, toggle } = useItemSelection();
   const selected = isSelected('note', note.id);
+  const surface = useSelectionSurface(selected, 'backgroundElementAlt');
 
   const target = githubTarget(note);
 
@@ -400,7 +388,7 @@ function GithubNoteCard({ note }: { note: Note }) {
       style={({ pressed }) => [styles.cardWrapper, { height: tileHeight }, pressed && styles.pressed]}
       onPress={active ? onSelectToggle : openOrFavorite}
       onLongPress={onSelectToggle}>
-      <ThemedView type="backgroundElementAlt" style={[styles.card, selected && styles.selected]}>
+      <Animated.View style={[styles.card, surface]}>
         <View style={styles.titleRow}>
           <Feather name="github" size={15} color={GITHUB_ACCENT} />
           <ThemedText type="smallBold" numberOfLines={1} style={styles.titleText}>
@@ -411,7 +399,7 @@ function GithubNoteCard({ note }: { note: Note }) {
         <ThemedText type="small" themeColor="textSecondary" numberOfLines={1}>
           Issues{target?.repo ? ` · ${target.repo}` : ''}
         </ThemedText>
-      </ThemedView>
+      </Animated.View>
     </Pressable>
   );
 }
@@ -432,44 +420,6 @@ const styles = StyleSheet.create({
   card: {
     flex: 1,
     borderRadius: Spacing.three,
-    padding: Spacing.three,
-    gap: Spacing.two,
-    // Transparent border reserved so the selected state doesn't shift layout.
-    borderWidth: 2,
-    borderColor: 'transparent',
-  },
-  // Highlight for a selected (long-pressed/right-clicked) card.
-  selected: {
-    borderColor: SELECT_ACCENT,
-    backgroundColor: hexToRgba(SELECT_ACCENT, 0.12),
-  },
-  folder: {
-    flex: 1,
-    backgroundColor: 'transparent',
-  },
-  folderTabRow: {
-    flexDirection: 'row',
-    alignSelf: 'flex-start',
-    width: '55%',
-    height: Spacing.three,
-  },
-  folderTabFlat: {
-    flex: 1,
-    height: Spacing.three,
-    borderTopLeftRadius: Spacing.three,
-  },
-  // Right triangle: hypotenuse drops top-left → bottom-right at 45° (equal sides).
-  folderTabSlant: {
-    width: 0,
-    height: 0,
-    borderBottomWidth: Spacing.three,
-    borderRightWidth: Spacing.three,
-    borderRightColor: 'transparent',
-  },
-  folderBody: {
-    flex: 1,
-    borderRadius: Spacing.three,
-    borderTopLeftRadius: 0,
     padding: Spacing.three,
     gap: Spacing.two,
     // Transparent border reserved so the selected state doesn't shift layout.
