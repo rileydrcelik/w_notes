@@ -59,6 +59,59 @@ export const githubDone = (state?: string | null): boolean => state === 'closed'
 const ATTR_BLOCK_START = '<!-- w-notes:attributes -->';
 const ATTR_BLOCK_END = '<!-- /w-notes:attributes -->';
 
+/**
+ * Marker carrying the *local* issue id, written into every body this app opens.
+ *
+ * It exists to make opening an issue replayable. `POST /github/issues` has no
+ * idempotency key, and a transport failure is precisely the ambiguous case: the
+ * request may have reached GitHub and created the issue, with only the response
+ * lost. Retrying blind would open a second issue — and back-sync would then
+ * import the orphan, doubling it locally too. So a retry searches for this
+ * marker first and adopts the number it finds ({@link findGithubIssueByMarker}).
+ *
+ * It renders as nothing on GitHub, like the attributes block above it, and is
+ * stripped back out by {@link githubIssueDescription} so it can never leak into
+ * a local description on import.
+ */
+const ID_MARKER_PREFIX = '<!-- w-notes:issue:';
+const ID_MARKER_END = ' -->';
+
+/**
+ * Matches a *complete* marker and nothing else. Bounded deliberately: scanning
+ * for the prefix and then for the next ' -->' anywhere would let a stray,
+ * unterminated prefix (pasted by hand into a GitHub body, or truncated) swallow
+ * the real marker that follows it — and the id it returned would then match
+ * nothing, breaking the one path that exists to recover from a lost response.
+ * An unterminated prefix is simply not a marker.
+ */
+const ID_MARKER_RE = /<!-- w-notes:issue:([^<>\s]+) -->/g;
+
+/** The marker line for a local issue id. */
+function issueMarker(localId: string): string {
+  return `${ID_MARKER_PREFIX}${localId}${ID_MARKER_END}`;
+}
+
+/** The local issue id a body is marked with, or null when it carries no marker. */
+export function markedIssueId(body: string | null | undefined): string | null {
+  if (!body) return null;
+  const match = new RegExp(ID_MARKER_RE.source).exec(body);
+  return match?.[1] ?? null;
+}
+
+/** Remove every id marker from a body, leaving the user's own text. */
+function stripIssueMarker(body: string): string {
+  return body.replace(new RegExp(ID_MARKER_RE.source, 'g'), '').trim();
+}
+
+/** Append the id marker to a rendered body (no-op without an id). */
+function withMarker(body: string, localId?: string): string {
+  if (!localId) return body;
+  const marker = issueMarker(localId);
+  return body ? `${body}
+
+${marker}` : marker;
+}
+
 /** Sentinel standing in for an escaped table pipe while splitting a row (keeps
  *  the parser off regex lookbehind, which isn't guaranteed on all JS engines). */
 const PIPE_HOLD = '\u0000';
@@ -106,11 +159,16 @@ export function upsertAttrsBlock(
   body: string | null | undefined,
   attributes: AttrDef[],
   values: Record<string, IssueAttrValue>,
+  localId?: string,
 ): string {
-  const desc = stripAttrsBlock(body ?? '');
+  // Carry the id marker across the rewrite, so an edit can't strip the thing a
+  // retried push relies on. localId re-stamps a body that predates markers (or
+  // one a user deleted by hand on GitHub); an existing marker is otherwise kept.
+  const existing = markedIssueId(body);
+  const desc = stripIssueMarker(stripAttrsBlock(body ?? ''));
   const block = renderAttrsBlock(attributes, values);
-  if (!block) return desc;
-  return desc ? `${desc}\n\n${block}` : block;
+  const combined = block ? (desc ? `${desc}\n\n${block}` : block) : desc;
+  return withMarker(combined, localId ?? existing ?? undefined);
 }
 
 /** Parse the managed attributes block back into a name→value map (lowercased
@@ -150,10 +208,14 @@ export function githubIssueBody(
   description: string | undefined,
   attributes?: AttrDef[],
   values?: Record<string, IssueAttrValue>,
+  localId?: string,
 ): string | undefined {
   const desc = description?.trim() ?? '';
   const block = attributes && values ? renderAttrsBlock(attributes, values) : '';
-  const combined = block ? (desc ? `${desc}\n\n${block}` : block) : desc;
+  const combined = withMarker(
+    block ? (desc ? `${desc}\n\n${block}` : block) : desc,
+    localId,
+  );
   return combined || undefined;
 }
 
@@ -161,7 +223,7 @@ export function githubIssueBody(
  *  block removed. Used when importing an unmirrored issue so the block markup
  *  doesn't leak into the local description. */
 export function githubIssueDescription(body: string | null | undefined): string | undefined {
-  const desc = stripAttrsBlock(body ?? '');
+  const desc = stripIssueMarker(stripAttrsBlock(body ?? ''));
   return desc || undefined;
 }
 
@@ -321,11 +383,43 @@ export function openGithubIssueForIssue(
 ): Promise<number> {
   return createGithubIssue(repo, {
     title: issue.title,
-    body: githubIssueBody(issue.description, attributes, issue.attrs),
+    body: githubIssueBody(issue.description, attributes, issue.attrs, issue.id),
     labels: githubIssueLabels(typeName),
     assignees: githubIssueAssignees(attributes, issue.attrs),
   });
 }
+
+/**
+ * The number of the GitHub issue already opened for this local issue, or null
+ * when there isn't one. Used before *retrying* a create: a transport failure
+ * cannot distinguish 'never reached GitHub' from 'created, response lost', so a
+ * blind retry risks a duplicate. Matching on the id marker every create writes
+ * ({@link markedIssueId}) turns the retry into adopt-or-create.
+ *
+ * The listing is ordered by GitHub's `updated` sort, so a just-created issue is
+ * at the front — which is the case that matters, since the scan runs on the
+ * retry right after the ambiguous attempt. The page cap bounds the cost; an
+ * exhaustive walk of a busy repo on every retry would cost more than the
+ * duplicate it prevents, at the price of missing an entry that sat queued for
+ * days behind 300 newer updates.
+ */
+export async function findGithubIssueByMarker(
+  repo: string,
+  localId: string,
+): Promise<number | null> {
+  let cursor: string | undefined;
+  for (let page = 0; page < MARKER_SCAN_PAGES; page += 1) {
+    const { issues, next_cursor } = await listGithubIssues(repo, cursor);
+    const hit = issues.find((i) => markedIssueId(i.body) === localId);
+    if (hit) return hit.number;
+    if (!next_cursor) return null;
+    cursor = next_cursor;
+  }
+  return null;
+}
+
+/** Pages of issues a marker scan will walk before giving up (100 per page). */
+const MARKER_SCAN_PAGES = 3;
 
 /** One page of the repo's issues (state=all), for back-sync reconciliation. */
 export function listGithubIssues(repo: string, cursor?: string): Promise<GithubIssueList> {
@@ -396,6 +490,13 @@ export function setGithubIssueState(repo: string, number: number, done: boolean)
 export function githubSyncErrorMessage(e: unknown): string {
   if (e instanceof ApiError) {
     switch (e.status) {
+      case 400:
+        // The backend remaps GitHub's own 401/403 to 400 and names the missing
+        // permission in `detail` (github_issues._raise_for_github). Since tokens
+        // became per-caller, this is the common failure and it IS actionable by
+        // the person reading it — so show the server's sentence rather than the
+        // raw JSON the default branch used to print.
+        return e.detail?.trim() || 'GitHub rejected your token — check it in Settings → Plugins.';
       case 502:
         return "GitHub rejected the server's token for this repo. A fine-grained token needs Issues → Read and write for it (repo access alone isn't enough); a classic token needs the repo scope. Note the token lives on the server, not in the app.";
       case 503:
@@ -407,7 +508,7 @@ export function githubSyncErrorMessage(e: unknown): string {
       case 422:
         return 'GitHub rejected the request (bad repo format or invalid field).';
       default:
-        return e.body?.trim() || e.message;
+        return e.detail?.trim() || e.body?.trim() || e.message;
     }
   }
   return e instanceof Error ? e.message : 'Unknown error.';

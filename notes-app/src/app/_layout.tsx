@@ -12,6 +12,7 @@ import { Sentry } from '@/lib/sentry';
 import { AuthProvider } from '@/lib/auth/auth-context';
 import { AnimatedSplashOverlay } from '@/components/animated-icon';
 import { DbTabGuard } from '@/components/db-tab-guard';
+import { GithubOutboxRunner } from '@/components/github-outbox-runner';
 import { FloatingTabBar } from '@/components/floating-tab-bar';
 import { MarkdownHelp } from '@/components/markdown-help';
 import { SelectionBackdrop } from '@/components/selection-backdrop';
@@ -170,6 +171,10 @@ function AppShell() {
           {/* Web-only: covers extra browser tabs, which can't hold the SQLite
               database (OPFS is single-owner). Native renders nothing. */}
           <DbTabGuard />
+          {/* Replays GitHub issue pushes that were held back while offline.
+              Renders nothing; lives here so a push queued on a screen the user
+              has since left still goes out. */}
+          <GithubOutboxRunner />
         </CopaOptionsProvider>
         </ItemOptionsProvider>
         </ItemSelectionProvider>

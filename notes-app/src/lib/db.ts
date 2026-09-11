@@ -1639,6 +1639,22 @@ export const db = {
     return rows.map(toIssue);
   },
 
+  /**
+   * One issue by id, INCLUDING a trashed one, or null when no row exists at all.
+   *
+   * Deliberately unlike {@link getIssues}, which filters `deleted_at IS NULL` and
+   * so cannot tell a trashed issue from one that was never there. A held-back
+   * GitHub push has to tell those apart: a hard-deleted row (purged trash, or
+   * clearAllData) means drop the push, while a tombstoned one can still come
+   * back — restoreFromTrash revives the issues a type-delete cascade took down
+   * with it — so its push waits rather than being thrown away.
+   */
+  async getIssueById(id: string): Promise<(Issue & { deletedAt: number | null }) | null> {
+    const database = await getDb();
+    const row = await database.getFirstAsync<IssueRow>('SELECT * FROM issues WHERE id = ?', [id]);
+    return row ? { ...toIssue(row), deletedAt: row.deleted_at ?? null } : null;
+  },
+
   async createIssue({
     id,
     noteId,
@@ -2259,7 +2275,16 @@ export const db = {
              type_ids = COALESCE(excluded.type_ids, issues.type_ids),
              title = excluded.title,
              description = excluded.description, done = excluded.done,
-             attrs = excluded.attrs, gh_number = excluded.gh_number,
+             attrs = excluded.attrs,
+             -- Same COALESCE guard as type_ids, for a sharper reason: gh_number
+             -- is assigned once, by whichever device opened the GitHub issue,
+             -- and it is the ONLY key linking this row to its mirror. A peer
+             -- that has not pulled the stamp yet sends NULL, and "last writer
+             -- wins" would erase the link — after which back-sync sees an
+             -- unmatched GitHub issue and imports a duplicate, while the local
+             -- row is eligible to open a second one. A number, once known, is
+             -- never legitimately un-known.
+             gh_number = COALESCE(excluded.gh_number, issues.gh_number),
              position = excluded.position, created_at = excluded.created_at,
              updated_at = excluded.updated_at, deleted_at = excluded.deleted_at, dirty = 0
            WHERE excluded.updated_at >= issues.updated_at`,

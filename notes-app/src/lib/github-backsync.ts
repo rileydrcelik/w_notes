@@ -22,6 +22,7 @@ import {
   githubIssueDescription,
   githubToAttrs,
   listGithubIssues,
+  markedIssueId,
 } from '@/lib/issue-github';
 import type { AttrDef } from '@/lib/project';
 
@@ -36,7 +37,12 @@ export type BacksyncActions = {
   }) => string;
   updateIssue: (
     id: string,
-    patch: { title?: string; done?: boolean; attrs?: Record<string, IssueAttrValue> },
+    patch: {
+      title?: string;
+      done?: boolean;
+      attrs?: Record<string, IssueAttrValue>;
+      ghNumber?: number;
+    },
   ) => void;
   /** Return the "Unorganized" type-note id, creating it once if absent. */
   ensureUnorganizedType: () => string;
@@ -73,12 +79,22 @@ export async function reconcileProjectWithGithub(params: {
   /** Every issue filed under this project's type-notes. */
   issues: Issue[];
   actions: BacksyncActions;
+  /**
+   * Local issues whose own GitHub push is still held back (see
+   * {@link ../lib/github-outbox}). GitHub has not been told about these yet, so
+   * its copy is stale *by definition* and must not be treated as the truth: a
+   * pull that overwrote them would revert the offline edit the queue exists to
+   * deliver, and the flush would then dutifully push the reverted value.
+   */
+  pendingPush?: ReadonlySet<string>;
 }): Promise<BacksyncResult> {
-  const { repo, attributes, issues, actions } = params;
+  const { repo, attributes, issues, actions, pendingPush } = params;
 
   // Local mirrored issues, indexed by their GitHub number.
   const byNumber = new Map<number, Issue>();
   for (const i of issues) if (i.ghNumber != null) byNumber.set(i.ghNumber, i);
+  // Every local id in the project, for adopting an issue whose number was lost.
+  const localIds = new Set(issues.map((i) => i.id));
 
   // Pull all issues (state=all) up to the page cap.
   const ghIssues = [] as Awaited<ReturnType<typeof listGithubIssues>>['issues'];
@@ -102,6 +118,8 @@ export async function reconcileProjectWithGithub(params: {
     const done = githubDone(gh.state);
     const local = byNumber.get(gh.number);
     if (local) {
+      // Held-back local edit: skip until it has reached GitHub.
+      if (pendingPush?.has(local.id)) continue;
       const attrs = githubToAttrs(attributes, gh.body, gh.assignees, local.attrs);
       const patch: { title?: string; done?: boolean; attrs?: Record<string, IssueAttrValue> } = {};
       if (gh.title && gh.title !== local.title) patch.title = gh.title;
@@ -112,6 +130,16 @@ export async function reconcileProjectWithGithub(params: {
         updated += 1;
       }
     } else {
+      // An issue we opened whose number never made it onto the local row — the
+      // create succeeded but the response or the stamp was lost. The marker in
+      // the body names the local issue, so adopt it instead of importing a
+      // second copy of something the user already has.
+      const marked = markedIssueId(gh.body);
+      if (marked && localIds.has(marked)) {
+        actions.updateIssue(marked, { ghNumber: gh.number });
+        updated += 1;
+        continue;
+      }
       const noteId = actions.ensureUnorganizedType();
       const attrs = githubToAttrs(attributes, gh.body, gh.assignees, {});
       const newId = actions.createIssue({

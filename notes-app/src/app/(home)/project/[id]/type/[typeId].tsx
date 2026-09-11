@@ -34,13 +34,13 @@ import {
   githubIssueAssignees,
   githubIssueBody,
   githubIssueLabels,
-  githubSyncErrorMessage,
   mergeManagedLabels,
   setGithubIssueState,
   updateGithubIssue,
   upsertAttrsBlock,
 } from '@/lib/issue-github';
-import { Sentry } from '@/lib/sentry';
+import { pushOrQueue } from '@/lib/github-outbox';
+import { usePendingGithubIssues } from '@/hooks/use-github-outbox';
 import { useIssues } from '@/store/issues-store';
 import { useNotes } from '@/store/notes-store';
 import { useTaskSelection } from '@/store/task-selection-store';
@@ -110,6 +110,7 @@ function IssueCard({
   issue,
   attributes,
   otherTypes,
+  pendingPush,
   selectionActive,
   selected,
   onToggleSelect,
@@ -120,6 +121,8 @@ function IssueCard({
   attributes: AttrDef[];
   /** Titles of the issue's other types (besides this screen's) — shown as chips. */
   otherTypes: string[];
+  /** This issue's GitHub push is held back until the device is back online. */
+  pendingPush: boolean;
   selectionActive: boolean;
   selected: boolean;
   onToggleSelect: () => void;
@@ -155,7 +158,11 @@ function IssueCard({
         ref={contextMenuRef}
         accessibilityRole="button"
         accessibilityState={{ selected, checked: issue.done }}
-        accessibilityLabel={`${issue.title || 'Issue'}${issue.done ? ', done' : ''}`}
+        accessibilityLabel={
+          `${issue.title || 'Issue'}${issue.done ? ', done' : ''}${
+            pendingPush ? ', waiting to reach GitHub' : ''
+          }`
+        }
         onPress={selectionActive ? onToggleSelect : doubleTap}
         onLongPress={onToggleSelect}
         style={({ pressed }) => [styles.cardPressable, pressed && styles.pressed]}>
@@ -175,12 +182,19 @@ function IssueCard({
               style={[styles.cardTitle, issue.done && styles.doneTitle]}>
               {issue.title || 'Untitled issue'}
             </ThemedText>
-            {issue.ghNumber != null && (
+            {(issue.ghNumber != null || pendingPush) && (
               <View style={styles.ghBadge}>
+                {/* Full strength even when the mirror is only intended: this
+                    accent barely clears the 3:1 icon-contrast bar on the card
+                    background as it is, and fading it pushed it under. The
+                    absent number and the clock already say 'not opened yet'. */}
                 <Feather name="github" size={11} color={GITHUB_ACCENT} />
-                <ThemedText type="small" style={styles.ghBadgeText}>
-                  #{issue.ghNumber}
-                </ThemedText>
+                {issue.ghNumber != null && (
+                  <ThemedText type="small" style={styles.ghBadgeText}>
+                    #{issue.ghNumber}
+                  </ThemedText>
+                )}
+                {pendingPush && <Feather name="clock" size={10} color={GITHUB_ACCENT} />}
               </View>
             )}
           </View>
@@ -207,6 +221,17 @@ function IssueCard({
               numberOfLines={expanded ? undefined : 4}
               style={styles.description}>
               {issue.description}
+            </ThemedText>
+          )}
+
+          {/* Spelled out only once the card is open. Tiles are a fixed height
+              and already dense, so the collapsed card says this with the clock
+              on the badge and its accessibility label. */}
+          {pendingPush && expanded && (
+            <ThemedText type="small" themeColor="textSecondary" style={styles.description}>
+              {issue.ghNumber == null
+                ? 'Will open on GitHub when you are back online.'
+                : 'Changes will reach GitHub when you are back online.'}
             </ThemedText>
           )}
         </ThemedView>
@@ -265,6 +290,9 @@ export default function IssueTypeScreen() {
   const edgePadding = useGridEdgePadding();
   const { getFolder, getNote, getNotesInFolder } = useNotes();
   const { issues, getIssuesForNote, setDone, updateIssue, deleteIssue } = useIssues();
+  // Subscribed once for the whole list, not per card: a long list of cards each
+  // holding their own subscription would re-render all of them on every change.
+  const pendingGh = usePendingGithubIssues();
   const {
     active: selectionActive,
     selectedIds,
@@ -349,12 +377,19 @@ export default function IssueTypeScreen() {
     (issue: Issue, done: boolean) => {
       setDone(issue.id, done);
       if (repo && issue.ghNumber != null) {
-        setGithubIssueState(repo, issue.ghNumber, done).catch((e) => {
-          Sentry.captureException(e, { tags: { source: 'issue-github', op: 'state' } });
-          Alert.alert(
-            done ? 'Not closed on GitHub' : 'Not reopened on GitHub',
-            githubSyncErrorMessage(e),
-          );
+        const ghNumber = issue.ghNumber;
+        // Offline, the close/reopen is held and replayed later against the
+        // issue's state *at that point* — so ticking and un-ticking while
+        // disconnected settles on whatever the user actually left it at.
+        void pushOrQueue({
+          issueId: issue.id,
+          repo,
+          facets: { state: true },
+          push: () => setGithubIssueState(repo, ghNumber, done),
+        }).then((r) => {
+          if (r.status === 'failed') {
+            Alert.alert(done ? 'Not closed on GitHub' : 'Not reopened on GitHub', r.message);
+          }
         });
       }
     },
@@ -409,6 +444,7 @@ export default function IssueTypeScreen() {
   // issue's full (post-edit) type set.
   const pushAttrsToGithub = useCallback(
     async (
+      issueId: string,
       ghNumber: number,
       attrs: Record<string, IssueAttrValue>,
       typeTitles: string[],
@@ -421,25 +457,31 @@ export default function IssueTypeScreen() {
       if (!repo) return;
       const typeLabels = githubIssueLabels(typeTitles);
       const assignees = githubIssueAssignees(attributes, attrs);
-      try {
-        const { labels: current, body: currentBody } = await getGithubIssueDetail(repo, ghNumber);
-        const labels = mergeManagedLabels(current, typeLabels, attributes, typeNames);
-        // When Details were edited, rebuild the body from the new description +
-        // attributes; otherwise refresh only the attributes block, keeping the
-        // description GitHub already has.
-        const body = details
-          ? (githubIssueBody(details.description, attributes, attrs) ?? '')
-          : upsertAttrsBlock(currentBody, attributes, attrs);
-        await updateGithubIssue(repo, ghNumber, {
-          labels,
-          assignees,
-          body,
-          ...(details ? { title: details.title || 'Untitled issue' } : {}),
-        });
-      } catch (e) {
-        Sentry.captureException(e, { tags: { source: 'issue-github', op: 'attrs' } });
-        Alert.alert('Changes not synced to GitHub', githubSyncErrorMessage(e));
-      }
+      // `details` is the intent the replay needs: without it a later flush must
+      // keep GitHub's own body, since the description is never back-synced and
+      // pushing the local copy unasked would wipe an edit made over there.
+      const r = await pushOrQueue({
+        issueId,
+        repo,
+        facets: details ? { details: true } : {},
+        push: async () => {
+          const { labels: current, body: currentBody } = await getGithubIssueDetail(repo, ghNumber);
+          const labels = mergeManagedLabels(current, typeLabels, attributes, typeNames);
+          // When Details were edited, rebuild the body from the new description +
+          // attributes; otherwise refresh only the attributes block, keeping the
+          // description GitHub already has.
+          const body = details
+            ? (githubIssueBody(details.description, attributes, attrs, issueId) ?? '')
+            : upsertAttrsBlock(currentBody, attributes, attrs, issueId);
+          await updateGithubIssue(repo, ghNumber, {
+            labels,
+            assignees,
+            body,
+            ...(details ? { title: details.title || 'Untitled issue' } : {}),
+          });
+        },
+      });
+      if (r.status === 'failed') Alert.alert('Changes not synced to GitHub', r.message);
     },
     [repo, attributes, typeNames],
   );
@@ -474,7 +516,7 @@ export default function IssueTypeScreen() {
             single && (single.title !== issue.title || single.description !== issue.description)
               ? single
               : undefined;
-          void pushAttrsToGithub(issue.ghNumber, attrs, typeTitles, details);
+          void pushAttrsToGithub(issue.id, issue.ghNumber, attrs, typeTitles, details);
         }
       });
       setEditingIds(null);
@@ -530,6 +572,7 @@ export default function IssueTypeScreen() {
                     .filter((tid) => tid !== typeId)
                     .map((tid) => typeTitleById.get(tid))
                     .filter((t): t is string => !!t)}
+                  pendingPush={pendingGh.has(item.id)}
                   selectionActive={selectionActive}
                   selected={isSelected(item.id)}
                   onToggleSelect={() => toggle(item.id)}

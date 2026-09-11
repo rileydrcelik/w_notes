@@ -29,6 +29,7 @@ import { useTheme } from '@/hooks/use-theme';
 import type { Folder, Note } from '@/data/notes';
 import { reconcileProjectWithGithub } from '@/lib/github-backsync';
 import { githubSyncErrorMessage } from '@/lib/issue-github';
+import { pendingGithubIssueIds } from '@/lib/github-outbox';
 import {
   defaultAttributes,
   parseTypeConfig,
@@ -204,6 +205,10 @@ export default function ProjectScreen() {
           attributes,
           issues: projectIssues,
           actions: { createIssue, updateIssue, ensureUnorganizedType },
+          // Read fresh rather than captured: an issue queued offline may be
+          // flushing right now, and GitHub's copy of it is stale until that
+          // lands.
+          pendingPush: pendingGithubIssueIds(),
         });
       } catch (e) {
         Sentry.captureException(e, { tags: { source: 'github-backsync' } });

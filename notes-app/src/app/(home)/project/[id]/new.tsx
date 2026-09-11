@@ -29,9 +29,8 @@ import {
   githubIssueAssignees,
   githubIssueBody,
   githubIssueLabels,
-  githubSyncErrorMessage,
 } from '@/lib/issue-github';
-import { Sentry } from '@/lib/sentry';
+import { pushOrQueue } from '@/lib/github-outbox';
 import { useIssues } from '@/store/issues-store';
 import { useNotes } from '@/store/notes-store';
 import { noScrollbar } from '@/lib/scroll-style';
@@ -201,17 +200,26 @@ export default function NewIssueScreen() {
     // Every selected type rides along as a label, attributes render into the
     // issue body's managed block, and People values map to native GitHub assignees.
     if (activeConnected && config?.repo) {
-      createGithubIssue(config.repo, {
-        title: trimmedTitle,
-        body: githubIssueBody(trimmedDesc, attributes, values),
-        labels: githubIssueLabels(selectedTypeTitles),
-        assignees: githubIssueAssignees(attributes, values),
-      })
-        .then((number) => updateIssue(issueId, { ghNumber: number }))
-        .catch((e) => {
-          Sentry.captureException(e, { tags: { source: 'issue-github', op: 'create' } });
-          Alert.alert('Not opened on GitHub', githubSyncErrorMessage(e));
-        });
+      const repo = config.repo;
+      // With no connection this is held back rather than lost, and replayed on
+      // the next sync that gets through — so only a real refusal is worth an
+      // alert. The issue's pending badge speaks for the queued case.
+      void pushOrQueue({
+        issueId,
+        repo,
+        facets: { details: true },
+        push: async () => {
+          const number = await createGithubIssue(repo, {
+            title: trimmedTitle,
+            body: githubIssueBody(trimmedDesc, attributes, values, issueId),
+            labels: githubIssueLabels(selectedTypeTitles),
+            assignees: githubIssueAssignees(attributes, values),
+          });
+          updateIssue(issueId, { ghNumber: number });
+        },
+      }).then((r) => {
+        if (r.status === 'failed') Alert.alert('Not opened on GitHub', r.message);
+      });
     }
     router.back();
   };

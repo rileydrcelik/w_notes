@@ -19,6 +19,19 @@
  * `githubDone` maps GitHub's `state` the same way the real one does, and
  * `githubToAttrs` is the identity function, which matches the real one
  * whenever `attributes` is `[]` (true for every fixture here).
+ *
+ * `markedIssueId` below is a real parity implementation, not a stub — the
+ * adoption test exercises it directly (it's what tells an unmatched GitHub
+ * issue apart from a genuine import), so a fake that always returned some
+ * fixed id would make that test pass vacuously. It mirrors the real regex in
+ * `issue-github.ts` character for character; keep the two in step.
+ *
+ * The fixture id below is deliberately a realistic one (`rid()` in the issues
+ * store mints `issue-<ts>-<rand>`, so every real id contains an "s"). An
+ * earlier draft of that regex wrote its char class as `[^<>s]` instead of
+ * `[^<>\s]`, which excluded the letter rather than whitespace and so matched no
+ * real id at all — silently disabling adoption everywhere. An id without an
+ * "s" would hide a repeat of that.
  */
 // Above `vi.mock` deliberately: vitest hoists the mock factory above every
 // import at transform time, so these still resolve to the mock (see
@@ -39,6 +52,11 @@ vi.mock('@/lib/issue-github', () => ({
     existing: Record<string, unknown>,
   ) => existing,
   githubIssueDescription: (body?: string | null) => body ?? undefined,
+  markedIssueId: (body?: string | null) => {
+    if (!body) return null;
+    const match = /<!-- w-notes:issue:([^<>\s]+) -->/.exec(body);
+    return match?.[1] ?? null;
+  },
 }));
 
 function makeIssue(overrides: Partial<Issue> = {}): Issue {
@@ -131,6 +149,65 @@ describe('reconcileProjectWithGithub', () => {
     });
 
     expect(actions.updateIssue).toHaveBeenCalledWith('i2', { done: true });
+    expect(result.updated).toBe(1);
+  });
+
+  it('does not revert a locally-completed issue whose own push is still queued (pendingPush) — GitHub is stale by definition until the flush delivers it', async () => {
+    // Mirrors the "reverts a locally-completed issue" test above, but with the
+    // guard the outbox needs: without it, a pull would revert the very edit
+    // the queue exists to protect, and the flush would then dutifully push the
+    // reverted value straight back.
+    vi.mocked(listGithubIssues).mockResolvedValue({
+      issues: [{ number: 42, title: 'Fix the bug', state: 'open', body: null, labels: [], assignees: [] }],
+      next_cursor: null,
+    });
+    const local = makeIssue({ id: 'i1', ghNumber: 42, done: true });
+    const actions = makeActions();
+
+    const result = await reconcileProjectWithGithub({
+      repo: 'acme/widgets',
+      attributes: [],
+      issues: [local],
+      actions,
+      pendingPush: new Set(['i1']),
+    });
+
+    expect(actions.updateIssue).not.toHaveBeenCalled();
+    expect(result.updated).toBe(0);
+  });
+
+  it('adopts an unmatched GitHub issue whose body marks a known local issue, instead of importing a duplicate', async () => {
+    // The create succeeded but the local row never got its ghNumber stamped
+    // (response lost, or a crash between the POST and the bookkeeping). The id
+    // marker in the body is what lets the next pull recognize this GitHub
+    // issue as the local one it already has, rather than importing a second
+    // copy into Unorganized.
+    vi.mocked(listGithubIssues).mockResolvedValue({
+      issues: [
+        {
+          number: 99,
+          title: 'Fix the bug',
+          state: 'open',
+          body: '<!-- w-notes:issue:issue-1712-abc9 -->',
+          labels: [],
+          assignees: [],
+        },
+      ],
+      next_cursor: null,
+    });
+    const local = makeIssue({ id: 'issue-1712-abc9' }); // no ghNumber yet
+    const actions = makeActions();
+
+    const result = await reconcileProjectWithGithub({
+      repo: 'acme/widgets',
+      attributes: [],
+      issues: [local],
+      actions,
+    });
+
+    expect(actions.updateIssue).toHaveBeenCalledWith('issue-1712-abc9', { ghNumber: 99 });
+    expect(actions.createIssue).not.toHaveBeenCalled();
+    expect(result.imported).toBe(0);
     expect(result.updated).toBe(1);
   });
 });

@@ -22,11 +22,10 @@ import { ThemedText } from '@/components/themed-text';
 import { hexToRgba, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import {
-  githubSyncErrorMessage,
   openGithubIssueForIssue,
 } from '@/lib/issue-github';
+import { pushOrQueue, queueGithubPush } from '@/lib/github-outbox';
 import { parseTypeConfig, projectConfig, serializeTypeConfig, type AttrDef } from '@/lib/project';
-import { Sentry } from '@/lib/sentry';
 import { isResumeNote } from '@/lib/resume-note';
 import { folderConfigWithMaster, folderMasterResumeId } from '@/lib/resume-master';
 import { useIssues } from '@/store/issues-store';
@@ -266,17 +265,31 @@ function OptionsSheet({
   ) => {
     const pending = getIssuesForNote(typeId).filter((i) => i.ghNumber == null);
     if (pending.length === 0) return;
-    const results = await Promise.allSettled(
-      pending.map(async (issue) => {
-        const number = await openGithubIssueForIssue(repo, typeName, attributes, issue);
-        updateIssue(issue.id, { ghNumber: number });
-      }),
-    );
-    const failed = results.find((r) => r.status === 'rejected') as PromiseRejectedResult | undefined;
-    if (failed) {
-      Sentry.captureException(failed.reason, { tags: { source: 'issue-github', op: 'backfill' } });
-      Alert.alert('Some issues weren’t opened on GitHub', githubSyncErrorMessage(failed.reason));
+    // Sequential on purpose. This fired one request per issue in parallel,
+    // which with no connection meant a few hundred doomed requests at once and
+    // as many racing enqueues. Now the first held-back push ends the run and the
+    // remainder is queued without being attempted at all.
+    let failure: string | null = null;
+    for (let i = 0; i < pending.length; i += 1) {
+      const issue = pending[i];
+      const r = await pushOrQueue({
+        issueId: issue.id,
+        repo,
+        facets: { details: true },
+        push: async () => {
+          const number = await openGithubIssueForIssue(repo, typeName, attributes, issue);
+          updateIssue(issue.id, { ghNumber: number });
+        },
+      });
+      if (r.status === 'queued') {
+        for (const rest of pending.slice(i + 1)) {
+          await queueGithubPush(rest.id, repo, { details: true });
+        }
+        return;
+      }
+      if (r.status === 'failed' && !failure) failure = r.message;
     }
+    if (failure) Alert.alert('Some issues weren’t opened on GitHub', failure);
   };
 
   const options: Option[] = [

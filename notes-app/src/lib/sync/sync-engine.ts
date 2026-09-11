@@ -15,6 +15,7 @@ import { Sentry } from '@/lib/sentry';
 import { db, type SyncPayload } from '@/lib/db';
 import { isDbLockedError } from '@/lib/web-db-lock';
 import { AuthUnavailableError } from '@/lib/auth/token';
+import { clearGithubOutbox, reassignGithubOutbox } from '@/lib/github-outbox';
 import { ApiError, apiFetch, syncConfigured } from './api';
 import { getDeviceKey, rotateDeviceKey } from './device-key';
 import { downloadCopaFile, prepareLocalFiles, uploadCopaFile } from './files';
@@ -41,6 +42,44 @@ const listeners = new Set<() => void>();
 export function subscribeSynced(listener: () => void): () => void {
   listeners.add(listener);
   return () => listeners.delete(listener);
+}
+
+/**
+ * Listeners for "a sync pass completed against the server" — the app's own online
+ * signal. Separate from `listeners` above, which fire only when a pull actually
+ * changed something: a device that is merely reachable changes nothing, and that
+ * is precisely the case a held-back GitHub push is waiting for.
+ */
+const successListeners = new Set<() => void>();
+
+/**
+ * Subscribe to "a sync pass reached the server and came back ok"; returns an
+ * unsubscribe fn.
+ *
+ * This is the signal to retry anything that was held back while offline (see
+ * lib/github-outbox.ts). It is deliberately not a network-reachability check: a
+ * request to the GitHub proxy needs the same BASE_URL, the same bearer and the
+ * same CORS story as sync itself, so a completed pass proves exactly the right
+ * preconditions. "Wi-Fi is up" proves none of them — a captive portal reports a
+ * healthy connection and fails every request behind it.
+ *
+ * Only a `status: "ok"` pass emits. A `skipped` one must not: it covers the
+ * follower browser tab that cannot hold the database, and the account whose
+ * auth session has not been restored yet — neither can push anything.
+ */
+export function subscribeSyncSuccess(listener: () => void): () => void {
+  successListeners.add(listener);
+  return () => successListeners.delete(listener);
+}
+
+function emitSyncSuccess(): void {
+  for (const l of successListeners) {
+    try {
+      l();
+    } catch (e) {
+      Sentry.captureException(e, { tags: { source: 'sync-engine', op: 'emit-success' } });
+    }
+  }
 }
 
 function emitSynced(): void {
@@ -179,6 +218,9 @@ async function runSync(): Promise<SyncResult> {
     // Anything moving in either direction means this device is mid-conversation
     // with another one; keep the poll tight (see poll.ts).
     if (pushed > 0 || changed > 0 || downloaded > 0) markActivity();
+    // The pass reached the server and came back: tell anything that was waiting
+    // on connectivity to retry (see subscribeSyncSuccess).
+    emitSyncSuccess();
     return { status: 'ok', cursor, pushed, pulled: changed };
   } catch (e) {
     // 501 = endpoints not wired (shouldn't happen now, but stays graceful).
@@ -264,8 +306,16 @@ export async function onSignIn(uid: string): Promise<void> {
   if (prev !== uid) {
     if (!prev) {
       await db.markAllDirty(); // claim anonymous data into this account
+      // The held-back GitHub pushes are claimed along with the rows they name:
+      // same device, same issues, so they are still this user's intent. They do
+      // have to be re-stamped, or the flush would refuse them as another
+      // account's (see github-outbox).
+      await reassignGithubOutbox(uid);
     } else {
       await db.clearAllData(); // switched accounts without a clean sign-out
+      // Every queued push names a row that was just wiped, and would in any
+      // case bill the wrong account's GitHub token.
+      await clearGithubOutbox();
     }
     await db.setCursor(0);
     await db.setSetting(SYNCED_UID, uid);
@@ -282,6 +332,9 @@ export async function onSignIn(uid: string): Promise<void> {
 export async function onSignOut(): Promise<void> {
   await syncNow().catch(() => {});
   await db.clearAllData();
+  // The issues these pushes referred to are gone by the user's own request, so
+  // dropping them is not data loss — replaying them later would be.
+  await clearGithubOutbox();
   await db.setCursor(0);
   await db.setSetting(SYNCED_UID, '');
   await rotateDeviceKey();
