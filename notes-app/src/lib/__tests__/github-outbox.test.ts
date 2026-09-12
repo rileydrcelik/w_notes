@@ -559,3 +559,51 @@ describe('flushGithubOutbox — identity guard', () => {
     expect(issueGithub.createGithubIssue).not.toHaveBeenCalled();
   });
 });
+
+describe('reassignGithubOutbox', () => {
+  const stored = (identity: string) =>
+    JSON.stringify({
+      v: 1,
+      entries: [
+        {
+          issueId: 'i1',
+          repo: 'acme/widgets',
+          identity,
+          queuedAt: Date.now(),
+          attempts: 0,
+          seq: 1,
+          details: true,
+        },
+      ],
+    });
+
+  it('re-stamps an entry that is only on disk — the claim can beat hydration', async () => {
+    const { db, outbox } = await load();
+    vi.mocked(db.getSetting).mockResolvedValue(stored(''));
+
+    // Deliberately no loadGithubOutbox() first. onSignIn reaches the claim
+    // straight from the auth callback, which can run before the runner has
+    // hydrated — and that is precisely when this used to no-op, leaving the
+    // stored entry stamped '' for the flush to drop as another account's.
+    await outbox.reassignGithubOutbox('uid-1');
+
+    const written = vi.mocked(db.setSetting).mock.calls.at(-1)?.[1];
+    expect(JSON.parse(String(written)).entries[0].identity).toBe('uid-1');
+  });
+
+  it('keeps the rest of the entry intact while re-stamping it', async () => {
+    const { db, outbox } = await load();
+    vi.mocked(db.getSetting).mockResolvedValue(stored(''));
+
+    await outbox.reassignGithubOutbox('uid-1');
+
+    const entry = JSON.parse(String(vi.mocked(db.setSetting).mock.calls.at(-1)?.[1])).entries[0];
+    expect(entry).toMatchObject({ issueId: 'i1', repo: 'acme/widgets', details: true, seq: 1 });
+  });
+
+  it('writes nothing when the queue really is empty', async () => {
+    const { db, outbox } = await load(); // getSetting resolves null
+    await outbox.reassignGithubOutbox('uid-1');
+    expect(db.setSetting).not.toHaveBeenCalled();
+  });
+});

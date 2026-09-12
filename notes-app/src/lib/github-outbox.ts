@@ -254,8 +254,16 @@ export async function clearGithubOutbox(): Promise<void> {
  * Re-stamp entries onto a new identity — used when an anonymous device claims
  * its data into a freshly signed-in account. Same device, same rows, so the
  * queued pushes are still the ones this user asked for.
+ *
+ * Hydrates first, and deliberately outside `serialize`: the claim runs from
+ * `onSignIn`, which can reach this before the runner has loaded the queue, and
+ * an empty in-memory map then made this a no-op that left every stored entry
+ * stamped with the old identity — for the flush to refuse and drop as another
+ * account's. `hydrate` takes the same chain, so awaiting it inside the
+ * serialized block would deadlock rather than fix anything.
  */
 export async function reassignGithubOutbox(identity: string): Promise<void> {
+  await loadGithubOutbox();
   await serialize(async () => {
     if (entries.size === 0) return;
     for (const e of entries.values()) e.identity = identity;
