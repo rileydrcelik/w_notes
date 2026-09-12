@@ -31,6 +31,16 @@ const INSET = Math.SQRT1_2 * (BORDER / 2 - 0.5);
  * top and left of its flat; a bar rotated onto the hypotenuse strokes the slant;
  * and `topEdge` picks the top back up at the point the tab ends, carrying the
  * body's top-right corner with it.
+ *
+ * Both the tab and the body reserve that outline's width as a border up front,
+ * so picking it up doesn't move the shape. On native the reserved width is not
+ * free: a view with a border radius draws its background against the *inner*
+ * path, so a transparent border shows the page through it rather than the fill.
+ * Against the outside of the silhouette that's invisible — the card is a
+ * couple of pixels smaller and nothing else. Along the seam where the tab lands
+ * on the body two of those insets meet, and the folder splits in half. So the
+ * edges that face inwards aren't left transparent; they're painted with the
+ * fill, and the seam closes. Web paints under its borders and is unchanged.
  */
 export function FolderShape({ selected, children }: { selected: boolean; children: ReactNode }) {
   const theme = useTheme();
@@ -46,14 +56,27 @@ export function FolderShape({ selected, children }: { selected: boolean; childre
     borderBottomColor: selectionFill(progress, resting, wash),
   }));
   // The two edges of the tab's flat that are on the outside of the silhouette.
+  // Its other two face the slant and the body, so they take the fill instead.
   const flatEdges = useAnimatedStyle(() => {
     const color = selectionOutline(progress);
-    return { borderTopColor: color, borderLeftColor: color };
+    const seam = selectionFill(progress, resting, wash);
+    return {
+      borderTopColor: color,
+      borderLeftColor: color,
+      borderRightColor: seam,
+      borderBottomColor: seam,
+    };
   });
-  // Every edge of the body but its top, which the tab lands on.
+  // Every edge of the body but its top, which the tab lands on — that one is a
+  // seam, so it takes the fill.
   const bodyEdges = useAnimatedStyle(() => {
     const color = selectionOutline(progress);
-    return { borderLeftColor: color, borderRightColor: color, borderBottomColor: color };
+    return {
+      borderLeftColor: color,
+      borderRightColor: color,
+      borderBottomColor: color,
+      borderTopColor: selectionFill(progress, resting, wash),
+    };
   });
   // The pieces that are outline and nothing else, so they fade as a whole.
   const stroke = useAnimatedStyle(() => ({ opacity: progress.value }));
@@ -90,7 +113,8 @@ const styles = StyleSheet.create({
     flex: 1,
     height: '100%',
     borderTopLeftRadius: TAB,
-    // Transparent border reserved so the outline doesn't shift the shape.
+    // Border reserved so the outline doesn't shift the shape; every side's
+    // colour is set by the animated style above.
     borderWidth: BORDER,
     borderColor: 'transparent',
   },
@@ -121,7 +145,8 @@ const styles = StyleSheet.create({
     borderTopLeftRadius: 0,
     padding: Spacing.three,
     gap: Spacing.two,
-    // Transparent border reserved so the outline doesn't shift the shape.
+    // Border reserved so the outline doesn't shift the shape; every side's
+    // colour is set by the animated style above.
     borderWidth: BORDER,
     borderColor: 'transparent',
   },
@@ -140,7 +165,8 @@ const styles = StyleSheet.create({
     borderTopRightRadius: Spacing.three,
   },
   // Tab and body each mitre their left border where they meet, against a
-  // transparent neighbour; this fills the two small bites that leaves.
+  // neighbouring edge that carries the fill rather than the outline; this fills
+  // the two small bites that leaves.
   leftJoin: {
     position: 'absolute',
     left: 0,
