@@ -739,17 +739,19 @@ function CreateMenu({
     router.push({ pathname: '/folder/[id]', params: { id, created: '1' } });
   };
 
+  // Creating a block leaves you in the tab looking at it. The copa tab is the
+  // feed of blocks, so a new one is on screen the moment it exists, and pushing
+  // a screen over the top hid the very thing that was just made.
   const onCreateBlock = () => {
     onClose();
-    const id = createCopa();
-    router.push({ pathname: '/copa/[id]', params: { id } });
+    createCopa();
   };
 
   const onAddFile = async () => {
     onClose();
-    const id = await createFileCopa();
-    // A cancelled picker returns null — leave the user where they were.
-    if (id) router.push({ pathname: '/copa/[id]', params: { id } });
+    // A cancelled picker returns null and leaves no block behind, so there is
+    // nothing to report either way.
+    await createFileCopa();
   };
 
   // Plugin create-options can be hidden from Settings; note/folder are always on.
@@ -896,6 +898,7 @@ function CreateButton({
   const router = useRouter();
   const pathname = usePathname();
   const { createNote, getNote } = useNotes();
+  const { createCopa } = useCopa();
   const buttonRef = useRef<View | null>(null);
   const scale = useSharedValue(1);
   const animatedStyle = useAnimatedStyle(() => ({ transform: [{ scale: scale.value }] }));
@@ -930,9 +933,12 @@ function CreateButton({
     // moment focus is lost would otherwise open a sheet instead of registering
     // as the end of an edit.
     if (leaf && leaf.run()) return;
-    // On the copa tab a tap opens the anchored menu; elsewhere it creates a note.
+    // A tap creates this tab's primary thing, the same as everywhere else: a
+    // note in the notes tab, a text block here. The menu belongs to the
+    // long-press — answering the tap as well made adding a block the one create
+    // in the app whose common case cost two taps.
     if (onCopa) {
-      openAnchoredMenu();
+      createCopa();
       return;
     }
     const id = createNote(currentFolderId(pathname, getNote));
@@ -942,9 +948,9 @@ function CreateButton({
   const handleLongPress = () => {
     // The button is a "done" key while the keyboard is up — never a menu. In
     // edit mode it still opens one: the pencil takes the tap, so the long-press
-    // is all that's left of "create" on a note or resume. Copa drives the menu
-    // from a tap, so long-press there opens the same anchored menu; elsewhere
-    // it's the note/folder sheet.
+    // is all that's left of "create" on a note or resume. On copa it is now the
+    // only way to the menu, the tap having been given to the common case; the
+    // menu is where "Add file" lives. Elsewhere it's the note/folder sheet.
     if (keyboardVisible) return;
     dismissActiveEditor();
     Keyboard.dismiss();
