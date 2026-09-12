@@ -2492,6 +2492,31 @@ export const db = {
   },
 
   /**
+   * Every device-local setting whose key starts with `prefix`.
+   *
+   * For collections that want a row each rather than one JSON blob under one
+   * key. A blob has to be rewritten whole on every change, and one unparseable
+   * byte takes the whole collection with it — survivable when the entries are
+   * pointers to data held elsewhere, not when an entry *is* the data.
+   *
+   * `prefix` is interpolated into a LIKE pattern, so it must not contain `%`
+   * or `_`. Callers pass a fixed literal; nothing here takes one from input.
+   */
+  async listSettings(prefix: string): Promise<{ key: string; value: string }[]> {
+    const database = await getDb();
+    return database.getAllAsync<{ key: string; value: string }>(
+      'SELECT key, value FROM settings WHERE key LIKE ? ORDER BY key',
+      [`${prefix}%`],
+    );
+  },
+
+  /** Remove a single key from the device-local settings table. */
+  async deleteSetting(key: string): Promise<void> {
+    const database = await getDb();
+    await database.runAsync('DELETE FROM settings WHERE key = ?', [key]);
+  },
+
+  /**
    * Read an account-scoped preference (null if unset or soft-deleted).
    *
    * The `deleted_at IS NULL` filter is what makes "unset" survive a round trip:
@@ -2626,6 +2651,7 @@ const WRITE_METHODS = [
   'clearAllData',
   'setCursor',
   'setSetting',
+  'deleteSetting',
   'setUserSetting',
   'seedDevContent',
   'clearDevContent',

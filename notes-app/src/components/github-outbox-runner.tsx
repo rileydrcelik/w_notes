@@ -1,5 +1,6 @@
 /**
- * Drives the GitHub outbox: replays pushes that were held back while offline.
+ * Drives both GitHub queues: replays pushes that were held back while offline,
+ * and files issues composed on a plugin note while there was no connection.
  *
  * Renders nothing. It is mounted in the app shell rather than on a screen
  * because that is the whole point — a push queued on the New issue screen has to
@@ -17,6 +18,7 @@ import { useCallback, useEffect, useRef } from 'react';
 
 import { effectiveTypeIds, type Issue, type Note } from '@/data/notes';
 import { flushGithubOutbox, loadGithubOutbox, type OutboxDeps } from '@/lib/github-outbox';
+import { flushGithubDrafts, loadGithubDrafts } from '@/lib/github-issue-drafts';
 import { ISSUE_TYPE_PLUGIN, parseTypeConfig, projectConfig } from '@/lib/project';
 import { Sentry } from '@/lib/sentry';
 import { subscribeSyncSuccess } from '@/lib/sync/sync-engine';
@@ -88,6 +90,7 @@ export function GithubOutboxRunner() {
 
   useEffect(() => {
     void loadGithubOutbox();
+    void loadGithubDrafts();
   }, []);
 
   useEffect(
@@ -97,6 +100,20 @@ export function GithubOutboxRunner() {
         if (!deps) return;
         void flushGithubOutbox(deps).catch((e) => {
           Sentry.captureException(e, { tags: { source: 'github-outbox', op: 'runner' } });
+        });
+      }),
+    [],
+  );
+
+  // Its own subscription rather than a branch inside the one above: the two
+  // queues fail independently, and a refusal replaying an intent must not stop
+  // a composed issue going out (or the reverse). Neither needs the stores, so
+  // this one takes no deps.
+  useEffect(
+    () =>
+      subscribeSyncSuccess(() => {
+        void flushGithubDrafts().catch((e) => {
+          Sentry.captureException(e, { tags: { source: 'github-drafts', op: 'runner' } });
         });
       }),
     [],

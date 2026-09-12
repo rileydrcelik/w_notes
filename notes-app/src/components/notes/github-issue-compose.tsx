@@ -1,8 +1,21 @@
 /**
  * Bottom sheet to create a new GitHub issue in the note's repo. Opened from the
- * issues screen header. Loads the repo's labels / assignees / milestones (once
- * per open) for the pickers, POSTs to `/github/issues`, and hands the created
- * issue back so the screen can prepend it to the list.
+ * issues screen header. Loads the repo's labels / assignees / milestones for the
+ * pickers, POSTs to `/github/issues`, and hands the created issue back so the
+ * screen can prepend it to the list.
+ *
+ * One instance serves every GitHub note: it is mounted once, inside the tab bar,
+ * for the life of the app, and `open` only gates whether it renders. So nothing
+ * here may assume a mount per open. Both the form and the picker options are
+ * keyed to the repo they were loaded for and rebuilt when it changes — before,
+ * a draft typed against one repo was still sitting in the form when the sheet
+ * was opened on another, and the pickers only ever fetched the first repo's
+ * labels, offering names that don't exist in the one being filed into.
+ *
+ * A create that fails on the network is queued rather than lost — see
+ * `lib/github-issue-drafts.ts`. Reopening the sheet on a repo with a queued
+ * draft resumes that draft, so an offline correction edits the pending issue
+ * instead of filing a second one.
  */
 import Feather from '@expo/vector-icons/Feather';
 import { useCallback, useEffect, useState } from 'react';
@@ -25,12 +38,28 @@ import { hexToRgba, Spacing } from '@/constants/theme';
 import { useKeyboardPadding } from '@/hooks/use-keyboard-inset';
 import { useTheme } from '@/hooks/use-theme';
 import { apiFetch } from '@/lib/sync/api';
+import { isRetryable } from '@/lib/github-outbox';
+import {
+  loadGithubDrafts,
+  pendingDraftForRepo,
+  saveGithubDraft,
+} from '@/lib/github-issue-drafts';
+import { githubIssueBody } from '@/lib/issue-github';
 import type { CreatedIssue, IssueLabel as Label } from '@/lib/github-note';
 import { noScrollbar } from '@/lib/scroll-style';
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
 const ACCENT = '#8250df';
+
+/**
+ * Id for a composed issue, doubling as the body marker that makes a replay
+ * adopt rather than duplicate. Only has to be unique on this device, since it
+ * is matched against this repo's own issues.
+ */
+function newDraftId(): string {
+  return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+}
 
 type SimpleUser = { login: string; avatar_url?: string | null };
 type Milestone = { number: number; title: string; state?: string | null };
@@ -100,7 +129,13 @@ export function GithubIssueCompose({
   const [selLabels, setSelLabels] = useState<string[]>([]);
   const [selAssignees, setSelAssignees] = useState<string[]>([]);
   const [selMilestone, setSelMilestone] = useState<number | null>(null);
-  const [optionsLoaded, setOptionsLoaded] = useState(false);
+  // The repo the form's contents and the pickers' options were built for. The
+  // single app-lifetime instance means this is the only thing that can say
+  // whether what's on screen belongs to the repo being filed into.
+  const [loadedFor, setLoadedFor] = useState<string | null>(null);
+  // Minted before the first attempt, because the body marker that makes a retry
+  // adopt rather than duplicate has to be in the body the first attempt sends.
+  const [draftId, setDraftId] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -111,14 +146,36 @@ export function GithubIssueCompose({
     setSelAssignees([]);
     setSelMilestone(null);
     setError(null);
+    setDraftId(null);
   }, []);
 
-  // Load the pickers' options the first time the sheet opens (per mount). Failure
-  // is non-fatal — the user can still create an issue with just a title/body.
+  // Build the sheet for whichever repo it was opened on. Keyed by repo rather
+  // than by open/close: the instance outlives every open, so "already loaded"
+  // has to mean "loaded for this repo" or the pickers keep offering the first
+  // repo's labels for ever. Option failures are non-fatal — a title and body
+  // are enough to file an issue.
   useEffect(() => {
-    if (!open || optionsLoaded) return;
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- run-once guard
-    setOptionsLoaded(true);
+    if (!open || loadedFor === repo) return;
+    /* eslint-disable-next-line react-hooks/set-state-in-effect -- per-repo guard */
+    setLoadedFor(repo);
+    setLabels([]);
+    setAssignees([]);
+    setMilestones([]);
+    reset();
+
+    // Resume the queued draft for this repo, if there is one, so editing an
+    // unsent issue updates it rather than queueing a second.
+    void loadGithubDrafts().then(() => {
+      const draft = pendingDraftForRepo(repo);
+      if (!draft) return;
+      setDraftId(draft.id);
+      setTitle(draft.title);
+      setBody(draft.body);
+      setSelLabels(draft.labels);
+      setSelAssignees(draft.assignees);
+      setSelMilestone(draft.milestone);
+    });
+
     const q = `repo=${encodeURIComponent(repo)}`;
     void apiFetch<{ labels: Label[] }>(`/github/labels?${q}`)
       .then((r) => setLabels(r.labels ?? []))
@@ -129,7 +186,7 @@ export function GithubIssueCompose({
     void apiFetch<{ milestones: Milestone[] }>(`/github/milestones?${q}`)
       .then((r) => setMilestones(r.milestones ?? []))
       .catch(() => {});
-  }, [open, optionsLoaded, repo]);
+  }, [open, loadedFor, repo, reset]);
 
   const toggleIn = (arr: string[], v: string) =>
     arr.includes(v) ? arr.filter((x) => x !== v) : [...arr, v];
@@ -140,11 +197,28 @@ export function GithubIssueCompose({
     if (!canSubmit) return;
     setSubmitting(true);
     setError(null);
+
+    // Mint the id now, not on retry. The marker it writes into the body is the
+    // only way a replay can tell 'never reached GitHub' from 'created, response
+    // lost', and it can only adopt an issue the *first* attempt marked.
+    const id = draftId ?? newDraftId();
+    if (!draftId) setDraftId(id);
+
+    const input = {
+      repo,
+      title: title.trim(),
+      body: body.trim(),
+      labels: selLabels,
+      assignees: selAssignees,
+      milestone: selMilestone,
+    };
+    const marked = githubIssueBody(input.body, undefined, undefined, id);
+
     apiFetch<CreatedIssue>(`/github/issues?repo=${encodeURIComponent(repo)}`, {
       method: 'POST',
       body: {
-        title: title.trim(),
-        ...(body.trim() ? { body: body.trim() } : {}),
+        title: input.title,
+        ...(marked ? { body: marked } : {}),
         ...(selLabels.length ? { labels: selLabels } : {}),
         ...(selAssignees.length ? { assignees: selAssignees } : {}),
         ...(selMilestone != null ? { milestone: selMilestone } : {}),
@@ -155,7 +229,19 @@ export function GithubIssueCompose({
         reset();
         onClose();
       })
-      .catch(() => setError('Could not create the issue. Check the repo and token permissions.'))
+      .catch(async (e: unknown) => {
+        // A refusal is the user's to fix — a bad token, a repo they can't write
+        // to — so it stays on screen with the text still in the form. Anything
+        // else is the connection, and the issue is held until a sync pass gets
+        // through rather than discarded with the sheet.
+        if (!isRetryable(e)) {
+          setError('Could not create the issue. Check the repo and token permissions.');
+          return;
+        }
+        await saveGithubDraft(id, input);
+        reset();
+        onClose();
+      })
       .finally(() => setSubmitting(false));
   };
 

@@ -352,10 +352,22 @@ export function githubToAttrs(
   return next;
 }
 
-/** Open a GitHub issue for a connected type; resolves to its issue number. */
+/**
+ * Open a GitHub issue; resolves to its issue number.
+ *
+ * `milestone` is carried for the compose sheet on a GitHub plugin note, which
+ * offers one — a connected type never sets it. It stays optional so the two
+ * callers share one create path rather than drifting apart.
+ */
 export async function createGithubIssue(
   repo: string,
-  input: { title: string; body?: string; labels?: string[]; assignees?: string[] },
+  input: {
+    title: string;
+    body?: string;
+    labels?: string[];
+    assignees?: string[];
+    milestone?: number | null;
+  },
 ): Promise<number> {
   const issue = await apiFetch<CreatedIssue>(`/github/issues?repo=${encodeURIComponent(repo)}`, {
     method: 'POST',
@@ -364,6 +376,7 @@ export async function createGithubIssue(
       ...(input.body ? { body: input.body } : {}),
       ...(input.labels?.length ? { labels: input.labels } : {}),
       ...(input.assignees?.length ? { assignees: input.assignees } : {}),
+      ...(input.milestone != null ? { milestone: input.milestone } : {}),
     },
   });
   return issue.number;

@@ -23,6 +23,7 @@ import { hexToRgba, Spacing } from '@/constants/theme';
 import { trailingSpacers, useGridColumns, useGridColumnWidth, useGridEdgePadding, useTileHeight } from '@/lib/grid';
 import { useContextMenu } from '@/hooks/use-context-menu';
 import { useScrollToTop } from '@/hooks/use-scroll-to-top';
+import { useGithubDrafts } from '@/hooks/use-github-outbox';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
 import { useTheme } from '@/hooks/use-theme';
 import { apiErrorMessage, apiFetch } from '@/lib/sync/api';
@@ -307,6 +308,22 @@ function IssueCard({
 }
 
 /** Segmented open / closed / all filter shown in the list header. */
+/**
+ * What the header says about issues composed here that haven't been filed.
+ *
+ * The clock case resolves itself — the next sync pass that gets through sends
+ * them. One that is held needs the user, so it says so rather than implying
+ * more waiting will help.
+ */
+function waitingLabel(waiting: readonly { failure?: string }[]): string {
+  const held = waiting.filter((d) => d.failure).length;
+  const queued = waiting.length - held;
+  const parts: string[] = [];
+  if (queued > 0) parts.push(`${queued} waiting to reach GitHub`);
+  if (held > 0) parts.push(`${held} couldn't be sent`);
+  return parts.join(' · ');
+}
+
 function StateFilterBar({ value, onChange }: { value: StateFilter; onChange: (v: StateFilter) => void }) {
   const theme = useTheme();
   const options: StateFilter[] = ['open', 'closed', 'all'];
@@ -384,6 +401,11 @@ export default function GithubIssuesScreen() {
     // short or pad it into an empty extra row.
   }, [issues, columns]);
   const { scrollProps, scrolled, scrollToTop } = useScrollToTop<FlatList<GridRow>>();
+  // Issues composed here that never got out. They can't join the list below —
+  // every row, its key and the whole selection are a real GitHub issue number,
+  // and these have none — so the header says how many are waiting instead.
+  const drafts = useGithubDrafts();
+  const waiting = drafts.filter((d) => d.repo === target?.repo);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -594,6 +616,18 @@ export default function GithubIssuesScreen() {
                     {target.repo} · issues
                   </ThemedText>
                   <StateFilterBar value={filter} onChange={setFilter} />
+                  {waiting.length > 0 && (
+                    <View style={styles.waitingRow}>
+                      <Feather
+                        name={waiting.some((d) => d.failure) ? 'alert-circle' : 'clock'}
+                        size={11}
+                        color={ACCENT}
+                      />
+                      <ThemedText type="small" themeColor="textSecondary">
+                        {waitingLabel(waiting)}
+                      </ThemedText>
+                    </View>
+                  )}
                 </View>
               }
               refreshControl={
@@ -652,6 +686,12 @@ const styles = StyleSheet.create({
   // with flexGrow:0 so a card can't stretch into a partial row's empty space.
   row: { gap: Spacing.three, alignItems: 'flex-start' },
   cardCell: { flexGrow: 0, flexShrink: 1, minWidth: 0, overflow: 'hidden' },
+  waitingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.one,
+    marginTop: Spacing.two,
+  },
   header: {
     gap: Spacing.one,
     marginBottom: Spacing.three,

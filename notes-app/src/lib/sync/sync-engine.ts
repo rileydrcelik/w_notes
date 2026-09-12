@@ -16,6 +16,10 @@ import { db, type SyncPayload } from '@/lib/db';
 import { isDbLockedError } from '@/lib/web-db-lock';
 import { AuthUnavailableError } from '@/lib/auth/token';
 import { clearGithubOutbox, reassignGithubOutbox } from '@/lib/github-outbox';
+import {
+  holdGithubDraftsForAccountChange,
+  reassignGithubDrafts,
+} from '@/lib/github-issue-drafts';
 import { ApiError, apiFetch, syncConfigured } from './api';
 import { getDeviceKey, rotateDeviceKey } from './device-key';
 import { downloadCopaFile, prepareLocalFiles, uploadCopaFile } from './files';
@@ -311,11 +315,20 @@ export async function onSignIn(uid: string): Promise<void> {
       // have to be re-stamped, or the flush would refuse them as another
       // account's (see github-outbox).
       await reassignGithubOutbox(uid);
+      // Composed issues that never got out are this user's own words, typed on
+      // this device; the claim makes them theirs under the new account too.
+      await reassignGithubDrafts(uid);
     } else {
       await db.clearAllData(); // switched accounts without a clean sign-out
       // Every queued push names a row that was just wiped, and would in any
       // case bill the wrong account's GitHub token.
       await clearGithubOutbox();
+      // Not cleared. A queued push names a row that was just wiped, but a
+      // composed issue *is* the text someone typed, and deleting it as a side
+      // effect of switching accounts is the loss this queue exists to stop. It
+      // can't be filed as whoever signs in next either — GitHub calls bill the
+      // caller's own token — so it is held, marked, and left recoverable.
+      await holdGithubDraftsForAccountChange();
     }
     await db.setCursor(0);
     await db.setSetting(SYNCED_UID, uid);
@@ -335,6 +348,9 @@ export async function onSignOut(): Promise<void> {
   // The issues these pushes referred to are gone by the user's own request, so
   // dropping them is not data loss — replaying them later would be.
   await clearGithubOutbox();
+  // Composed issues are not pointers, so the same reasoning doesn't reach them
+  // (see the account switch above). Held rather than dropped.
+  await holdGithubDraftsForAccountChange();
   await db.setCursor(0);
   await db.setSetting(SYNCED_UID, '');
   await rotateDeviceKey();
