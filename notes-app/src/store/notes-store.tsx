@@ -11,7 +11,8 @@ import { AppState } from 'react-native';
 
 import { Sentry } from '@/lib/sentry';
 import { db, type TrashEntry } from '@/lib/db';
-import { canMoveFolder, folderSubtreeIds } from '@/lib/folder-tree';
+import { canMoveFolder, folderSubtreeIds, subtreeNoteCounts } from '@/lib/folder-tree';
+import { isListableNote } from '@/lib/item-route';
 import { isDbLockedError } from '@/lib/web-db-lock';
 import { syncConfigured } from '@/lib/sync/api';
 import { requestSync, subscribeSynced, syncNow } from '@/lib/sync/sync-engine';
@@ -108,6 +109,14 @@ type NotesContextValue = {
   getFolder: (id: string) => Folder | undefined;
   getNote: (id: string) => Note | undefined;
   getNotesInFolder: (folderId: string) => Note[];
+  /**
+   * How many notes a folder holds, counting every folder nested inside it.
+   *
+   * What a folder card reports. Deliberately not what `getNotesInFolder`
+   * returns: listing a folder shows its direct children, but describing one
+   * has to describe the whole thing, or a folder of folders reads as empty.
+   */
+  getNoteCountInTree: (folderId: string) => number;
   getRootNotes: () => Note[];
   /** Folders that live on the home screen (no parent). */
   getRootFolders: () => Folder[];
@@ -530,6 +539,22 @@ export function NotesProvider({ children }: { children: ReactNode }) {
     [folders],
   );
 
+  /**
+   * Every folder's total, recomputed only when the tree or the notes change.
+   *
+   * Held here rather than worked out inside each card: the home grid renders
+   * one card per folder and each would otherwise walk its own subtree,
+   * re-treading the same branches once per ancestor. One pass answers for all.
+   *
+   * Issue types are filtered out first — they are a project's scaffolding, not
+   * notes someone filed — so a plain folder containing a project does not
+   * count that project's types among its own notes.
+   */
+  const noteCountsInTree = useMemo(
+    () => subtreeNoteCounts(folders, notes.filter(isListableNote)),
+    [folders, notes],
+  );
+
   const value = useMemo<NotesContextValue>(
     () => ({
       folders,
@@ -537,6 +562,7 @@ export function NotesProvider({ children }: { children: ReactNode }) {
       getFolder: (id) => folders.find((folder) => folder.id === id),
       getNote: (id) => notes.find((note) => note.id === id),
       getNotesInFolder: (folderId) => notes.filter((note) => note.folderId === folderId),
+      getNoteCountInTree: (folderId) => noteCountsInTree.get(folderId) ?? 0,
       getRootNotes: () => notes.filter((note) => note.folderId === null),
       getRootFolders: () => folders.filter((folder) => folder.parentId == null),
       getSubfolders: (parentId) => folders.filter((folder) => folder.parentId === parentId),
@@ -564,6 +590,7 @@ export function NotesProvider({ children }: { children: ReactNode }) {
     [
       folders,
       notes,
+      noteCountsInTree,
       trash,
       createNote,
       createSentryNote,

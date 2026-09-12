@@ -76,6 +76,66 @@ export function canMoveFolder(
   return !folderSubtreeIds(folders, folderId).has(destinationId);
 }
 
+/**
+ * How many notes each folder holds, counting every folder beneath it.
+ *
+ * A folder card reports what the folder contains, and a folder that contains
+ * only folders contains every note under them — reading "0 notes" off a folder
+ * with fifty notes inside it is just wrong. Direct children remain the right
+ * answer for *listing* a folder, which is why this is a separate question from
+ * `getNotesInFolder` rather than a change to it.
+ *
+ * Every folder at once, in one pass over each list, because the home grid asks
+ * for all of them: totalling each card's subtree separately would walk the same
+ * branches once per ancestor.
+ *
+ * `notes` should already be filtered to what the caller counts as a note — an
+ * issue type is scaffolding inside a project, not something anyone filed there.
+ * Keeping that judgement out here is what lets this module stay about the tree.
+ */
+export function subtreeNoteCounts(
+  folders: FolderNode[],
+  notes: { folderId: string | null }[],
+): Map<string, number> {
+  const direct = new Map<string, number>();
+  for (const note of notes) {
+    if (note.folderId === null) continue;
+    direct.set(note.folderId, (direct.get(note.folderId) ?? 0) + 1);
+  }
+
+  const children = new Map<string, string[]>();
+  for (const folder of folders) {
+    if (!folder.parentId) continue;
+    const siblings = children.get(folder.parentId);
+    if (siblings) siblings.push(folder.id);
+    else children.set(folder.parentId, [folder.id]);
+  }
+
+  const totals = new Map<string, number>();
+  // A cycle has no bottom to count up from. Folding one in as zero undercounts
+  // the folders on it, which `foldersToRehome` is there to repair on the next
+  // merge; hanging the render would not repair itself. Nothing outside the cycle
+  // is affected, so the rest of the grid stays right meanwhile.
+  const onPath = new Set<string>();
+
+  const total = (id: string): number => {
+    const memo = totals.get(id);
+    if (memo !== undefined) return memo;
+    if (onPath.has(id)) return 0;
+
+    onPath.add(id);
+    let sum = direct.get(id) ?? 0;
+    for (const child of children.get(id) ?? []) sum += total(child);
+    onPath.delete(id);
+
+    totals.set(id, sum);
+    return sum;
+  };
+
+  for (const folder of folders) total(folder.id);
+  return totals;
+}
+
 /** A folder plus when it last changed — what breaking a cycle has to decide by. */
 export type DatedFolderNode = FolderNode & { updatedAt: number };
 

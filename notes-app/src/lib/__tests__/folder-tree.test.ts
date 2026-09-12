@@ -5,6 +5,7 @@ import {
   folderSubtreeIds,
   foldersToRehome,
   invalidMoveTargets,
+  subtreeNoteCounts,
 } from '@/lib/folder-tree';
 
 /** a > b > c, with d a sibling of a at the root. */
@@ -143,5 +144,67 @@ describe('foldersToRehome', () => {
 
   it('ignores a dangling parent rather than treating it as a loop', () => {
     expect(foldersToRehome([dated('a', 'gone', 1)])).toEqual([]);
+  });
+});
+
+describe('subtreeNoteCounts', () => {
+  /** One note directly in each of a, b and c; d is empty. */
+  const notes = [
+    { folderId: 'a' },
+    { folderId: 'b' },
+    { folderId: 'c' },
+    { folderId: null },
+  ];
+
+  it('counts a folder that nests nothing', () => {
+    expect(subtreeNoteCounts(tree, notes).get('c')).toBe(1);
+  });
+
+  it('counts notes nested at every depth, not just direct children', () => {
+    // a holds one itself, b one, c one — the bug this exists for reported 1.
+    expect(subtreeNoteCounts(tree, notes).get('a')).toBe(3);
+  });
+
+  it('counts a folder that holds only folders', () => {
+    // The case that read as empty while plainly containing something.
+    const shell = [
+      { id: 'shell', parentId: null },
+      { id: 'inner', parentId: 'shell' },
+    ];
+    expect(subtreeNoteCounts(shell, [{ folderId: 'inner' }]).get('shell')).toBe(1);
+  });
+
+  it('does not count a sibling, or a note at the root', () => {
+    expect(subtreeNoteCounts(tree, notes).get('d')).toBe(0);
+  });
+
+  it('answers for a folder holding nothing at all', () => {
+    expect(subtreeNoteCounts(tree, []).get('a')).toBe(0);
+  });
+
+  it('does not depend on the order folders arrive in', () => {
+    // The store holds folders newest-first, so a child routinely precedes its
+    // parent — a single pass down the list would miss the deeper notes.
+    const reversed = [...tree].reverse();
+    expect(subtreeNoteCounts(reversed, notes).get('a')).toBe(3);
+  });
+
+  it('terminates on a cycle instead of hanging', () => {
+    // `foldersToRehome` repairs these on the next merge; until then an
+    // undercount is survivable and a hung render is not.
+    const cyclic = [
+      { id: 'x', parentId: 'y' },
+      { id: 'y', parentId: 'x' },
+    ];
+    expect(() => subtreeNoteCounts(cyclic, [{ folderId: 'x' }])).not.toThrow();
+  });
+
+  it('leaves folders outside a cycle counted correctly', () => {
+    const withCycle = [
+      { id: 'ok', parentId: null },
+      { id: 'x', parentId: 'y' },
+      { id: 'y', parentId: 'x' },
+    ];
+    expect(subtreeNoteCounts(withCycle, [{ folderId: 'ok' }]).get('ok')).toBe(1);
   });
 });

@@ -70,9 +70,9 @@ export function FolderCard({ folder }: { folder: Folder }) {
 
 function PlainFolderCard({ folder }: { folder: Folder }) {
   const router = useRouter();
-  const { getNotesInFolder, toggleFolderFavorite } = useNotes();
+  const { getNoteCountInTree, toggleFolderFavorite } = useNotes();
   const { active, isSelected, toggle } = useItemSelection();
-  const count = getNotesInFolder(folder.id).length;
+  const count = getNoteCountInTree(folder.id);
   const selected = isSelected('folder', folder.id);
   const tileHeight = useTileHeight();
 
