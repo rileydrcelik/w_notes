@@ -1,3 +1,63 @@
+diff --git a/node_modules/react-native-enriched/android/src/main/java/com/swmansion/enriched/common/spans/EnrichedCheckboxListSpan.kt b/node_modules/react-native-enriched/android/src/main/java/com/swmansion/enriched/common/spans/EnrichedCheckboxListSpan.kt
+index 76e54b1..acf370d 100644
+--- a/node_modules/react-native-enriched/android/src/main/java/com/swmansion/enriched/common/spans/EnrichedCheckboxListSpan.kt
++++ b/node_modules/react-native-enriched/android/src/main/java/com/swmansion/enriched/common/spans/EnrichedCheckboxListSpan.kt
+@@ -27,11 +27,37 @@ open class EnrichedCheckboxListSpan(
+     }
+ 
+   override fun updateMeasureState(tp: TextPaint) {
+-    // Do nothing, but inform layout that this span affects text metrics
++    // Also informs layout that this span affects text metrics. The skew below
++    // is measure-affecting: measured upright, the last slanted glyph on a line
++    // clips against the right edge. The tap handler removes and re-sets the
++    // span on every toggle, so the paragraph is re-measured and stays in step.
++    applyCheckedStyling(tp)
+   }
+ 
+   override fun updateDrawState(tp: TextPaint) {
+-    // Do nothing, but inform layout that this span affects text metrics
++    applyCheckedStyling(tp)
++  }
++
++  /**
++   * A checked item reads as done rather than merely marked: struck through,
++   * italicised and dimmed.
++   *
++   * Only the text. The box is drawn separately in [drawLeadingMargin] and keeps
++   * full strength, so a glance down the gutter still reads as a column of boxes
++   * rather than a column that fades.
++   *
++   * A fixed alpha rather than a scaling of the paint's own, so re-applying this
++   * — which happens on every toggle and every re-measure — can't compound. A run
++   * that carries its own colour (a link, inline code) sets that colour after
++   * this span runs and so keeps full strength; it is struck and slanted like
++   * the rest, which is enough to read as done.
++   */
++  private fun applyCheckedStyling(tp: TextPaint) {
++    if (!isChecked) return
++
++    tp.isStrikeThruText = true
++    tp.textSkewX = CHECKED_SKEW
++    tp.alpha = CHECKED_ALPHA
+   }
+ 
+   // Include checkbox size in text measurements to avoid clipping
+@@ -89,4 +115,15 @@ open class EnrichedCheckboxListSpan(
+       }
+     }
+   }
++
++  private companion object {
++    /**
++     * The weight the app already gives "done" — see `doneTitle` in the task
++     * manager, and `CheckedOpacity` in `components/markdown-editor.web.tsx`.
++     */
++    const val CHECKED_ALPHA = 153 // 0.6 of 255
++
++    /** The slant Android itself uses when it synthesizes an italic face. */
++    const val CHECKED_SKEW = -0.25f
++  }
+ }
 diff --git a/node_modules/react-native-enriched/android/src/main/java/com/swmansion/enriched/textinput/EnrichedTextInputView.kt b/node_modules/react-native-enriched/android/src/main/java/com/swmansion/enriched/textinput/EnrichedTextInputView.kt
 index fe74a7f..22b3068 100644
 --- a/node_modules/react-native-enriched/android/src/main/java/com/swmansion/enriched/textinput/EnrichedTextInputView.kt
@@ -261,3 +321,110 @@ index f7ca534..89a51f9 100644
 +}
 +
  @end
+diff --git a/node_modules/react-native-enriched/ios/styles/CheckboxListStyle.mm b/node_modules/react-native-enriched/ios/styles/CheckboxListStyle.mm
+index b7e01ac..81d9190 100644
+--- a/node_modules/react-native-enriched/ios/styles/CheckboxListStyle.mm
++++ b/node_modules/react-native-enriched/ios/styles/CheckboxListStyle.mm
+@@ -3,6 +3,16 @@
+ #import "StyleHeaders.h"
+ #import "TextInsertionUtils.h"
+ 
++// The weight the app already gives "done" — see `doneTitle` in the task
++// manager, `CheckedOpacity` in `components/markdown-editor.web.tsx`, and
++// CHECKED_ALPHA in the Android EnrichedCheckboxListSpan.
++static const CGFloat kCheckedAlpha = 0.6;
++
++// The slant of the checked item. Android leans a glyph right with a negative
++// textSkewX and UIKit with a positive obliqueness, so the signs differ while
++// the lean does not.
++static const CGFloat kCheckedObliqueness = 0.25;
++
+ @implementation CheckboxListStyle
+ 
+ + (StyleType)getType {
+@@ -21,12 +31,64 @@
+   return YES;
+ }
+ 
++// A checked item reads as done rather than merely marked: struck through,
++// italicised and dimmed.
++//
++// Only the text. The box is drawn separately, by the layout manager, and keeps
++// full strength so a glance down the gutter still reads as a column of boxes
++// rather than a column that fades.
++//
++// Visual attributes only, deliberately. Every inline style here is *detected*
++// by its own meta-attribute key (see -getKey), so painting
++// NSStrikethroughStyle directly marks nothing as struck: the toolbar doesn't
++// light up and the serializer doesn't emit <s>. The slant is obliqueness for
++// the same reason, rather than an italic face, which ItalicStyle owns.
++//
++// The dim is alpha alone, so a run keeps its hue, and it is set rather than
++// scaled so that re-applying — which the dirty-range pass does often — can't
++// compound. It clears back to opaque rather than to a remembered colour, since
++// nothing here draws text translucent on purpose. A run that carries its own
++// colour (a link, inline code) has its applyStyling run after this one, in the
++// same pass, and so keeps full strength; it is struck and slanted like the
++// rest, which is enough to read as done.
++- (void)applyCheckedStyling:(BOOL)checked range:(NSRange)range {
++  NSTextStorage *storage = self.host.textView.textStorage;
++
++  if (checked) {
++    [storage addAttribute:NSStrikethroughStyleAttributeName
++                    value:@(NSUnderlineStyleSingle)
++                    range:range];
++    [storage addAttribute:NSObliquenessAttributeName
++                    value:@(kCheckedObliqueness)
++                    range:range];
++  } else {
++    [storage removeAttribute:NSStrikethroughStyleAttributeName range:range];
++    [storage removeAttribute:NSObliquenessAttributeName range:range];
++  }
++
++  CGFloat alpha = checked ? kCheckedAlpha : 1.0;
++  UIColor *fallback = self.host.textView.textColor ?: UIColor.labelColor;
++
++  [storage enumerateAttribute:NSForegroundColorAttributeName
++                      inRange:range
++                      options:0
++                   usingBlock:^(id _Nullable value, NSRange runRange,
++                                BOOL *_Nonnull stop) {
++                     UIColor *colour = (UIColor *)value ?: fallback;
++                     [storage addAttribute:NSForegroundColorAttributeName
++                                     value:[colour colorWithAlphaComponent:alpha]
++                                     range:runRange];
++                   }];
++}
++
+ - (void)applyStyling:(NSRange)range {
+   CGFloat listHeadIndent = [self.host.config checkboxListMarginLeft] +
+                            [self.host.config checkboxListGapWidth] +
+                            [self.host.config checkboxListBoxSize];
+ 
+-  [self.host.textView.textStorage
++  NSTextStorage *storage = self.host.textView.textStorage;
++
++  [storage
+       enumerateAttribute:NSParagraphStyleAttributeName
+                  inRange:range
+                  options:0
+@@ -36,10 +98,15 @@
+                     [(NSParagraphStyle *)value mutableCopy];
+                 pStyle.headIndent = listHeadIndent;
+                 pStyle.firstLineHeadIndent = listHeadIndent;
+-                [self.host.textView.textStorage
+-                    addAttribute:NSParagraphStyleAttributeName
+-                           value:pStyle
+-                           range:range];
++                [storage addAttribute:NSParagraphStyleAttributeName
++                                value:pStyle
++                                range:range];
++
++                // The checked state lives in the marker format, so each run of
++                // paragraph style already says which it is.
++                BOOL checked = [pStyle.textLists.firstObject.markerFormat
++                    isEqualToString:@"EnrichedCheckbox1"];
++                [self applyCheckedStyling:checked range:range];
+               }];
+ }
+ 

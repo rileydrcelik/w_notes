@@ -22,6 +22,11 @@ import { storedHtmlToTiptap, tiptapHtmlToStored } from '@/lib/rich-html.web';
 
 const LINK_COLOR = '#3c87f7';
 
+/** How far a checked item fades. The value the task manager already marks a
+ *  done issue with (`doneTitle` in `project/[id]/type/[typeId].tsx`), so "done"
+ *  reads the same weight wherever it appears. Shared with native too. */
+const CheckedOpacity = 0.6;
+
 /** `- ` / `* `, `1. `, `> `, `# ` etc. all ship as default input rules on the
  * respective extensions. Only the task/checkbox list needs one added by hand. */
 const CHECKBOX_INPUT_REGEX = /^\s*(\[([ xX])?\])\s$/;
@@ -136,6 +141,14 @@ function editorCss(theme: Palette): string {
 }
 .wn-rich .ProseMirror ul[data-type="taskList"] li > label input { margin: 0; width: 16px; height: 16px; accent-color: ${secondary}; }
 .wn-rich .ProseMirror ul[data-type="taskList"] li > div { flex: 1 1 auto; min-width: 0; }
+/* A checked item reads as done rather than merely marked: struck through,
+   italicised and dimmed. Only its text — the box keeps full strength, so a
+   glance down the gutter still reads as a column of boxes. */
+.wn-rich .ProseMirror ul[data-type="taskList"] li[data-checked="true"] > div {
+  text-decoration: line-through;
+  font-style: italic;
+  opacity: ${CheckedOpacity};
+}
 .wn-rich .ProseMirror p.is-editor-empty:first-child::before {
   content: attr(data-placeholder);
   color: ${secondary};
