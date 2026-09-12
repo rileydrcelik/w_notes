@@ -14,6 +14,7 @@ import { db } from '@/lib/db';
 import { isDbLockedError } from '@/lib/web-db-lock';
 import { requestSync, subscribeSynced, syncNow } from '@/lib/sync/sync-engine';
 import { effectiveTypeIds, type Issue, type IssueAttrValue } from '@/data/notes';
+import { countIssuesInTypes, indexIssuesByType } from '@/lib/issue-counts';
 
 const today = () => new Date().toISOString().slice(0, 10);
 
@@ -55,6 +56,14 @@ type IssuesContextValue = {
   /** True once the initial load from SQLite has completed (guards GitHub back-
    *  sync from treating a not-yet-loaded store as "no issues" and re-importing). */
   hydrated: boolean;
+  /**
+   * How many issues are filed under any of these type-notes, counted once each.
+   *
+   * Distinct, not a sum: an issue can belong to several types, so adding up the
+   * per-type totals would count it once per type it appears in and a project
+   * card would claim more issues than it holds.
+   */
+  getIssueCountForTypes: (typeIds: readonly string[]) => number;
   /** Live issues filed under a given issue-type note (matches any of its types). */
   getIssuesForNote: (noteId: string) => Issue[];
   /** Creates an issue under one or more type-notes and returns its id. */
@@ -191,18 +200,39 @@ export function IssuesProvider({ children }: { children: ReactNode }) {
     [issues],
   );
 
+  // Indexed once and shared: the home grid can render a card per project, and
+  // each scanning the whole tracker for a subtitle would make that quadratic in
+  // the number of issues.
+  const issueIdsByType = useMemo(() => indexIssuesByType(issues), [issues]);
+
+  const getIssueCountForTypes = useCallback(
+    (typeIds: readonly string[]) => countIssuesInTypes(issueIdsByType, typeIds),
+    [issueIdsByType],
+  );
+
   const value = useMemo<IssuesContextValue>(
     () => ({
       issues,
       hydrated,
       getIssuesForNote,
+      getIssueCountForTypes,
       createIssue,
       updateIssue,
       setDone,
       toggleDone,
       deleteIssue,
     }),
-    [issues, hydrated, getIssuesForNote, createIssue, updateIssue, setDone, toggleDone, deleteIssue],
+    [
+      issues,
+      hydrated,
+      getIssuesForNote,
+      getIssueCountForTypes,
+      createIssue,
+      updateIssue,
+      setDone,
+      toggleDone,
+      deleteIssue,
+    ],
   );
 
   return <IssuesContext.Provider value={value}>{children}</IssuesContext.Provider>;

@@ -18,12 +18,12 @@ import { githubTarget } from '@/lib/github-note';
 import { isResumeNote, resumeSourceExcerpt, resumeTitle } from '@/lib/resume-note';
 import { isMasterResume } from '@/lib/resume-master';
 import { useCardPreviewLines, useTileHeight } from '@/lib/grid';
-import { projectConfig } from '@/lib/project';
 import { matchSnippet } from '@/lib/search';
 import { useDoubleTap } from '@/hooks/use-double-tap';
 import { useTheme } from '@/hooks/use-theme';
 import { useSelectionSurface } from '@/hooks/use-selection-fade';
 import { useItemSelection } from '@/store/item-selection-store';
+import { useIssues } from '@/store/issues-store';
 import { useNotes } from '@/store/notes-store';
 
 const LINK_COLOR = '#3c87f7';
@@ -109,10 +109,17 @@ function PlainFolderCard({ folder }: { folder: Folder }) {
 /** A task-manager project: a distinct card that opens the issue tracker. */
 function ProjectFolderCard({ folder }: { folder: Folder }) {
   const router = useRouter();
-  const { toggleFolderFavorite } = useNotes();
+  const { toggleFolderFavorite, getNotesInFolder } = useNotes();
+  const { getIssueCountForTypes } = useIssues();
   const { active, isSelected, toggle } = useItemSelection();
   const selected = isSelected('folder', folder.id);
-  const config = projectConfig(folder);
+  // A project's issues live under its type-notes, not in the folder itself, so
+  // the count comes from the tracker rather than from what the folder contains.
+  const typeIds = useMemo(
+    () => getNotesInFolder(folder.id).filter((n) => n.pluginType === 'issuetype').map((n) => n.id),
+    [getNotesInFolder, folder.id],
+  );
+  const issueCount = getIssueCountForTypes(typeIds);
   const tileHeight = useTileHeight();
 
   const openOrFavorite = useDoubleTap(
@@ -136,8 +143,10 @@ function ProjectFolderCard({ folder }: { folder: Folder }) {
             </ThemedText>
             {folder.favorite && <FavoriteStar size={13} />}
           </View>
+          {/* The same slot a plain folder puts its note count in: what this one
+              holds is issues, so it says so. */}
           <ThemedText type="small" themeColor="textSecondary" numberOfLines={1}>
-            Task manager{config?.repo ? ` · ${config.repo}` : ''}
+            {issueCount} {issueCount === 1 ? 'issue' : 'issues'}
           </ThemedText>
         </View>
       </FolderShape>
