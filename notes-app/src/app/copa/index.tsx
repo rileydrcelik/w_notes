@@ -33,6 +33,7 @@ import { useScreenFadeStyle } from '@/hooks/use-screen-fade';
 import { useScrollToTop } from '@/hooks/use-scroll-to-top';
 import { useSyncRefresh } from '@/hooks/use-sync-refresh';
 import { htmlToPlainText } from '@/lib/html-text';
+import { isFileBlock } from '@/lib/copa-block';
 import { trailingSpacers, useCopaColumns, useGridEdgePadding } from '@/lib/grid';
 import { downloadCopaFile, fileIconFor, formatBytes, isImage, isVideo } from '@/lib/copa-files';
 import { pinnedFirst } from '@/lib/pinned';
@@ -329,7 +330,11 @@ export default function CopaScreen() {
         }
         renderItem={({ item }) => {
           if ('spacer' in item) return <View style={styles.cardCell} />;
-          const card = item.fileUri ? <FileCopaCard item={item} /> : <CopaCard item={item} />;
+          // `fileName`, not `fileUri`: a file block whose bytes this device has
+          // not fetched is still a file block. Keyed on the bytes, every
+          // attachment drew as an empty text tile after a web reload — see
+          // lib/copa-block.ts.
+          const card = isFileBlock(item) ? <FileCopaCard item={item} /> : <CopaCard item={item} />;
           return columns > 1 ? <View style={styles.cardCell}>{card}</View> : card;
         }}
       />
