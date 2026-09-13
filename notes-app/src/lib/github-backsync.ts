@@ -4,11 +4,10 @@
  * not webhooks). Reconciliation is keyed by `gh_number`:
  *
  *  - **Matched** local issue → its mirrored fields follow GitHub (done from
- *    open/closed, title, and the built-in Status/Priority/People attributes via
- *    {@link githubToAttrs} — Status/Priority read from the managed block in the
- *    issue body, People from assignees). Its *type* (which note it's filed under)
- *    and *custom* attributes are w-notes-only overlays and are never touched by a
- *    pull.
+ *    open/closed, title, and attribute values via {@link githubToAttrs} —
+ *    select/stars read by name from the managed block in the issue body, people
+ *    from assignees). Its *type* (which note it's filed under) is a w-notes-only
+ *    overlay and is never touched by a pull.
  *  - **Unmatched** GitHub issue → imported into the project's "Unorganized" type
  *    (auto-created on first need), so the user can re-file and enrich it.
  *

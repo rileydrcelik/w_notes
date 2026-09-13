@@ -10,7 +10,6 @@ import { describe, expect, it } from 'vitest';
 
 import type { Folder } from '@/data/notes';
 import {
-  defaultAttributes,
   emptyProjectConfig,
   newAttrId,
   parseTypeConfig,
@@ -24,11 +23,17 @@ const folder = (kind: string | null, config: string | null) =>
 
 describe('projectConfig', () => {
   it('parses a well-formed project folder', () => {
-    const raw = serializeProjectConfig(emptyProjectConfig('owner/repo'));
+    const raw = serializeProjectConfig({
+      repo: 'owner/repo',
+      attributes: [
+        { id: 'a1', name: 'Stage', type: 'select', options: ['Todo', 'Done'] },
+        { id: 'a2', name: 'Heat', type: 'stars' },
+      ],
+    });
     const parsed = projectConfig(folder('project', raw));
 
     expect(parsed?.repo).toBe('owner/repo');
-    expect(parsed?.attributes.map((a) => a.id)).toEqual(['status', 'people', 'priority']);
+    expect(parsed?.attributes.map((a) => a.id)).toEqual(['a1', 'a2']);
   });
 
   it('round-trips through serialize without loss', () => {
@@ -82,12 +87,18 @@ describe('emptyProjectConfig', () => {
     expect(emptyProjectConfig('').repo).toBeUndefined();
   });
 
+  it('starts with an empty attribute schema', () => {
+    // A new task manager seeds no attributes at all — the schema is the user's,
+    // built one attribute at a time on the issue creation screen.
+    expect(emptyProjectConfig('owner/repo').attributes).toEqual([]);
+  });
+
   it('hands out a fresh attributes array each call', () => {
     // Callers mutate this when editing the schema; a shared array would leak
     // one project's edits into the next project created this session.
-    const first = defaultAttributes();
-    first.push({ id: 'extra', name: 'Extra', type: 'stars' });
-    expect(defaultAttributes()).toHaveLength(3);
+    const first = emptyProjectConfig();
+    first.attributes.push({ id: 'extra', name: 'Extra', type: 'stars' });
+    expect(emptyProjectConfig().attributes).toEqual([]);
   });
 });
 

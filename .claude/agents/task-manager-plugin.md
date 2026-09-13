@@ -19,7 +19,7 @@ Three layers, each stored differently:
 
 **Attribute definitions live on the project; attribute values live on the issue.** The schema is shared across every type in the project. Removing or renaming an `AttrDef` therefore orphans values on every existing issue — always check that path.
 
-`AttrType` is `select` (one of `options`), `stars` (1–5), or `people` (GitHub logins pulled from the project's repo). `defaultAttributes()` seeds Status / People / Priority as `builtin: true`, which means "seeded", not "undeletable" — they are still removable.
+`AttrType` is `select` (one of `options`), `stars` (1–5), or `people` (GitHub logins pulled from the project's repo). A new project seeds **no** attributes — `emptyProjectConfig()` starts with an empty schema, and the user adds each attribute (picking its kind) on the issue creation screen. There is no built-in/custom distinction: GitHub back-sync (`githubToAttrs`) fills every `people` attribute from assignees and every `select`/`stars` attribute by *name* from the managed body block, which is exactly what the push side writes.
 
 ## Multi-type membership — the subtlety that breaks list views
 

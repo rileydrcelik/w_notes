@@ -1,7 +1,9 @@
 /**
  * Helpers for task-manager "project" folders. A project folder stores its repo
  * and shared attribute schema in the folder's opaque `config` JSON; this parses
- * it back out safely and defines the default schema new projects start from.
+ * it back out safely. A new project starts with no attributes at all — the
+ * schema is entirely the user's, built up one attribute at a time on the issue
+ * creation screen.
  *
  * Structure: a `kind='project'` folder holds issue-type notes
  * (`plugin_type='issuetype'`), and each issue (a row in the `issues` table) is
@@ -26,8 +28,6 @@ export type AttrDef = {
   type: AttrType;
   /** Choices for a `select` attribute; unused for stars/people. */
   options?: string[];
-  /** True for the seeded defaults (still removable, just not user-authored). */
-  builtin?: boolean;
 };
 
 export type ProjectConfig = {
@@ -49,18 +49,13 @@ export type IssueTypeConfig = {
   color?: string;
 };
 
-/** The default attribute schema a new project starts with (all removable). */
-export function defaultAttributes(): AttrDef[] {
-  return [
-    { id: 'status', name: 'Status', type: 'select', options: ['Todo', 'In Progress', 'Done'], builtin: true },
-    { id: 'people', name: 'People', type: 'people', builtin: true },
-    { id: 'priority', name: 'Priority', type: 'stars', builtin: true },
-  ];
-}
-
-/** A fresh project config (optionally pre-filled with a repo). */
+/**
+ * A fresh project config (optionally pre-filled with a repo), with an empty
+ * attribute schema. Each call hands out its own `attributes` array, since
+ * callers mutate it when editing the schema.
+ */
 export function emptyProjectConfig(repo?: string): ProjectConfig {
-  return { repo: repo || undefined, attributes: defaultAttributes() };
+  return { repo: repo || undefined, attributes: [] };
 }
 
 /**

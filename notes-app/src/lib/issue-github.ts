@@ -308,14 +308,15 @@ export function mergeManagedLabels(
 }
 
 /**
- * Derive attribute *values* for a mirrored issue from GitHub, updating only the
- * project's **built-in** attributes (Status, Priority, People) — GitHub is
- * source-of-truth for those. Status/Priority come from the managed attributes
- * block in the issue `body`; People from `assignees`. Custom attributes are left
- * exactly as `existing` has them (they're w-notes-only overlays). When the body
- * carries a managed block, a built-in with no matching row is cleared; when the
- * block is absent entirely, built-ins are left untouched (so a pull can't wipe
- * them, e.g. if a user deleted the block on GitHub).
+ * Derive attribute *values* for a mirrored issue from GitHub, which is
+ * source-of-truth for them: every `people` attribute comes from `assignees`,
+ * and every `select`/`stars` attribute from the managed attributes block in the
+ * issue `body`, matched on the attribute's name — the same name
+ * {@link renderAttrsBlock} writes there, so a pull reads back exactly what a
+ * push wrote. When the body carries a managed block, an attribute with no
+ * matching row is cleared (a push omits an unset one); when the block is absent
+ * entirely, values are left untouched, so a pull can't wipe them — e.g. if a
+ * user deleted the block on GitHub.
  */
 export function githubToAttrs(
   attributes: AttrDef[],
@@ -326,13 +327,12 @@ export function githubToAttrs(
   const next: Record<string, IssueAttrValue> = { ...existing };
   const parsed = parseAttrsBlock(body);
   for (const attr of attributes) {
-    if (!attr.builtin) continue;
     if (attr.type === 'people') {
       if (assignees.length) next[attr.id] = [...assignees];
       else delete next[attr.id];
       continue;
     }
-    // No managed block → leave built-in select/stars untouched.
+    // No managed block → leave select/stars untouched.
     if (!parsed) continue;
     const raw = parsed.get(attr.name.toLowerCase());
     if (raw == null || raw === '') {
