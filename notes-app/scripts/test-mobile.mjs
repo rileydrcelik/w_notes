@@ -95,7 +95,12 @@ if (deviceOnline()) {
 
 if (shouldBuild) {
   console.log('• building + installing release APK (several minutes)');
-  const build = spawnSync('npx', ['expo', 'run:android', '--variant', 'release'], {
+  // --no-bundler: the release APK carries its own JS, so Metro has nothing to
+  // serve it — but without the flag `run:android` starts one anyway and stays
+  // attached to it after installing, so this spawnSync never returned and the
+  // flows never ran. It only ever looked fine because 8081 happened to be taken,
+  // which makes the CLI skip the dev server and exit.
+  const build = spawnSync('npx', ['expo', 'run:android', '--variant', 'release', '--no-bundler'], {
     stdio: 'inherit',
     shell: true,
     // Shared with the CI build (scripts/build-android-e2e.mjs) so both produce
