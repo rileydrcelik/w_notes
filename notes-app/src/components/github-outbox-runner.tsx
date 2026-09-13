@@ -17,8 +17,22 @@
 import { useCallback, useEffect, useRef } from 'react';
 
 import { effectiveTypeIds, type Issue, type Note } from '@/data/notes';
-import { flushGithubOutbox, loadGithubOutbox, type OutboxDeps } from '@/lib/github-outbox';
+import { db } from '@/lib/db';
+import {
+  flushGithubOutbox,
+  loadGithubOutbox,
+  pushOrQueue,
+  setGithubOutboxDeps,
+  type OutboxDeps,
+} from '@/lib/github-outbox';
 import { flushGithubDrafts, loadGithubDrafts } from '@/lib/github-issue-drafts';
+import { updateGithubIssue } from '@/lib/issue-github';
+import {
+  flushIssueRetitles,
+  isRetitlePending,
+  loadIssueRetitles,
+  type RetitleDeps,
+} from '@/lib/issue-retitle';
 import { ISSUE_TYPE_PLUGIN, parseTypeConfig, projectConfig } from '@/lib/project';
 import { Sentry } from '@/lib/sentry';
 import { subscribeSyncSuccess } from '@/lib/sync/sync-engine';
@@ -26,7 +40,7 @@ import { useIssues } from '@/store/issues-store';
 import { useNotes } from '@/store/notes-store';
 
 export function GithubOutboxRunner() {
-  const { updateIssue } = useIssues();
+  const { updateIssue, applyTitleIfStub } = useIssues();
   const { getNote, getFolder, getNotesInFolder } = useNotes();
 
   // The latest store readers live in a ref so the subscription installs once and
@@ -81,26 +95,71 @@ export function GithubOutboxRunner() {
     [getNote, getFolder, getNotesInFolder],
   );
 
+  const retitleDepsRef = useRef<RetitleDeps | null>(null);
+
   useEffect(() => {
-    depsRef.current = {
+    const deps: OutboxDeps = {
       resolve,
       setGhNumber: (issueId, ghNumber) => updateIssue(issueId, { ghNumber }),
+      holdCreate: isRetitlePending,
     };
-  }, [resolve, updateIssue]);
+    depsRef.current = deps;
+    // So the New issue screen can flush the create it just queued.
+    setGithubOutboxDeps(deps);
+    retitleDepsRef.current = {
+      applyTitle: applyTitleIfStub,
+      // An issue already mirrored under its stand-in title gets the real one
+      // pushed. One not mirrored yet needs nothing: its queued create reads the
+      // row at replay time, and this flush runs first.
+      onRetitled: async (issueId, title) => {
+        const row = await db.getIssueById(issueId);
+        const number = row?.ghNumber;
+        if (!row || number == null) return;
+        const ctx = resolve(row);
+        const repo = ctx?.repo;
+        if (!repo || !ctx.connected) return;
+        const r = await pushOrQueue({
+          issueId,
+          repo,
+          facets: { title: true },
+          push: () => updateGithubIssue(repo, number, { title }),
+        });
+        if (r.status === 'failed') {
+          Sentry.addBreadcrumb({
+            category: 'issue-retitle',
+            message: `title not pushed to GitHub for ${issueId}: ${r.message}`,
+            level: 'warning',
+          });
+        }
+      },
+    };
+    return () => setGithubOutboxDeps(null);
+  }, [resolve, updateIssue, applyTitleIfStub]);
 
   useEffect(() => {
     void loadGithubOutbox();
     void loadGithubDrafts();
+    void loadIssueRetitles();
   }, []);
 
   useEffect(
     () =>
       subscribeSyncSuccess(() => {
         const deps = depsRef.current;
-        if (!deps) return;
-        void flushGithubOutbox(deps).catch((e) => {
-          Sentry.captureException(e, { tags: { source: 'github-outbox', op: 'runner' } });
-        });
+        const retitleDeps = retitleDepsRef.current;
+        if (!deps || !retitleDeps) return;
+        // Titles first, so a create that was queued offline replays with the
+        // model's title rather than the stand-in. A title that can't get through
+        // must not hold the pushes back, hence `finally`.
+        void flushIssueRetitles(retitleDeps)
+          .catch((e) => {
+            Sentry.captureException(e, { tags: { source: 'issue-retitle', op: 'runner' } });
+          })
+          .finally(() =>
+            flushGithubOutbox(deps).catch((e) => {
+              Sentry.captureException(e, { tags: { source: 'github-outbox', op: 'runner' } });
+            }),
+          );
       }),
     [],
   );

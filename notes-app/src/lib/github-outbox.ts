@@ -81,6 +81,12 @@ export type PushFacets = {
    * offline cannot reopen an issue somebody closed on GitHub meanwhile.
    */
   state?: true;
+  /**
+   * The model replaced the issue's stand-in title (see issue-retitle), so the
+   * replay may push the title. Title only: unlike `details`, the body GitHub
+   * holds is left alone apart from the managed attributes block.
+   */
+  title?: true;
 };
 
 /** One held-back push, keyed by local issue id. */
@@ -122,6 +128,14 @@ export type OutboxDeps = {
   } | null;
   /** Record the mirror number, through the store so the UI updates. */
   setGhNumber: (issueId: string, ghNumber: number) => void;
+  /**
+   * Whether opening this issue on GitHub should wait. True while its AI title is
+   * still being written (see issue-retitle): created now, the GitHub issue would
+   * carry the stand-in, and back-sync would later copy that over the real title.
+   */
+  holdCreate?: (issueId: string) => boolean;
+  /** Told when GitHub or the backend refused an entry, which is then dropped. */
+  onRefused?: (issueId: string, message: string) => void;
 };
 
 export type PushOutcome =
@@ -225,6 +239,7 @@ async function hydrate(): Promise<void> {
           seq: typeof e.seq === 'number' ? e.seq : 1,
           ...(e.details ? { details: true as const } : {}),
           ...(e.state ? { state: true as const } : {}),
+          ...(e.title ? { title: true as const } : {}),
         });
       }
       refreshSnapshot();
@@ -317,6 +332,7 @@ async function enqueue(
       if (attempted) existing.attempts += 1;
       if (facets.details) existing.details = true;
       if (facets.state) existing.state = true;
+      if (facets.title) existing.title = true;
     } else {
       entries.set(issueId, {
         issueId,
@@ -331,6 +347,7 @@ async function enqueue(
         seq: 1,
         ...(facets.details ? { details: true as const } : {}),
         ...(facets.state ? { state: true as const } : {}),
+        ...(facets.title ? { title: true as const } : {}),
       });
     }
     if (entries.size > MAX_ENTRIES) {
@@ -413,13 +430,13 @@ async function drop(issueId: string, why: string): Promise<void> {
   });
 }
 
-/** Record that this entry still owes GitHub a state change. */
-async function markStateIntent(entry: PendingMirror): Promise<void> {
+/** Record that this entry still owes GitHub a state change or a title. */
+async function markIntent(entry: PendingMirror, facet: 'state' | 'title'): Promise<void> {
   await serialize(async () => {
     const live = entries.get(entry.issueId);
-    if (!live || live.state) return;
-    live.state = true;
-    entry.state = true;
+    if (!live || live[facet]) return;
+    live[facet] = true;
+    entry[facet] = true;
     await persist();
   });
 }
@@ -447,6 +464,30 @@ export function flushGithubOutbox(deps: OutboxDeps): Promise<FlushResult> {
     flushing = null;
   });
   return flushing;
+}
+
+/** The app shell's store readers, registered by `GithubOutboxRunner`. */
+let registeredDeps: OutboxDeps | null = null;
+
+export function setGithubOutboxDeps(deps: OutboxDeps | null): void {
+  registeredDeps = deps;
+}
+
+/**
+ * Flush now, from a screen that doesn't hold the stores' readers — the New issue
+ * screen, once it has queued a create. Resolves null when no runner is mounted.
+ *
+ * Waits out a flush already running instead of sharing it: that run took its
+ * snapshot before this caller's entry existed, so sharing it would resolve
+ * without ever trying the entry the caller is waiting on.
+ */
+export async function flushGithubOutboxNow(
+  onRefused?: OutboxDeps['onRefused'],
+): Promise<FlushResult | null> {
+  const deps = registeredDeps;
+  if (!deps) return null;
+  if (flushing) await flushing.catch(() => {});
+  return flushGithubOutbox(onRefused ? { ...deps, onRefused } : deps);
 }
 
 type ResolvedContext = NonNullable<ReturnType<OutboxDeps['resolve']>>;
@@ -510,36 +551,41 @@ async function runFlush(deps: OutboxDeps): Promise<FlushResult> {
     // moves the seq on, and must survive the drop below.
     const seqSent = entry.seq;
     try {
-      if (await replay(entry, row, ctx, deps)) {
+      const outcome = await replay(entry, row, ctx, deps);
+      if (outcome === 'pushed') {
         pushed += 1;
         if (entries.get(entry.issueId)?.seq === seqSent) {
           await drop(entry.issueId, 'pushed');
         }
-      } else {
+      } else if (outcome === 'dropped') {
         // replay() abandoned it and has already dropped the entry.
         dropped += 1;
       }
+      // 'held': left queued, untouched, for a later flush.
     } catch (e) {
       if (isRetryable(e)) break; // still offline — leave the rest queued
       Sentry.captureException(e, {
         tags: { source: 'github-outbox', op: 'flush', attempts: String(entry.attempts) },
       });
-      await drop(entry.issueId, `refused: ${githubSyncErrorMessage(e)}`);
+      const message = githubSyncErrorMessage(e);
+      await drop(entry.issueId, `refused: ${message}`);
       dropped += 1;
+      deps.onRefused?.(entry.issueId, message);
     }
   }
 
   return { pushed, dropped, remaining: entries.size };
 }
 
-/** Push one entry. False when it was abandoned rather than sent (and already
- *  dropped), so the caller doesn't count it as delivered. */
+/** Push one entry. `dropped` when it was abandoned rather than sent (and already
+ *  dropped), so the caller doesn't count it as delivered; `held` when it must
+ *  wait and was left untouched. */
 async function replay(
   entry: PendingMirror,
   row: Issue,
   ctx: ResolvedContext,
   deps: OutboxDeps,
-): Promise<boolean> {
+): Promise<'pushed' | 'dropped' | 'held'> {
   const repo = entry.repo;
   const attrs: Record<string, IssueAttrValue> = row.attrs;
   const assignees = githubIssueAssignees(ctx.attributes, attrs);
@@ -549,8 +595,11 @@ async function replay(
     // explicit, later instruction and outranks the queued intent.
     if (!ctx.connected) {
       await drop(entry.issueId, 'type no longer tracked on GitHub');
-      return false;
+      return 'dropped';
     }
+    // Its title is still being written. Checked before the attempt is bumped:
+    // nothing has gone out, so a later replay has nothing to look for.
+    if (deps.holdCreate?.(row.id)) return 'held';
     // Bump BEFORE the request. A crash between the POST and the bookkeeping is
     // the same ambiguous case as a lost response, and both have to come back as
     // a retry that looks for what it may already have created.
@@ -568,15 +617,24 @@ async function replay(
       });
     }
     deps.setGhNumber(row.id, number);
+    // Renamed while the create was out: that rename went nowhere, since the
+    // edit sheet only pushes an issue that already has a number, and back-sync
+    // would soon copy the title just sent over it. Same record-the-intent-first
+    // shape as the close below, so a failed follow-up is retried, not forgotten.
+    const fresh = await db.getIssueById(row.id).catch(() => null);
+    if (fresh && fresh.title !== row.title) {
+      await markIntent(entry, 'title');
+      await updateGithubIssue(repo, number, { title: fresh.title || 'Untitled issue' });
+    }
     // Created *and* completed while offline: the create carries no state, so the
     // close is a second call. Record the intent first — the issue now has a
     // number, so a retry takes the update branch, and without the flag that
     // branch omits `state` and the completion would be lost for good.
     if (row.done) {
-      await markStateIntent(entry);
+      await markIntent(entry, 'state');
       await setGithubIssueState(repo, number, true);
     }
-    return true;
+    return 'pushed';
   }
 
   await bumpAttempts(entry);
@@ -594,12 +652,12 @@ async function replay(
     labels,
     assignees,
     body,
-    ...(entry.details ? { title: row.title || 'Untitled issue' } : {}),
+    ...(entry.details || entry.title ? { title: row.title || 'Untitled issue' } : {}),
     ...(entry.state
       ? row.done
         ? { state: 'closed' as const, stateReason: 'completed' }
         : { state: 'open' as const }
       : {}),
   });
-  return true;
+  return 'pushed';
 }

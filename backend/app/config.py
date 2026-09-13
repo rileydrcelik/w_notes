@@ -78,6 +78,12 @@ class Settings(BaseSettings):
     anthropic_model: str = "claude-sonnet-5"
     anthropic_timeout_seconds: float = 60.0
 
+    # Which model names task-manager issues (POST /issues/title). Haiku 4.5
+    # because it is the cheapest current model — half Sonnet 5 per token — and a
+    # title is about the least demanding thing asked of a model here, on every
+    # issue created. Supports the structured outputs the endpoint relies on.
+    anthropic_title_model: str = "claude-haiku-4-5"
+
     # Comma-separated account emails that may spend `anthropic_api_key` — the
     # server's own key, and the server's own bill.
     #

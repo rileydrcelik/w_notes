@@ -15,6 +15,7 @@ from app.routers import (
     files,
     github_issues,
     health,
+    issue_title,
     latex,
     me,
     resume,
@@ -56,6 +57,7 @@ app.include_router(credentials.router)
 app.include_router(files.router)
 app.include_router(sentry.router)
 app.include_router(github_issues.router)
+app.include_router(issue_title.router)
 app.include_router(embed.router)
 app.include_router(latex.router)
 app.include_router(resume.router)

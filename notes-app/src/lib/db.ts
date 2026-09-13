@@ -1749,6 +1749,25 @@ export const db = {
     await database.runAsync(`UPDATE issues SET ${sets.join(', ')} WHERE id = ?`, args);
   },
 
+  /**
+   * Replace an issue's stand-in title with the AI-written one, but only if the
+   * row still carries the stand-in and isn't trashed. Resolves whether it did.
+   *
+   * One statement, and one of the `WRITE_METHODS`, on purpose: a hand rename
+   * reaches SQLite through the same serialized chain, so a rename queued before
+   * this write is already committed when the WHERE clause runs. A separate read
+   * followed by `updateIssue` would read past the queued rename and overwrite it.
+   */
+  async setIssueTitleIfStub(id: string, stub: string, title: string): Promise<boolean> {
+    dbCrumb('setIssueTitleIfStub', { id });
+    const database = await getDb();
+    const result = await database.runAsync(
+      'UPDATE issues SET title = ?, updated_at = ?, dirty = 1 WHERE id = ? AND title = ? AND deleted_at IS NULL',
+      [title, Date.now(), id, stub],
+    );
+    return result.changes > 0;
+  },
+
   async deleteIssue(id: string): Promise<void> {
     dbCrumb('deleteIssue', { id });
     const database = await getDb();
@@ -2668,6 +2687,7 @@ const WRITE_METHODS = [
   'setCopaLocalFile',
   'createIssue',
   'updateIssue',
+  'setIssueTitleIfStub',
   'deleteIssue',
   'saveFinanceSheet',
   'deleteFinanceSheet',

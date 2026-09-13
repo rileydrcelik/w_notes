@@ -40,6 +40,7 @@ import {
   upsertAttrsBlock,
 } from '@/lib/issue-github';
 import { pushOrQueue } from '@/lib/github-outbox';
+import { cancelIssueRetitle } from '@/lib/issue-retitle';
 import { usePendingGithubIssues } from '@/hooks/use-github-outbox';
 import { useIssues } from '@/store/issues-store';
 import { useNotes } from '@/store/notes-store';
@@ -357,6 +358,13 @@ export default function IssueTypeScreen() {
     if (!editingIds || editingIds.length !== 1) return undefined;
     return issues.find((i) => i.id === editingIds[0]);
   }, [editingIds, issues]);
+  // Opening an issue to edit makes its title the editor's. The sheet reseeds its
+  // fields whenever the issue changes, so an AI title still on its way would
+  // otherwise land under whatever they were typing.
+  const editSingleId = editSingle?.id;
+  useEffect(() => {
+    if (editSingleId) void cancelIssueRetitle(editSingleId);
+  }, [editSingleId]);
   const editInitialTypeIds = useMemo<string[] | undefined>(
     () => (editSingle ? effectiveTypeIds(editSingle) : undefined),
     [editSingle],

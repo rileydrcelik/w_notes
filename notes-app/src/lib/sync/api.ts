@@ -78,7 +78,16 @@ export async function apiFetch<T = unknown>(path: string, options: ApiOptions = 
     return (text ? JSON.parse(text) : undefined) as T;
   } catch (e) {
     // Three outcomes reach here, and only one is worth reporting.
-    if (e instanceof ApiError) {
+    if (e instanceof ApiError && e.status === 402) {
+      // "Add your own Anthropic key" (see ai_access.py). An account without one
+      // is the everyday case, not a failure — and issue titling asks on every
+      // issue created, so capturing it would grow one Sentry issue without end.
+      Sentry.addBreadcrumb({
+        category: 'sync',
+        message: `${path}: no AI key configured`,
+        level: 'info',
+      });
+    } else if (e instanceof ApiError) {
       // The backend answered with a non-2xx. That's a real failure on our side.
       //
       // Fingerprint by endpoint + status, not by the default stack trace. Every

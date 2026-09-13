@@ -30,8 +30,9 @@ import type { Folder, Note } from '@/data/notes';
 import { reconcileProjectWithGithub } from '@/lib/github-backsync';
 import { githubSyncErrorMessage } from '@/lib/issue-github';
 import { pendingGithubIssueIds } from '@/lib/github-outbox';
+import { pendingRetitleIssueIds } from '@/lib/issue-retitle';
 import {
-  defaultAttributes,
+  emptyProjectConfig,
   parseTypeConfig,
   projectConfig,
   serializeProjectConfig,
@@ -208,7 +209,9 @@ export default function ProjectScreen() {
           // Read fresh rather than captured: an issue queued offline may be
           // flushing right now, and GitHub's copy of it is stale until that
           // lands.
-          pendingPush: pendingGithubIssueIds(),
+          // Plus issues still waiting on an AI title: the one being applied
+          // hasn't reached GitHub yet, so GitHub's stand-in isn't the truth.
+          pendingPush: new Set([...pendingGithubIssueIds(), ...pendingRetitleIssueIds()]),
         });
       } catch (e) {
         Sentry.captureException(e, { tags: { source: 'github-backsync' } });
@@ -246,7 +249,7 @@ export default function ProjectScreen() {
     (input: { name: string; repo: string }) => {
       updateFolder(id, {
         name: input.name,
-        config: serializeProjectConfig({ repo: input.repo, attributes: defaultAttributes() }),
+        config: serializeProjectConfig(emptyProjectConfig(input.repo)),
       });
       createIssueTypeNote(id, 'Bug', true, 0);
       createIssueTypeNote(id, 'Feature', true, 1);

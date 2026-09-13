@@ -23,20 +23,29 @@ import { useKeyboardReveal } from '@/hooks/use-keyboard-reveal';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
 import { useTheme } from '@/hooks/use-theme';
 import { effectiveTypeIds, type IssueAttrValue } from '@/data/notes';
-import { newAttrId, parseTypeConfig, projectConfig, serializeProjectConfig } from '@/lib/project';
 import {
-  createGithubIssue,
-  githubIssueAssignees,
-  githubIssueBody,
-  githubIssueLabels,
-} from '@/lib/issue-github';
-import { pushOrQueue } from '@/lib/github-outbox';
+  type AttrType,
+  newAttrId,
+  parseTypeConfig,
+  projectConfig,
+  serializeProjectConfig,
+} from '@/lib/project';
+import { flushGithubOutboxNow, queueGithubPush } from '@/lib/github-outbox';
+import { retitleIssue } from '@/lib/issue-retitle';
+import { stubIssueTitle } from '@/lib/issue-title';
 import { useIssues } from '@/store/issues-store';
 import { useNotes } from '@/store/notes-store';
 import { noScrollbar } from '@/lib/scroll-style';
 
 const ACCENT = '#16a394';
 const GITHUB_ACCENT = '#8250df';
+
+/** The kinds of attribute the add-attribute form can create. */
+const ATTR_KINDS: { type: AttrType; label: string; icon: 'list' | 'star' | 'users' }[] = [
+  { type: 'select', label: 'Options', icon: 'list' },
+  { type: 'stars', label: 'Stars', icon: 'star' },
+  { type: 'people', label: 'People', icon: 'users' },
+];
 
 export default function NewIssueScreen() {
   const { id, typeId } = useLocalSearchParams<{ id: string; typeId?: string }>();
@@ -45,11 +54,11 @@ export default function NewIssueScreen() {
   const insets = useSafeAreaInsets();
   const tabBarInset = useTabBarInset();
   const { getFolder, getNotesInFolder, updateFolder, createIssueTypeNote, deleteNote } = useNotes();
-  const { createIssue, updateIssue, getIssuesForNote } = useIssues();
+  const { createIssue, applyTitleIfStub, getIssuesForNote } = useIssues();
 
   // Details sits at the far end of this form, past the types and every custom
   // attribute, so on Android — where the keyboard covers the window instead of
-  // resizing it — tapping Title used to put the caret under the keys. The spacer
+  // resizing it — tapping it used to put the caret under the keys. The spacer
   // gives the form somewhere to scroll to; `reveal` does the scrolling.
   const keyboardSpacer = useKeyboardSpacer();
   const { scrollProps, reveal } = useKeyboardReveal();
@@ -74,8 +83,9 @@ export default function NewIssueScreen() {
     setSelectedTypeIds((prev) => (prev.includes(t) ? prev.filter((x) => x !== t) : [...prev, t]));
   const primaryTypeId = selectedTypeIds[0] ?? null;
 
-  const [title, setTitle] = useState('');
-  const [description, setDescription] = useState('');
+  // One field. It becomes the description word for word; the title is written
+  // from it (see `save`).
+  const [text, setText] = useState('');
   const [values, setValues] = useState<Record<string, IssueAttrValue>>({});
 
   // Inline "add type" / "add attribute" forms.
@@ -83,6 +93,7 @@ export default function NewIssueScreen() {
   const [newTypeConnected, setNewTypeConnected] = useState(true); // GitHub-tracked?
   const [newAttrName, setNewAttrName] = useState<string | null>(null); // null = closed
   const [newAttrOptions, setNewAttrOptions] = useState('');
+  const [newAttrType, setNewAttrType] = useState<AttrType>('select');
 
   const change = (attrId: string, value: IssueAttrValue | undefined) =>
     setValues((prev) => {
@@ -124,16 +135,26 @@ export default function NewIssueScreen() {
     [attributes, writeAttributes],
   );
 
+  /** Close the add-attribute form and clear its draft. */
+  const resetAttrForm = () => {
+    setNewAttrName(null);
+    setNewAttrOptions('');
+    setNewAttrType('select');
+  };
+
   const confirmAddAttr = () => {
     const name = (newAttrName ?? '').trim();
     if (!name) return;
-    const options = newAttrOptions
-      .split(',')
-      .map((s) => s.trim())
-      .filter(Boolean);
-    writeAttributes([...attributes, { id: newAttrId(), name, type: 'select', options }]);
-    setNewAttrName(null);
-    setNewAttrOptions('');
+    // Options are a `select`-only field; stars and people carry none.
+    const options =
+      newAttrType === 'select'
+        ? newAttrOptions
+            .split(',')
+            .map((s) => s.trim())
+            .filter(Boolean)
+        : undefined;
+    writeAttributes([...attributes, { id: newAttrId(), name, type: newAttrType, options }]);
+    resetAttrForm();
   };
 
   const confirmAddType = () => {
@@ -179,47 +200,43 @@ export default function NewIssueScreen() {
   // GitHub; every selected type becomes a label so GitHub reflects them all.
   const primaryType = typeNotes.find((t) => t.id === primaryTypeId);
   const activeConnected = parseTypeConfig(primaryType?.pluginConfig).githubConnected;
-  const selectedTypeTitles = selectedTypeIds
-    .map((tid) => typeNotes.find((t) => t.id === tid)?.title)
-    .filter((t): t is string => !!t);
-  const canSave = selectedTypeIds.length > 0 && title.trim().length > 0;
+  const canSave = selectedTypeIds.length > 0 && text.trim().length > 0;
 
   const save = () => {
-    if (selectedTypeIds.length === 0 || !title.trim()) return;
-    const trimmedTitle = title.trim();
-    const trimmedDesc = description.trim();
+    const body = text.trim();
+    if (selectedTypeIds.length === 0 || !body) return;
+    // Saved at once under a stand-in title cut from the first line, so creating
+    // an issue never waits on the network. The model's title replaces it when
+    // the server answers — now, or on a later sync if the device is offline.
+    const stub = stubIssueTitle(body);
     const issueId = createIssue({
       noteId: selectedTypeIds[0],
       typeIds: selectedTypeIds,
-      title: trimmedTitle,
-      description: trimmedDesc || undefined,
+      title: stub,
+      description: body,
       attrs: values,
     });
+    // Called before the GitHub create is queued: from this call on the issue
+    // counts as titling, so no flush can open it on GitHub under the stand-in.
+    const titled = retitleIssue({ issueId, stub, text: body }, { applyTitle: applyTitleIfStub });
     // Connected primary type + a project repo → open a matching GitHub issue in
     // the background and record its number (best-effort; failures stay local).
     // Every selected type rides along as a label, attributes render into the
     // issue body's managed block, and People values map to native GitHub assignees.
-    if (activeConnected && config?.repo) {
-      const repo = config.repo;
-      // With no connection this is held back rather than lost, and replayed on
-      // the next sync that gets through — so only a real refusal is worth an
-      // alert. The issue's pending badge speaks for the queued case.
-      void pushOrQueue({
-        issueId,
-        repo,
-        facets: { details: true },
-        push: async () => {
-          const number = await createGithubIssue(repo, {
-            title: trimmedTitle,
-            body: githubIssueBody(trimmedDesc, attributes, values, issueId),
-            labels: githubIssueLabels(selectedTypeTitles),
-            assignees: githubIssueAssignees(attributes, values),
-          });
-          updateIssue(issueId, { ghNumber: number });
-        },
-      }).then((r) => {
-        if (r.status === 'failed') Alert.alert('Not opened on GitHub', r.message);
-      });
+    const repo = activeConnected ? config?.repo : undefined;
+    if (repo) {
+      // Queued durably first, so closing the app while the title is written
+      // can't lose the create. The outbox holds it until the title settles, then
+      // builds it from the row — with whatever title the issue has by then, a
+      // hand rename included. With no connection it waits for the next sync that
+      // gets through, so only a real refusal is worth an alert; the issue's
+      // pending badge speaks for the queued case.
+      const queued = queueGithubPush(issueId, repo, { details: true });
+      void Promise.all([titled, queued]).then(() =>
+        flushGithubOutboxNow((refusedId, message) => {
+          if (refusedId === issueId) Alert.alert('Not opened on GitHub', message);
+        }),
+      );
     }
     router.back();
   };
@@ -396,20 +413,50 @@ export default function NewIssueScreen() {
                 autoFocus
                 style={[styles.input, { color: theme.text, borderColor: border }]}
               />
-              <TextInput
-                value={newAttrOptions}
-                onChangeText={setNewAttrOptions}
-                onFocus={reveal}
-                placeholder="Options, comma separated"
-                placeholderTextColor={theme.textSecondary}
-                style={[styles.input, { color: theme.text, borderColor: border }]}
-              />
+              {/* What the attribute holds. Seeded Status/People/Priority used to be
+                  the only stars/people attributes a project ever had; picking the
+                  kind here is how one gets made now. */}
+              <View style={styles.chips}>
+                {ATTR_KINDS.map((kind) => {
+                  const selected = newAttrType === kind.type;
+                  return (
+                    <Pressable
+                      key={kind.type}
+                      onPress={() => setNewAttrType(kind.type)}
+                      accessibilityRole="radio"
+                      accessibilityState={{ selected }}
+                      accessibilityLabel={kind.label}
+                      style={({ pressed }) => [
+                        styles.typeChip,
+                        {
+                          borderColor: selected ? ACCENT : border,
+                          backgroundColor: selected ? hexToRgba(ACCENT, 0.16) : 'transparent',
+                        },
+                        pressed && styles.pressed,
+                      ]}>
+                      <Feather
+                        name={kind.icon}
+                        size={13}
+                        color={selected ? ACCENT : theme.textSecondary}
+                      />
+                      <ThemedText type="small">{kind.label}</ThemedText>
+                    </Pressable>
+                  );
+                })}
+              </View>
+              {newAttrType === 'select' && (
+                <TextInput
+                  value={newAttrOptions}
+                  onChangeText={setNewAttrOptions}
+                  onFocus={reveal}
+                  placeholder="Options, comma separated"
+                  placeholderTextColor={theme.textSecondary}
+                  style={[styles.input, { color: theme.text, borderColor: border }]}
+                />
+              )}
               <View style={styles.attrFormActions}>
                 <Pressable
-                  onPress={() => {
-                    setNewAttrName(null);
-                    setNewAttrOptions('');
-                  }}
+                  onPress={resetAttrForm}
                   accessibilityRole="button"
                   accessibilityLabel="Cancel attribute"
                   style={({ pressed }) => [styles.attrCancel, pressed && styles.pressed]}>
@@ -430,24 +477,18 @@ export default function NewIssueScreen() {
             </View>
           )}
 
-          {/* Title + description */}
+          {/* One field: the description, verbatim. The title is written from it. */}
           <ThemedText type="small" themeColor="textSecondary" style={styles.sectionLabel}>
             Details
           </ThemedText>
           <TextInput
-            value={title}
-            onChangeText={setTitle}
+            value={text}
+            onChangeText={setText}
             onFocus={reveal}
-            placeholder="Title"
+            placeholder="What’s the issue? A title is written for you."
             placeholderTextColor={theme.textSecondary}
-            style={[styles.input, { color: theme.text, borderColor: border }]}
-          />
-          <TextInput
-            value={description}
-            onChangeText={setDescription}
-            onFocus={reveal}
-            placeholder="Description (optional)"
-            placeholderTextColor={theme.textSecondary}
+            accessibilityLabel="Issue details"
+            accessibilityHint="A title is written automatically from what you type."
             multiline
             style={[styles.input, styles.descInput, { color: theme.text, borderColor: border }]}
           />
@@ -541,7 +582,7 @@ const styles = StyleSheet.create({
     paddingVertical: Spacing.two,
     fontSize: 15,
   },
-  descInput: { minHeight: 90, textAlignVertical: 'top' },
+  descInput: { minHeight: 120, textAlignVertical: 'top' },
   smallCta: {
     backgroundColor: ACCENT,
     borderRadius: Spacing.two,

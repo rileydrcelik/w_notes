@@ -268,6 +268,87 @@ describe('facet OR-merge (queueGithubPush)', () => {
 
 // ---------------------------------------------------------------------------
 
+describe('flushGithubOutbox — a create that waits on its AI title', () => {
+  it('holds the create while holdCreate says the title is still being written, then opens it once it is not', async () => {
+    const { outbox, db, issueGithub } = await load();
+    await outbox.queueGithubPush('i1', 'acme/widgets', { details: true });
+    vi.mocked(db.getIssueById).mockResolvedValue(makeRow({ id: 'i1', title: 'Model title' }));
+    vi.mocked(issueGithub.createGithubIssue).mockResolvedValue(99);
+    const resolve = vi.fn().mockReturnValue(makeCtx());
+    const setGhNumber = vi.fn();
+    let titling = true;
+    const holdCreate = vi.fn(() => titling);
+
+    const held = await outbox.flushGithubOutbox({ resolve, setGhNumber, holdCreate });
+
+    expect(issueGithub.createGithubIssue).not.toHaveBeenCalled();
+    expect(held).toEqual({ pushed: 0, dropped: 0, remaining: 1 });
+    expect(outbox.pendingGithubIssueIds().has('i1')).toBe(true);
+
+    titling = false;
+    const opened = await outbox.flushGithubOutbox({ resolve, setGhNumber, holdCreate });
+
+    expect(issueGithub.createGithubIssue).toHaveBeenCalledWith(
+      'acme/widgets',
+      expect.objectContaining({ title: 'Model title' }),
+    );
+    expect(setGhNumber).toHaveBeenCalledWith('i1', 99);
+    expect(opened).toEqual({ pushed: 1, dropped: 0, remaining: 0 });
+  });
+
+  it('pushes a rename that landed while the create was out, since nothing else would', async () => {
+    const { outbox, db, issueGithub } = await load();
+    await outbox.queueGithubPush('i1', 'acme/widgets', { details: true });
+    vi.mocked(db.getIssueById)
+      .mockResolvedValueOnce(makeRow({ id: 'i1', title: 'Stand-in' }))
+      // Read back after the create returns: renamed in the meantime.
+      .mockResolvedValue(makeRow({ id: 'i1', title: 'Renamed by hand', ghNumber: 99 }));
+    vi.mocked(issueGithub.createGithubIssue).mockResolvedValue(99);
+    const resolve = vi.fn().mockReturnValue(makeCtx());
+
+    const result = await outbox.flushGithubOutbox({ resolve, setGhNumber: vi.fn() });
+
+    expect(issueGithub.createGithubIssue).toHaveBeenCalledWith(
+      'acme/widgets',
+      expect.objectContaining({ title: 'Stand-in' }),
+    );
+    expect(issueGithub.updateGithubIssue).toHaveBeenCalledWith('acme/widgets', 99, {
+      title: 'Renamed by hand',
+    });
+    expect(result).toEqual({ pushed: 1, dropped: 0, remaining: 0 });
+  });
+
+  it('sends no follow-up when the title did not change during the create', async () => {
+    const { outbox, db, issueGithub } = await load();
+    await outbox.queueGithubPush('i1', 'acme/widgets', { details: true });
+    vi.mocked(db.getIssueById).mockResolvedValue(makeRow({ id: 'i1', title: 'Model title' }));
+    vi.mocked(issueGithub.createGithubIssue).mockResolvedValue(99);
+
+    await outbox.flushGithubOutbox({ resolve: vi.fn().mockReturnValue(makeCtx()), setGhNumber: vi.fn() });
+
+    expect(issueGithub.updateGithubIssue).not.toHaveBeenCalled();
+  });
+
+  it('flushGithubOutboxNow uses the registered deps and reports a refusal to its caller', async () => {
+    const { outbox, db, issueGithub, ApiError } = await load();
+    expect(await outbox.flushGithubOutboxNow()).toBeNull(); // no runner mounted yet
+
+    await outbox.queueGithubPush('i1', 'acme/widgets', { details: true });
+    vi.mocked(db.getIssueById).mockResolvedValue(makeRow({ id: 'i1' }));
+    vi.mocked(issueGithub.createGithubIssue).mockRejectedValue(new ApiError('Repo not found', 404));
+    outbox.setGithubOutboxDeps({ resolve: vi.fn().mockReturnValue(makeCtx()), setGhNumber: vi.fn() });
+    const onRefused = vi.fn();
+
+    const result = await outbox.flushGithubOutboxNow(onRefused);
+
+    expect(onRefused).toHaveBeenCalledWith('i1', 'Repo not found');
+    expect(result).toEqual({ pushed: 0, dropped: 1, remaining: 0 });
+    outbox.setGithubOutboxDeps(null);
+  });
+});
+
+// ---------------------------------------------------------------------------
+
 describe('flushGithubOutbox — create path (no ghNumber yet)', () => {
   it('creates the GitHub issue with a body carrying the id marker, then records the number', async () => {
     const { outbox, db, issueGithub } = await load();
@@ -458,6 +539,31 @@ describe('flushGithubOutbox — edit path (ghNumber already set)', () => {
     const fields = vi.mocked(issueGithub.updateGithubIssue).mock.calls[0][2];
     expect(fields).toMatchObject({ state: 'closed', stateReason: 'completed' });
     expect(fields).not.toHaveProperty('title');
+  });
+
+  it('sends the title but preserves GitHub\'s body via upsertAttrsBlock when the queued edit only carries a model retitle (title facet, no details)', async () => {
+    // The retitle queue (issue-retitle.ts) sets ONLY the `title` facet — the
+    // model replaced the stand-in, nothing about the description changed —
+    // and the whole point of that facet is that it must NOT trigger the same
+    // full-body rewrite `details` does: unlike `details`, a retitle must leave
+    // whatever GitHub holds for the body alone apart from the managed
+    // attributes block.
+    const { outbox, db, issueGithub } = await load();
+    await outbox.queueGithubPush('i1', 'acme/widgets', { title: true });
+    vi.mocked(db.getIssueById).mockResolvedValue(
+      makeRow({ id: 'i1', ghNumber: 42, title: 'Model-written title' }),
+    );
+    vi.mocked(issueGithub.getGithubIssueDetail).mockResolvedValue({ labels: [], body: 'GITHUB BODY' });
+    const resolve = vi.fn().mockReturnValue(makeCtx());
+
+    await outbox.flushGithubOutbox({ resolve, setGhNumber: vi.fn() });
+
+    expect(issueGithub.upsertAttrsBlock).toHaveBeenCalledWith('GITHUB BODY', [], {}, 'i1');
+    expect(issueGithub.githubIssueBody).not.toHaveBeenCalled();
+    const fields = vi.mocked(issueGithub.updateGithubIssue).mock.calls[0][2];
+    expect(fields.title).toBe('Model-written title');
+    expect(fields.body).toBe('UPSERTED[GITHUB BODY]');
+    expect(fields).not.toHaveProperty('state');
   });
 });
 

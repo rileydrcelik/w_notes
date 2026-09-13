@@ -76,6 +76,11 @@ type IssuesContextValue = {
     ghNumber?: number;
   }) => string;
   updateIssue: (id: string, patch: IssuePatch) => void;
+  /**
+   * Swap a stand-in title for the AI-written one, only while the issue still
+   * carries the stand-in (see `db.setIssueTitleIfStub`). Resolves whether it did.
+   */
+  applyTitleIfStub: (id: string, stub: string, title: string) => Promise<boolean>;
   /** Sets the done flag (the "mark as done" action). */
   setDone: (id: string, done: boolean) => void;
   /** Flips the done flag (double-tap / undo). */
@@ -174,6 +179,24 @@ export function IssuesProvider({ children }: { children: ReactNode }) {
     persist(db.updateIssue(id, patch));
   }, []);
 
+  // Not optimistic, unlike every other write here. The condition is the point:
+  // the store only follows once SQLite has confirmed the stand-in was still
+  // there, so a rename that beat it — in memory or still queued — is never
+  // overwritten on screen either.
+  const applyTitleIfStub = useCallback<IssuesContextValue['applyTitleIfStub']>(
+    async (id, stub, title) => {
+      const changed = await db.setIssueTitleIfStub(id, stub, title);
+      if (changed) {
+        setIssues((prev) =>
+          prev.map((i) => (i.id === id && i.title === stub ? { ...i, title, updatedAt: today() } : i)),
+        );
+        requestSync();
+      }
+      return changed;
+    },
+    [],
+  );
+
   const setDone = useCallback<IssuesContextValue['setDone']>(
     (id, done) => updateIssue(id, { done }),
     [updateIssue],
@@ -218,6 +241,7 @@ export function IssuesProvider({ children }: { children: ReactNode }) {
       getIssueCountForTypes,
       createIssue,
       updateIssue,
+      applyTitleIfStub,
       setDone,
       toggleDone,
       deleteIssue,
@@ -229,6 +253,7 @@ export function IssuesProvider({ children }: { children: ReactNode }) {
       getIssueCountForTypes,
       createIssue,
       updateIssue,
+      applyTitleIfStub,
       setDone,
       toggleDone,
       deleteIssue,

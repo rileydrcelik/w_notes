@@ -16,6 +16,7 @@ import { db, type SyncPayload } from '@/lib/db';
 import { isDbLockedError } from '@/lib/web-db-lock';
 import { AuthUnavailableError } from '@/lib/auth/token';
 import { clearGithubOutbox, reassignGithubOutbox } from '@/lib/github-outbox';
+import { clearIssueRetitles, reassignIssueRetitles } from '@/lib/issue-retitle';
 import {
   holdGithubDraftsForAccountChange,
   reassignGithubDrafts,
@@ -318,11 +319,16 @@ export async function onSignIn(uid: string): Promise<void> {
       // Composed issues that never got out are this user's own words, typed on
       // this device; the claim makes them theirs under the new account too.
       await reassignGithubDrafts(uid);
+      // Waiting AI titles likewise name claimed rows; re-stamp so the flush
+      // doesn't refuse them as another account's.
+      await reassignIssueRetitles(uid);
     } else {
       await db.clearAllData(); // switched accounts without a clean sign-out
       // Every queued push names a row that was just wiped, and would in any
       // case bill the wrong account's GitHub token.
       await clearGithubOutbox();
+      // Same for waiting AI titles, which would bill the wrong Anthropic key.
+      await clearIssueRetitles();
       // Not cleared. A queued push names a row that was just wiped, but a
       // composed issue *is* the text someone typed, and deleting it as a side
       // effect of switching accounts is the loss this queue exists to stop. It
@@ -348,6 +354,7 @@ export async function onSignOut(): Promise<void> {
   // The issues these pushes referred to are gone by the user's own request, so
   // dropping them is not data loss — replaying them later would be.
   await clearGithubOutbox();
+  await clearIssueRetitles();
   // Composed issues are not pointers, so the same reasoning doesn't reach them
   // (see the account switch above). Held rather than dropped.
   await holdGithubDraftsForAccountChange();
