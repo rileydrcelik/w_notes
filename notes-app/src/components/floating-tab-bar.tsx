@@ -739,18 +739,19 @@ function CreateMenu({
     router.push({ pathname: '/folder/[id]', params: { id, created: '1' } });
   };
 
-  // Creating a block leaves you in the tab looking at it. The copa tab is the
-  // feed of blocks, so a new one is on screen the moment it exists, and pushing
-  // a screen over the top hid the very thing that was just made.
+  // A new text block is empty, so the only thing to do with it is write in it —
+  // open its editor, the same as a new note.
   const onCreateBlock = () => {
     onClose();
-    createCopa();
+    const id = createCopa();
+    router.push({ pathname: '/copa/[id]', params: { id } });
   };
 
+  // A file block is finished the moment it's picked, so it stays in the feed
+  // rather than opening a screen with nothing left to do. A cancelled picker
+  // returns null and leaves no block behind.
   const onAddFile = async () => {
     onClose();
-    // A cancelled picker returns null and leaves no block behind, so there is
-    // nothing to report either way.
     await createFileCopa();
   };
 
@@ -933,12 +934,13 @@ function CreateButton({
     // moment focus is lost would otherwise open a sheet instead of registering
     // as the end of an edit.
     if (leaf && leaf.run()) return;
-    // A tap creates this tab's primary thing, the same as everywhere else: a
-    // note in the notes tab, a text block here. The menu belongs to the
-    // long-press — answering the tap as well made adding a block the one create
-    // in the app whose common case cost two taps.
+    // A tap creates this tab's primary thing and opens it, the same as
+    // everywhere else: a note in the notes tab, a text block here. The menu
+    // belongs to the long-press — answering the tap as well made adding a block
+    // the one create in the app whose common case cost two taps.
     if (onCopa) {
-      createCopa();
+      const id = createCopa();
+      router.push({ pathname: '/copa/[id]', params: { id } });
       return;
     }
     const id = createNote(currentFolderId(pathname, getNote));
