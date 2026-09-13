@@ -35,4 +35,29 @@ config.server.enhanceMiddleware = (metroMiddleware, metroServer) => {
   };
 };
 
+// --- Keep Metro out of Gradle's output ---------------------------------------
+// There's no watchman on Windows, so Metro falls back to walking every directory
+// under the project and calling fs.watch on each one. A local Android build
+// fills `node_modules/*/android/build` with generated classes that Gradle keeps
+// rewriting, and a directory that vanishes between the walk and the watch call
+// takes the whole CLI down before Metro ever serves a bundle:
+//
+//   Error: ENOENT: no such file or directory, watch
+//     '...\node_modules\expo-modules-core\android\build\intermediates\...'
+//
+// Expo's default blockList already covers the app's own `android/app/build`, but
+// every autolinked native module has a build directory of its own inside
+// node_modules — twenty of them here — and those are the ones that race. None of
+// it is JS that Metro could bundle, so blocking it removes the crash and a good
+// deal of pointless crawling with it. Matched unanchored and against both
+// separators, since the same output is written on Windows and on CI.
+const GRADLE_OUTPUT = /(?:^|[\\/])android[\\/](?:build|\.cxx|\.gradle|\.kotlin)(?:[\\/]|$)/;
+
+config.resolver.blockList = [
+  ...(Array.isArray(config.resolver.blockList)
+    ? config.resolver.blockList
+    : [config.resolver.blockList].filter(Boolean)),
+  GRADLE_OUTPUT,
+];
+
 module.exports = config;
