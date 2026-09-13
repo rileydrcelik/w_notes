@@ -43,10 +43,11 @@ from dataclasses import dataclass
 
 import httpx
 import sentry_sdk
-from sqlalchemy import select
+from sqlalchemy import func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
+from app.db import SessionLocal
 from app.models import Folder, Note, User
 
 log = logging.getLogger(__name__)
@@ -202,18 +203,80 @@ def _handler_said_not_embedded(response: httpx.Response) -> bool:
     return isinstance(detail, str) and detail.strip().casefold() != "not found"
 
 
-async def deliver(actions: list[PublishAction]) -> None:
+async def record_embedded(user_id: str, answers: dict[str, bool]) -> None:
+    """Store the portfolio's answers on the notes, for the app to show.
+
+    The first thing in this codebase that writes into the sync stream from
+    anywhere but a client push, so three guarantees the push path gets for free
+    have to be re-established by hand:
+
+    * **``server_seq`` is bumped explicitly.** Its column default fires on INSERT
+      only, so a plain UPDATE leaves the row's stamp where it was, below every
+      device's cursor — the value would be stored and never delivered to anyone.
+    * **The per-user advisory lock is taken**, exactly as ``/sync/push`` does.
+      Without it this can draw a sequence number, stall before committing, and
+      have a concurrent push take a *later* number and commit first; a device
+      that pulls in between stores the higher cursor and skips this row forever.
+    * **``updated_at`` is left alone.** Sync is last-writer-wins on it in both
+      directions, so bumping it would let this row beat a device's unpushed edit
+      and overwrite a newer body with an older one — real data loss, from a write
+      that only ever meant to set a flag.
+
+    ``IS DISTINCT FROM`` keeps an unchanged answer a true no-op, so the common
+    case — a note that was not embedded yesterday and still isn't — costs no
+    sequence number and sends no row to any device.
+
+    Best-effort, like everything else here: this runs after the response, and a
+    failure means a stale flag that the next edit corrects.
+    """
+    if not answers:
+        return
+    try:
+        async with SessionLocal() as session:
+            await session.execute(
+                select(func.pg_advisory_xact_lock(func.hashtext(user_id)))
+            )
+            for note_id, embedded in answers.items():
+                await session.execute(
+                    update(Note)
+                    .where(
+                        Note.user_id == user_id,
+                        Note.id == note_id,
+                        Note.embedded.is_distinct_from(embedded),
+                    )
+                    .values(embedded=embedded, server_seq=text("nextval('sync_seq')"))
+                )
+            await session.commit()
+    except Exception as exc:  # noqa: BLE001 — background task, isolate
+        log.warning("publish: recording embedded state for %s failed: %s", user_id, exc)
+        sentry_sdk.capture_exception(exc)
+
+
+async def deliver(actions: list[PublishAction], user_id: str | None = None) -> None:
     """Apply `actions` against the portfolio's ingest API.
 
     Runs as a background task, so it must swallow everything: an exception here
     surfaces as an unhandled error in the ASGI layer long after the user's sync
     succeeded. Each note is independent — one failure doesn't stop the rest.
+
+    The portfolio's answer to each push says whether it has that note placed,
+    which is the only way this side can know. With `user_id`, those answers are
+    recorded on the notes afterwards (see :func:`record_embedded`) so the app can
+    show it. All of the HTTP happens first: the write takes a per-user lock, and
+    holding that across ten-second-timeout requests would serialize every other
+    sync for the user behind a delivery.
     """
     if not actions:
         return
     settings = get_settings()
     if not settings.publishing_enabled:
         return
+
+    # Only definite answers land here. A timeout, a 5xx, or a 404 from something
+    # that isn't the ingest handler all leave the stored value alone — "we could
+    # not ask" must never be recorded as "the site does not have it", or an
+    # outage reads as every note being dropped from the portfolio at once.
+    answers: dict[str, bool] = {}
 
     base = settings.portfolio_api_base.rstrip("/")
     headers = {"X-Ingest-Secret": settings.portfolio_ingest_secret}
@@ -243,8 +306,14 @@ async def deliver(actions: list[PublishAction]) -> None:
                 # while an unrouted path gets Starlette's bare
                 # `{"detail": "Not Found"}` and a proxy's gets HTML.
                 if response.status_code == 404 and _handler_said_not_embedded(response):
+                    # The handler answered, and its answer is "not embedded" —
+                    # a definite no, for an upsert or a delete alike.
+                    answers[action.note_id] = False
                     continue
                 response.raise_for_status()
+                # It answered without complaint: for an upsert the note is
+                # placed; for a delete it was, and now is not.
+                answers[action.note_id] = action.present
             except Exception as exc:  # noqa: BLE001 — background task, isolate
                 log.warning(
                     "publish: note %s (present=%s) failed: %s",
@@ -253,3 +322,6 @@ async def deliver(actions: list[PublishAction]) -> None:
                     exc,
                 )
                 sentry_sdk.capture_exception(exc)
+
+    if user_id and answers:
+        await record_embedded(user_id, answers)

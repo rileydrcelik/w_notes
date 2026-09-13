@@ -90,12 +90,31 @@ _PRESERVE_IF_NULL = {
     Issue: ("type_ids",),
 }
 
+# Columns the server owns outright: a client may never write them, in either
+# direction of the upsert.
+#
+# Deliberately NOT the same mechanism as _PRESERVE_IF_NULL above. That guard
+# keeps the stored value when the incoming one is NULL, which defends a column an
+# older client cannot send. It defends nothing against a client that sends a
+# confident, wrong value — and for a server-owned column every client is such a
+# client, since the value is not theirs to have an opinion about. `notes.embedded`
+# is the portfolio's answer about its own site.
+#
+# Stripped from `values`, not merely skipped in the UPDATE branch the way
+# _IMMUTABLE is: that skip would still let a first-time INSERT seed the column
+# straight from a push. Removing it from `values` covers both branches at once,
+# since `update_cols` is built by iterating `values`.
+_SERVER_OWNED = {
+    Note: ("embedded",),
+}
+
 
 async def _upsert(session: AsyncSession, model, user_id: str, row: dict) -> None:
     """Insert a row, or update the existing one only if the incoming version is
     newer (last-writer-wins on ``updated_at``). Every applied write advances
     ``server_seq`` so the change is visible to the next pull."""
-    values = {**row, "user_id": user_id}
+    owned = _SERVER_OWNED.get(model, ())
+    values = {k: v for k, v in {**row, "user_id": user_id}.items() if k not in owned}
     preserve = _PRESERVE_IF_NULL.get(model, ())
     stmt = pg_insert(model).values(**values)
     update_cols = {}
@@ -182,7 +201,10 @@ async def push(
         session, user, [n.id for n in payload.notes]
     )
     if actions:
-        background.add_task(deliver, actions)
+        # The user id rides along so the portfolio's answers can be recorded back
+        # onto the notes. It can't be read off the session later: this runs after
+        # the response, and by then the request's session is closed.
+        background.add_task(deliver, actions, user.id)
 
     return PushResponse(server_seq=await _high_water(session, user.id))
 

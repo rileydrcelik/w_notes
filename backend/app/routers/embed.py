@@ -21,7 +21,7 @@ import secrets
 
 from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
@@ -180,3 +180,64 @@ async def get_note(
         updated_at=note.updated_at,
         body_html=body,
     )
+
+
+class PlacementIn(BaseModel):
+    """What the portfolio says it has done with a note."""
+
+    embedded: bool
+
+
+@router.post("/notes/{note_id}/placement", dependencies=[Depends(require_embed_secret)])
+async def set_placement(
+    note_id: str,
+    placement: PlacementIn,
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, bool]:
+    """Record that the portfolio has placed this note on the site, or removed it.
+
+    The authoritative source for the app's "on the website" indicator, and the
+    only immediate one. The other writer infers placement from the answer to a
+    push, which only happens when the note is *edited* — so a note placed in the
+    portfolio's admin and then left alone would read as unplaced until someone
+    happened to touch it. Placement is the portfolio's decision; this lets it say
+    so at the moment it makes it.
+
+    Idempotent, and quiet when nothing changed: ``IS DISTINCT FROM`` means
+    re-sending the same answer costs no sequence number and pushes no row to any
+    device.
+
+    ``updated_at`` is deliberately untouched — see :func:`publisher.record_embedded`
+    for why bumping it would let this beat a device's unpushed edit.
+    """
+    user_ids = await _publisher_user_ids(session)
+    if not user_ids:
+        raise HTTPException(status_code=404, detail="Note not found")
+
+    # Same per-user lock the sync push takes, so the sequence number this draws
+    # cannot be committed out of order with a concurrent push and stranded below
+    # a device's cursor.
+    for user_id in user_ids:
+        await session.execute(select(func.pg_advisory_xact_lock(func.hashtext(user_id))))
+
+    result = await session.execute(
+        update(Note)
+        .where(
+            Note.user_id.in_(user_ids),
+            Note.id == note_id,
+            Note.embedded.is_distinct_from(placement.embedded),
+        )
+        .values(embedded=placement.embedded, server_seq=text("nextval('sync_seq')"))
+    )
+    if result.rowcount == 0:
+        # Either no such note, or it already said this. Tell them apart so the
+        # portfolio can distinguish a bad id from a no-op.
+        exists = (
+            await session.execute(
+                select(Note.id).where(Note.user_id.in_(user_ids), Note.id == note_id)
+            )
+        ).scalar_one_or_none()
+        if exists is None:
+            raise HTTPException(status_code=404, detail="Note not found")
+
+    return {"embedded": placement.embedded}

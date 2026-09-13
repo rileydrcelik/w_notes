@@ -60,6 +60,8 @@ type NoteRow = {
   favorite: number;
   shared: number;
   published: number;
+  /** NULL until the site has been asked about this note. */
+  embedded: number | null;
   created_at: number;
   updated_at: number;
   deleted_at: number | null;
@@ -238,6 +240,12 @@ export type NoteSync = {
   // Nullable on the wire: the backend COALESCE-preserves this column, so a row
   // that has never been published comes back as null rather than false.
   published: number | boolean | null;
+  /**
+   * Server-owned: it arrives on a pull and is never sent on a push (it is not
+   * in getDirty’s select list, which is the client half of that invariant).
+   * Absent from a backend that predates it, which the pull-apply COALESCEs.
+   */
+  embedded?: number | boolean | null;
   created_at: number;
   updated_at: number;
   deleted_at: number | null;
@@ -404,6 +412,10 @@ async function open(): Promise<SQLite.SQLiteDatabase> {
       favorite               INTEGER NOT NULL DEFAULT 0,
       shared                 INTEGER NOT NULL DEFAULT 0,
       published              INTEGER NOT NULL DEFAULT 0,
+      -- Nullable, unlike every other flag here: NULL means nobody has asked
+      -- the site about this note yet, which must stay distinguishable from a
+      -- definite "no". Server-owned; never pushed. See lib/db.ts getDirty.
+      embedded               INTEGER,
       created_at             INTEGER NOT NULL,
       updated_at             INTEGER NOT NULL,
       deleted_at             INTEGER,
@@ -763,6 +775,11 @@ async function ensureSyncColumns(database: SQLite.SQLiteDatabase): Promise<void>
   if (!noteCols.includes('published')) {
     await database.execAsync('ALTER TABLE notes ADD COLUMN published INTEGER NOT NULL DEFAULT 0');
   }
+  // Whether the portfolio has the note placed. No default: an existing row
+  // means "never asked", which is NULL, not "not on the site".
+  if (!noteCols.includes('embedded')) {
+    await database.execAsync('ALTER TABLE notes ADD COLUMN embedded INTEGER');
+  }
 
   const copaCols = await colsOf('copa_items');
   if (!copaCols.includes('updated_at')) {
@@ -812,6 +829,9 @@ function toNote(r: NoteRow): Note {
     favorite: !!r.favorite,
     shared: !!r.shared,
     published: !!r.published,
+    // Tri-state all the way to the UI: undefined is "unknown", which the
+    // indicator shows nothing for.
+    embedded: r.embedded == null ? undefined : !!r.embedded,
     pluginType: (r.plugin_type ?? undefined) as Note['pluginType'],
     pluginConfig: r.plugin_config ?? undefined,
   };
@@ -2198,13 +2218,20 @@ export const db = {
       for (const n of payload.notes) {
         const r = await database.runAsync(
           `INSERT INTO notes
-             (id, title, body, folder_id, favorite, shared, published, created_at, updated_at,
+             (id, title, body, folder_id, favorite, shared, published, embedded, created_at, updated_at,
               deleted_at, trashed_with_folder_id, plugin_type, plugin_config, dirty)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
            ON CONFLICT(id) DO UPDATE SET
              title = excluded.title, body = excluded.body, folder_id = excluded.folder_id,
              favorite = excluded.favorite, shared = excluded.shared,
              published = excluded.published,
+             -- COALESCE, deliberately unlike the published column above. This one is
+             -- server-owned, so a backend that predates it sends nothing and the
+             -- value binds as NULL — which here means "unknown", not "not on the
+             -- site". Taking excluded.embedded straight would blank a true flag
+             -- every time a device talked to an older backend, or a newer client
+             -- reached one mid-rollout.
+             embedded = COALESCE(excluded.embedded, notes.embedded),
              created_at = excluded.created_at, updated_at = excluded.updated_at,
              deleted_at = excluded.deleted_at,
              trashed_with_folder_id = excluded.trashed_with_folder_id,
@@ -2223,6 +2250,10 @@ export const db = {
             // it lands as 0. (Preserving an unknown value matters on *push*,
             // where the server COALESCEs; on pull the server is authoritative.)
             bit(n.published ?? 0),
+            // Passed through as null rather than collapsed to 0: the COALESCE
+            // above needs to be able to tell "the server said nothing" from
+            // "the server said no".
+            n.embedded == null ? null : bit(n.embedded),
             n.created_at,
             n.updated_at,
             n.deleted_at,

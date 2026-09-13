@@ -131,6 +131,15 @@ class Note(Base):
     # ``_PRESERVE_IF_NULL`` set; see the 0007 migration for why that matters.
     published: Mapped[bool | None] = mapped_column(Boolean, server_default=false())
 
+    # Whether the portfolio site currently has this note placed somewhere.
+    #
+    # Server-owned: written from the publisher's answer, never from a client
+    # push (see ``_SERVER_OWNED`` in routers/sync.py). Tri-state — NULL means
+    # nobody has asked the portfolio yet, and must stay distinguishable from a
+    # definite "no", or an outage reads as every note being dropped from the
+    # site. No server_default, for the same reason.
+    embedded: Mapped[bool | None] = mapped_column(Boolean)
+
     created_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
     updated_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
     deleted_at: Mapped[int | None] = mapped_column(BigInteger)

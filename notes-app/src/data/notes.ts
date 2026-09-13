@@ -23,6 +23,15 @@ export type Note = {
    */
   published?: boolean;
   /**
+   * Whether the portfolio website currently has this note placed on it.
+   *
+   * Not the app's to decide, unlike every other flag here — the site owns
+   * placement, and this is the answer coming back. `undefined` means nobody
+   * has asked yet, which is why it is tri-state rather than a plain boolean:
+   * "the site is unreachable" must not read as "the site dropped it".
+   */
+  embedded?: boolean;
+  /**
    * Plugin-note marker. When set, the note renders live plugin content (e.g. a
    * Sentry project's issues, or a GitHub repo's issues) instead of an editable
    * body. Ordinary notes leave it undefined.

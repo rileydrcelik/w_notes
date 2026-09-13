@@ -5,6 +5,7 @@ import { Pressable, StyleSheet, View } from 'react-native';
 import Animated from 'react-native-reanimated';
 import { EnrichedText, type EnrichedTextHtmlStyle } from 'react-native-enriched';
 
+import { EmbeddedBadge } from '@/components/embedded-badge';
 import { FavoriteStar } from '@/components/favorite-star';
 import { FolderShape } from '@/components/notes/folder-shape';
 import { MatchSnippet } from '@/components/notes/match-snippet';
@@ -257,6 +258,7 @@ function TextNoteCard({ note, query }: { note: Note; query?: string }) {
           <ThemedText type="smallBold" numberOfLines={1} style={styles.titleText}>
             {note.title}
           </ThemedText>
+          {note.embedded && <EmbeddedBadge size={13} />}
           {note.favorite && <FavoriteStar size={13} />}
         </View>
         {previewLines > 0 &&

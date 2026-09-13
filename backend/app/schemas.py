@@ -40,6 +40,10 @@ class NoteIn(_Syncable):
     # predate it; the upsert COALESCE-preserves the stored value rather than
     # letting a default silently unpublish. NULL reads as false.
     published: bool | None = None
+    # Whether the portfolio has this note placed. Server-owned: it rides this
+    # model on the way *down* (pull rows are serialized through it) and is
+    # stripped on the way up, so whatever a client sends here is discarded.
+    embedded: bool | None = None
     trashed_with_folder_id: str | None = None
     # Plugin-note marker + opaque per-plugin config (e.g. Sentry org/project).
     # None for ordinary notes; the live plugin data is fetched separately, not
