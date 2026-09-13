@@ -178,6 +178,47 @@ test('pasting text on the copa feed creates a block', async ({ page }) => {
   await expect(page.getByText(text)).toBeVisible();
 });
 
+/**
+ * A new copy block is empty, so the only thing to do with it is write in it —
+ * both create paths (a tap on the navbar button, and "New copy block" from its
+ * long-press/right-click menu) now open the new block's editor instead of
+ * leaving you on the feed looking at a blank card. "Add file" from that same
+ * menu deliberately does *not* navigate (a file block is finished the moment
+ * it's picked) and is out of scope here — it needs a real file picker.
+ */
+test('creating a copy block opens its editor', async ({ page }) => {
+  await page.goto('/copa');
+  await ready(page);
+
+  // Tap path: the navbar create button itself.
+  await page.getByLabel('Create').click();
+
+  // The URL assertion is deliberately specific to a real block id, not just
+  // `/copa` — that's the half of the behaviour change that regresses if the
+  // `router.push` following `createCopa()` is ever dropped.
+  await expect(page).toHaveURL(/\/copa\/copa-/);
+  await expect(page.getByPlaceholder('Title')).toBeVisible();
+  // The body is a tiptap editor on web: its placeholder is a `data-placeholder`
+  // decoration on the empty paragraph, not an input's `placeholder` attribute.
+  await expect(page.locator('[data-placeholder="Contents to copy…"]')).toBeVisible();
+  const firstBlockUrl = page.url();
+
+  // Menu path: right-click the create button to open the long-press menu, and
+  // use its "New copy block" row instead of the tap shortcut.
+  await page.goto('/copa');
+  await ready(page);
+
+  await page.getByLabel('Create').click({ button: 'right' });
+  await page.getByLabel('New copy block').click();
+
+  await expect(page).toHaveURL(/\/copa\/copa-/);
+  await expect(page).not.toHaveURL(firstBlockUrl);
+  await expect(page.getByPlaceholder('Title')).toBeVisible();
+  // The body is a tiptap editor on web: its placeholder is a `data-placeholder`
+  // decoration on the empty paragraph, not an input's `placeholder` attribute.
+  await expect(page.locator('[data-placeholder="Contents to copy…"]')).toBeVisible();
+});
+
 test('dropping a file on the copa feed creates a file block', async ({ page }) => {
   await page.goto('/copa');
   await ready(page);
