@@ -112,6 +112,14 @@ export type Issue = {
   /** Raw creation timestamp (ms) — used to sort issues within a type. */
   createdAt: number;
   updatedAt: string;
+  /**
+   * An earlier issue in the same project this one probably duplicates, as judged
+   * when it was titled. Set once and never cleared; a target that has since been
+   * trashed simply isn't shown.
+   */
+  duplicateOf?: string;
+  /** When the person said it isn't a duplicate (ms). Set once, never cleared. */
+  duplicateDismissedAt?: number;
 };
 
 /**

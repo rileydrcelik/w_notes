@@ -74,6 +74,10 @@ class IssueIn(_Syncable):
     # Opaque attribute-values JSON the client owns ({attrId: value}).
     attrs: str = "{}"
     gh_number: int | None = None
+    # Set-once duplicate hint. None from clients that predate it, or that simply
+    # haven't learned the value yet; the upsert merges first-non-null-wins.
+    duplicate_of: str | None = None
+    duplicate_dismissed_at: int | None = None
     position: int = 0
 
 

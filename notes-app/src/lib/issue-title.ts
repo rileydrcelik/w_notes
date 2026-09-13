@@ -6,6 +6,7 @@
  * instant it's saved, online or not — and the model's title replaces it when
  * `POST /issues/title` answers (see `lib/issue-retitle.ts`).
  */
+import type { DuplicateCandidate } from '@/lib/issue-duplicates';
 import { ApiError, apiFetch } from '@/lib/sync/api';
 
 /** Longest stand-in title, before the ellipsis. */
@@ -30,15 +31,30 @@ export function stubIssueTitle(text: string): string {
   return `${kept.replace(/[\s,;:-]+$/, '')}…`;
 }
 
-/** Ask the server to name this text. Rejects with `ApiError` on a refusal. */
-export async function requestIssueTitle(text: string): Promise<string> {
-  const res = await apiFetch<{ title?: unknown }>('/issues/title', {
+export type IssueTitleResult = {
+  title: string;
+  /** The candidate id the model judged this issue a duplicate of, else null. */
+  duplicateOf: string | null;
+};
+
+/**
+ * Ask the server to name this text and, given `candidates`, whether it
+ * duplicates one of them. Rejects with `ApiError` on a refusal.
+ */
+export async function requestIssueTitle(
+  text: string,
+  candidates: DuplicateCandidate[] = [],
+): Promise<IssueTitleResult> {
+  const res = await apiFetch<{ title?: unknown; duplicate_of?: unknown }>('/issues/title', {
     method: 'POST',
-    body: { text },
+    body: candidates.length > 0 ? { text, candidates } : { text },
   });
   const title = typeof res.title === 'string' ? res.title.trim() : '';
   // A 200 with no title is the server misbehaving, which is worth another try
   // later — hence a 5xx rather than a status the queue gives up on.
   if (!title) throw new ApiError('The title service returned an empty title.', 502);
-  return title;
+  // A backend that predates duplicate detection sends no such field.
+  const duplicateOf =
+    typeof res.duplicate_of === 'string' && res.duplicate_of ? res.duplicate_of : null;
+  return { title, duplicateOf };
 }

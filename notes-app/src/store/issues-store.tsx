@@ -81,6 +81,13 @@ type IssuesContextValue = {
    * carries the stand-in (see `db.setIssueTitleIfStub`). Resolves whether it did.
    */
   applyTitleIfStub: (id: string, stub: string, title: string) => Promise<boolean>;
+  /**
+   * Flag an issue as a likely duplicate, only if it has no verdict yet and both
+   * issues are live (see `db.setIssueDuplicateIfUnset`). Resolves whether it did.
+   */
+  applyDuplicateIfUnset: (id: string, duplicateOf: string) => Promise<boolean>;
+  /** "Not a duplicate" — hides the flag everywhere, for good. */
+  dismissDuplicate: (id: string) => void;
   /** Sets the done flag (the "mark as done" action). */
   setDone: (id: string, done: boolean) => void;
   /** Flips the done flag (double-tap / undo). */
@@ -197,7 +204,36 @@ export function IssuesProvider({ children }: { children: ReactNode }) {
     [],
   );
 
-  const setDone = useCallback<IssuesContextValue['setDone']>(
+  // Not optimistic either, for the same reason as applyTitleIfStub: whether the
+  // flag belongs there is SQLite's to decide, against a trash or a dismissal
+  // that may still be on its way through the write chain.
+  const applyDuplicateIfUnset = useCallback<IssuesContextValue['applyDuplicateIfUnset']>(
+    async (id, duplicateOf) => {
+      const changed = await db.setIssueDuplicateIfUnset(id, duplicateOf);
+      if (changed) {
+        setIssues((prev) =>
+          prev.map((i) => (i.id === id ? { ...i, duplicateOf, updatedAt: today() } : i)),
+        );
+        requestSync();
+      }
+      return changed;
+    },
+    [],
+  );
+
+  const dismissDuplicate = useCallback<IssuesContextValue['dismissDuplicate']>((id) => {
+    const at = Date.now();
+    setIssues((prev) =>
+      prev.map((i) =>
+        i.id === id && i.duplicateOf && i.duplicateDismissedAt === undefined
+          ? { ...i, duplicateDismissedAt: at, updatedAt: today() }
+          : i,
+      ),
+    );
+    persist(db.dismissIssueDuplicate(id, at));
+  }, []);
+
+  const setDone =useCallback<IssuesContextValue['setDone']>(
     (id, done) => updateIssue(id, { done }),
     [updateIssue],
   );
@@ -242,6 +278,8 @@ export function IssuesProvider({ children }: { children: ReactNode }) {
       createIssue,
       updateIssue,
       applyTitleIfStub,
+      applyDuplicateIfUnset,
+      dismissDuplicate,
       setDone,
       toggleDone,
       deleteIssue,
@@ -254,6 +292,8 @@ export function IssuesProvider({ children }: { children: ReactNode }) {
       createIssue,
       updateIssue,
       applyTitleIfStub,
+      applyDuplicateIfUnset,
+      dismissDuplicate,
       setDone,
       toggleDone,
       deleteIssue,

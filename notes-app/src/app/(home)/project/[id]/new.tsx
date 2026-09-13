@@ -31,6 +31,7 @@ import {
   serializeProjectConfig,
 } from '@/lib/project';
 import { flushGithubOutboxNow, queueGithubPush } from '@/lib/github-outbox';
+import { selectDuplicateCandidates } from '@/lib/issue-duplicates';
 import { retitleIssue } from '@/lib/issue-retitle';
 import { stubIssueTitle } from '@/lib/issue-title';
 import { useIssues } from '@/store/issues-store';
@@ -54,7 +55,8 @@ export default function NewIssueScreen() {
   const insets = useSafeAreaInsets();
   const tabBarInset = useTabBarInset();
   const { getFolder, getNotesInFolder, updateFolder, createIssueTypeNote, deleteNote } = useNotes();
-  const { createIssue, applyTitleIfStub, getIssuesForNote } = useIssues();
+  const { issues, createIssue, applyTitleIfStub, applyDuplicateIfUnset, getIssuesForNote } =
+    useIssues();
 
   // Details sits at the far end of this form, past the types and every custom
   // attribute, so on Android — where the keyboard covers the window instead of
@@ -218,7 +220,23 @@ export default function NewIssueScreen() {
     });
     // Called before the GitHub create is queued: from this call on the issue
     // counts as titling, so no flush can open it on GitHub under the stand-in.
-    const titled = retitleIssue({ issueId, stub, text: body }, { applyTitle: applyTitleIfStub });
+    // The same request checks it against the project's existing issues. `issues`
+    // is this render's list, so every entry in it predates the issue just made —
+    // and SQLite may not hold the new row yet, so nothing here reads it back.
+    const titled = retitleIssue(
+      { issueId, stub, text: body },
+      {
+        applyTitle: applyTitleIfStub,
+        candidates: () =>
+          selectDuplicateCandidates({
+            selfId: issueId,
+            text: body,
+            projectTypeIds: new Set(typeNotes.map((t) => t.id)),
+            issues,
+          }),
+        applyDuplicate: applyDuplicateIfUnset,
+      },
+    );
     // Connected primary type + a project repo → open a matching GitHub issue in
     // the background and record its number (best-effort; failures stay local).
     // Every selected type rides along as a label, attributes render into the

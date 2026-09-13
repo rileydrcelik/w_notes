@@ -220,6 +220,11 @@ class Issue(Base):
     attrs: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     # The mirrored GitHub issue number when the type is GitHub-connected, else null.
     gh_number: Mapped[int | None] = mapped_column(BigInteger)
+    # An earlier issue in the same project this one probably duplicates, as judged
+    # when it was titled, and when the person dismissed that. Set once, never
+    # cleared — see _MERGE_ONCE in routers/sync.py.
+    duplicate_of: Mapped[str | None] = mapped_column(String)
+    duplicate_dismissed_at: Mapped[int | None] = mapped_column(BigInteger)
     # Manual ordering within a type.
     position: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
 

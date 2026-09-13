@@ -98,6 +98,8 @@ type IssueRow = {
   // Attribute values as a JSON string; parsed into an object by `toIssue`.
   attrs: string;
   gh_number: number | null;
+  duplicate_of: string | null;
+  duplicate_dismissed_at: number | null;
   position: number;
   created_at: number;
   updated_at: number;
@@ -224,6 +226,9 @@ export type IssueSync = {
   done: number | boolean;
   attrs: string;
   gh_number: number | null;
+  // Absent when pulled from a backend that predates duplicate detection.
+  duplicate_of?: string | null;
+  duplicate_dismissed_at?: number | null;
   position: number;
   created_at: number;
   updated_at: number;
@@ -451,6 +456,8 @@ async function open(): Promise<SQLite.SQLiteDatabase> {
       done         INTEGER NOT NULL DEFAULT 0,
       attrs        TEXT NOT NULL DEFAULT '{}',
       gh_number    INTEGER,
+      duplicate_of TEXT,
+      duplicate_dismissed_at INTEGER,
       position     INTEGER NOT NULL DEFAULT 0,
       created_at   INTEGER NOT NULL,
       updated_at   INTEGER NOT NULL DEFAULT 0,
@@ -813,6 +820,16 @@ async function ensureSyncColumns(database: SQLite.SQLiteDatabase): Promise<void>
   if (!issueCols.includes('type_ids')) {
     await database.execAsync("ALTER TABLE issues ADD COLUMN type_ids TEXT NOT NULL DEFAULT '[]'");
   }
+  // Duplicate detection came after that. Nullable with no default, unlike
+  // type_ids: a device holding rows it pulled before it knew these columns must
+  // push NULL ("I don't know"), which sync's merge ignores. A default would push
+  // a confident value instead, and could undo a dismissal made on another device.
+  if (!issueCols.includes('duplicate_of')) {
+    await database.execAsync('ALTER TABLE issues ADD COLUMN duplicate_of TEXT');
+  }
+  if (!issueCols.includes('duplicate_dismissed_at')) {
+    await database.execAsync('ALTER TABLE issues ADD COLUMN duplicate_dismissed_at INTEGER');
+  }
 }
 
 // ---- Row -> app-shape converters ----
@@ -875,6 +892,8 @@ function toIssue(r: IssueRow): Issue {
     position: r.position,
     createdAt: r.created_at,
     updatedAt: ymd(r.updated_at),
+    duplicateOf: r.duplicate_of ?? undefined,
+    duplicateDismissedAt: r.duplicate_dismissed_at ?? undefined,
   };
 }
 
@@ -1768,6 +1787,43 @@ export const db = {
     return result.changes > 0;
   },
 
+  /**
+   * Record that an issue probably duplicates `duplicateOf` — only while it has no
+   * verdict yet, hasn't been dismissed, isn't its own target, and both issues are
+   * live. Resolves whether it did.
+   *
+   * SET ONCE. Neither this column nor `duplicate_dismissed_at` is ever cleared,
+   * which is what lets sync merge them as "first non-null wins" whatever the
+   * `updated_at` order (see `_MERGE_ONCE` in the backend's routers/sync.py). One
+   * conditional statement on the serialized chain, for the reason
+   * `setIssueTitleIfStub` gives: a trash queued first has committed by the time
+   * the WHERE clause runs.
+   */
+  async setIssueDuplicateIfUnset(id: string, duplicateOf: string): Promise<boolean> {
+    dbCrumb('setIssueDuplicateIfUnset', { id });
+    const database = await getDb();
+    const result = await database.runAsync(
+      `UPDATE issues SET duplicate_of = ?, updated_at = ?, dirty = 1
+       WHERE id = ? AND deleted_at IS NULL
+         AND duplicate_of IS NULL AND duplicate_dismissed_at IS NULL
+         AND id <> ?
+         AND EXISTS (SELECT 1 FROM issues t WHERE t.id = ? AND t.deleted_at IS NULL)`,
+      [duplicateOf, Date.now(), id, duplicateOf, duplicateOf],
+    );
+    return result.changes > 0;
+  },
+
+  /** "Not a duplicate." Set once, like `duplicate_of` — see above. */
+  async dismissIssueDuplicate(id: string, at: number): Promise<void> {
+    dbCrumb('dismissIssueDuplicate', { id });
+    const database = await getDb();
+    await database.runAsync(
+      `UPDATE issues SET duplicate_dismissed_at = ?, updated_at = ?, dirty = 1
+       WHERE id = ? AND duplicate_of IS NOT NULL AND duplicate_dismissed_at IS NULL`,
+      [at, Date.now(), id],
+    );
+  },
+
   async deleteIssue(id: string): Promise<void> {
     dbCrumb('deleteIssue', { id });
     const database = await getDb();
@@ -2049,7 +2105,8 @@ export const db = {
         [skipSeed],
       ),
       database.getAllAsync<IssueSync>(
-        `SELECT id, note_id, type_ids, title, description, done, attrs, gh_number, position,
+        `SELECT id, note_id, type_ids, title, description, done, attrs, gh_number,
+                duplicate_of, duplicate_dismissed_at, position,
                 created_at, updated_at, deleted_at
          FROM issues WHERE dirty = 1 AND id NOT LIKE ?`,
         [skipSeed],
@@ -2315,9 +2372,10 @@ export const db = {
       for (const i of payload.issues) {
         const r = await database.runAsync(
           `INSERT INTO issues
-             (id, note_id, type_ids, title, description, done, attrs, gh_number, position,
+             (id, note_id, type_ids, title, description, done, attrs, gh_number,
+              duplicate_of, duplicate_dismissed_at, position,
               created_at, updated_at, deleted_at, dirty)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
            ON CONFLICT(id) DO UPDATE SET
              note_id = excluded.note_id,
              -- An older client that predates multi-type can't send type_ids
@@ -2335,6 +2393,12 @@ export const db = {
              -- row is eligible to open a second one. A number, once known, is
              -- never legitimately un-known.
              gh_number = COALESCE(excluded.gh_number, issues.gh_number),
+             -- Set once and never cleared (see setIssueDuplicateIfUnset), so the
+             -- STORED value wins, the reverse of gh_number's order: a verdict or
+             -- dismissal made here survives pulling a copy of the row that
+             -- predates it, or one from a backend that predates both columns.
+             duplicate_of = COALESCE(issues.duplicate_of, excluded.duplicate_of),
+             duplicate_dismissed_at = COALESCE(issues.duplicate_dismissed_at, excluded.duplicate_dismissed_at),
              position = excluded.position, created_at = excluded.created_at,
              updated_at = excluded.updated_at, deleted_at = excluded.deleted_at, dirty = 0
            WHERE excluded.updated_at >= issues.updated_at`,
@@ -2347,6 +2411,8 @@ export const db = {
             bit(i.done),
             i.attrs,
             i.gh_number,
+            i.duplicate_of ?? null,
+            i.duplicate_dismissed_at ?? null,
             i.position,
             i.created_at,
             i.updated_at,
@@ -2688,6 +2754,8 @@ const WRITE_METHODS = [
   'createIssue',
   'updateIssue',
   'setIssueTitleIfStub',
+  'setIssueDuplicateIfUnset',
+  'dismissIssueDuplicate',
   'deleteIssue',
   'saveFinanceSheet',
   'deleteFinanceSheet',

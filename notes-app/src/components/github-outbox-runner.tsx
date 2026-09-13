@@ -26,6 +26,7 @@ import {
   type OutboxDeps,
 } from '@/lib/github-outbox';
 import { flushGithubDrafts, loadGithubDrafts } from '@/lib/github-issue-drafts';
+import { selectDuplicateCandidates } from '@/lib/issue-duplicates';
 import { updateGithubIssue } from '@/lib/issue-github';
 import {
   flushIssueRetitles,
@@ -40,7 +41,7 @@ import { useIssues } from '@/store/issues-store';
 import { useNotes } from '@/store/notes-store';
 
 export function GithubOutboxRunner() {
-  const { updateIssue, applyTitleIfStub } = useIssues();
+  const { updateIssue, applyTitleIfStub, applyDuplicateIfUnset } = useIssues();
   const { getNote, getFolder, getNotesInFolder } = useNotes();
 
   // The latest store readers live in a ref so the subscription installs once and
@@ -48,19 +49,25 @@ export function GithubOutboxRunner() {
   // to keep its back-sync callback stable.
   const depsRef = useRef<OutboxDeps | null>(null);
 
+  // An issue's live type notes. They share a project folder, which holds the
+  // repo and the attribute schema.
+  //
+  // Anchored on the first *live* type rather than on `noteId`. The delete
+  // cascade spares an issue that still has another live type without rewriting
+  // its noteId, so the primary can sit in the trash while the issue itself is
+  // perfectly alive — and anchoring on it would abandon a queued push for an
+  // issue the user can still see.
+  const liveOwnTypes = useCallback(
+    (issue: Issue) =>
+      effectiveTypeIds(issue)
+        .map((tid) => getNote(tid))
+        .filter((n): n is Note => !!n && n.pluginType === ISSUE_TYPE_PLUGIN),
+    [getNote],
+  );
+
   const resolve = useCallback<OutboxDeps['resolve']>(
     (issue: Issue) => {
-      // An issue is filed under type-notes; they share a project folder, which
-      // holds the repo and the attribute schema.
-      //
-      // Anchored on the first *live* type rather than on `noteId`. The delete
-      // cascade spares an issue that still has another live type without
-      // rewriting its noteId, so the primary can sit in the trash while the
-      // issue itself is perfectly alive — and anchoring on it would abandon a
-      // queued push for an issue the user can still see.
-      const ownTypes = effectiveTypeIds(issue)
-        .map((tid) => getNote(tid))
-        .filter((n): n is Note => !!n && n.pluginType === ISSUE_TYPE_PLUGIN);
+      const ownTypes = liveOwnTypes(issue);
       const anchor = ownTypes[0];
       const folderId = anchor?.folderId;
       if (!folderId) return null;
@@ -92,7 +99,7 @@ export function GithubOutboxRunner() {
         connected: ownTypes.some((t) => parseTypeConfig(t.pluginConfig).githubConnected),
       };
     },
-    [getNote, getFolder, getNotesInFolder],
+    [liveOwnTypes, getFolder, getNotesInFolder],
   );
 
   const retitleDepsRef = useRef<RetitleDeps | null>(null);
@@ -108,6 +115,27 @@ export function GithubOutboxRunner() {
     setGithubOutboxDeps(deps);
     retitleDepsRef.current = {
       applyTitle: applyTitleIfStub,
+      // Read from SQLite rather than the stores: a flush can run at launch,
+      // before the issues store has hydrated. A type the notes store can't see
+      // yet means an empty list — the title still goes out, just unchecked.
+      candidates: async (issueId, text) => {
+        const row = await db.getIssueById(issueId);
+        const folderId = row ? liveOwnTypes(row)[0]?.folderId : undefined;
+        if (!row || !folderId) return [];
+        const projectTypeIds = new Set(
+          getNotesInFolder(folderId)
+            .filter((n) => n.pluginType === ISSUE_TYPE_PLUGIN)
+            .map((n) => n.id),
+        );
+        return selectDuplicateCandidates({
+          selfId: issueId,
+          createdBefore: row.createdAt,
+          text,
+          projectTypeIds,
+          issues: await db.getIssues(),
+        });
+      },
+      applyDuplicate: applyDuplicateIfUnset,
       // An issue already mirrored under its stand-in title gets the real one
       // pushed. One not mirrored yet needs nothing: its queued create reads the
       // row at replay time, and this flush runs first.
@@ -134,7 +162,7 @@ export function GithubOutboxRunner() {
       },
     };
     return () => setGithubOutboxDeps(null);
-  }, [resolve, updateIssue, applyTitleIfStub]);
+  }, [resolve, updateIssue, applyTitleIfStub, applyDuplicateIfUnset, liveOwnTypes, getNotesInFolder]);
 
   useEffect(() => {
     void loadGithubOutbox();

@@ -9,7 +9,7 @@
  */
 import Feather from '@expo/vector-icons/Feather';
 import * as Clipboard from 'expo-clipboard';
-import { Stack, useFocusEffect, useLocalSearchParams } from 'expo-router';
+import { Stack, useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Alert, FlatList, Pressable, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -112,6 +112,7 @@ function IssueCard({
   attributes,
   otherTypes,
   pendingPush,
+  duplicateOf,
   selectionActive,
   selected,
   onToggleSelect,
@@ -124,6 +125,8 @@ function IssueCard({
   otherTypes: string[];
   /** This issue's GitHub push is held back until the device is back online. */
   pendingPush: boolean;
+  /** The earlier issue this one probably duplicates, when that should show. */
+  duplicateOf?: { title: string; done: boolean };
   selectionActive: boolean;
   selected: boolean;
   onToggleSelect: () => void;
@@ -161,8 +164,12 @@ function IssueCard({
         accessibilityState={{ selected, checked: issue.done }}
         accessibilityLabel={
           `${issue.title || 'Issue'}${issue.done ? ', done' : ''}${
-            pendingPush ? ', waiting to reach GitHub' : ''
-          }`
+            duplicateOf
+              ? `, possible duplicate of ${duplicateOf.title || 'an untitled issue'}${
+                  duplicateOf.done ? ', which is done' : ''
+                }`
+              : ''
+          }${pendingPush ? ', waiting to reach GitHub' : ''}`
         }
         onPress={selectionActive ? onToggleSelect : doubleTap}
         onLongPress={onToggleSelect}
@@ -200,8 +207,22 @@ function IssueCard({
             )}
           </View>
 
-          {otherTypes.length > 0 && (
+          {(!!duplicateOf || otherTypes.length > 0) && (
             <View style={styles.typeTagRow}>
+              {/* Passive: anything tappable inside the card's Pressable would be
+                  a nested <button> on web. The edit sheet is where you act on it. */}
+              {duplicateOf && (
+                <View style={[styles.typeTag, { borderColor: hexToRgba(theme.text, 0.15) }]}>
+                  <Feather name="layers" size={9} color={theme.textSecondary} />
+                  <ThemedText
+                    type="small"
+                    themeColor="textSecondary"
+                    numberOfLines={1}
+                    style={styles.duplicateTagText}>
+                    Possible duplicate
+                  </ThemedText>
+                </View>
+              )}
               {otherTypes.map((t) => (
                 <View key={t} style={[styles.typeTag, { borderColor: hexToRgba(ACCENT, 0.4) }]}>
                   <Feather name="columns" size={9} color={ACCENT} />
@@ -233,6 +254,13 @@ function IssueCard({
               {issue.ghNumber == null
                 ? 'Will open on GitHub when you are back online.'
                 : 'Changes will reach GitHub when you are back online.'}
+            </ThemedText>
+          )}
+          {duplicateOf && expanded && (
+            <ThemedText type="small" themeColor="textSecondary" style={styles.description}>
+              {`Possible duplicate of “${duplicateOf.title || 'Untitled issue'}”${
+                duplicateOf.done ? ' (done)' : ''
+              }.`}
             </ThemedText>
           )}
         </ThemedView>
@@ -283,14 +311,18 @@ function IssueCard({
 }
 
 export default function IssueTypeScreen() {
-  const { id, typeId } = useLocalSearchParams<{ id: string; typeId: string }>();
+  // `open`: an issue to open in the edit sheet on arrival — set by another type's
+  // "possible duplicate of" row, when the issue it points at lives here.
+  const { id, typeId, open } = useLocalSearchParams<{ id: string; typeId: string; open?: string }>();
+  const router = useRouter();
   const insets = useSafeAreaInsets();
   const tabBarInset = useTabBarInset();
   const columns = useGridColumns();
   const columnWidth = useGridColumnWidth();
   const edgePadding = useGridEdgePadding();
   const { getFolder, getNote, getNotesInFolder } = useNotes();
-  const { issues, getIssuesForNote, setDone, updateIssue, deleteIssue } = useIssues();
+  const { issues, getIssuesForNote, setDone, updateIssue, deleteIssue, dismissDuplicate } =
+    useIssues();
   // Subscribed once for the whole list, not per card: a long list of cards each
   // holding their own subscription would re-render all of them on every change.
   const pendingGh = usePendingGithubIssues();
@@ -347,6 +379,21 @@ export default function IssueTypeScreen() {
   // apart from labels a user added on GitHub, so an edit preserves the latter.
   const typeNames = useMemo(() => typeNotesList.map((t) => t.title), [typeNotesList]);
 
+  const issueById = useMemo(() => new Map(issues.map((i) => [i.id, i])), [issues]);
+  const projectTypeIds = useMemo(() => new Set(typeNotesList.map((t) => t.id)), [typeNotesList]);
+  // The issue a duplicate flag points at, when the flag should show: not
+  // dismissed, and the target still live and in this project. Worked out here
+  // rather than written down, so trashing the target hides the flag and
+  // restoring it brings the flag back, with nothing to undo either way.
+  const duplicateTargetOf = useCallback(
+    (issue: Issue): Issue | undefined => {
+      if (!issue.duplicateOf || issue.duplicateDismissedAt !== undefined) return undefined;
+      const target = issueById.get(issue.duplicateOf);
+      return target && effectiveTypeIds(target).some((t) => projectTypeIds.has(t)) ? target : undefined;
+    },
+    [issueById, projectTypeIds],
+  );
+
   // Which issues the edit-attributes sheet is acting on (null = closed).
   const [editingIds, setEditingIds] = useState<string[] | null>(null);
   const editInitial = useMemo<Record<string, IssueAttrValue>>(() => {
@@ -365,6 +412,35 @@ export default function IssueTypeScreen() {
   useEffect(() => {
     if (editSingleId) void cancelIssueRetitle(editSingleId);
   }, [editSingleId]);
+  const editDuplicate = editSingle ? duplicateTargetOf(editSingle) : undefined;
+
+  // Arriving from another type's "possible duplicate of" row: open that issue.
+  useEffect(() => {
+    if (!open || !issueById.has(open)) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- consume a one-shot route param
+    setEditingIds([open]);
+    router.setParams({ open: undefined });
+  }, [open, issueById, router]);
+
+  // Tap-through from the sheet's duplicate row. Unapplied edits are discarded,
+  // the same as tapping the backdrop.
+  const openDuplicate = useCallback(() => {
+    if (!editDuplicate) return;
+    const targetTypes = effectiveTypeIds(editDuplicate);
+    if (targetTypes.includes(typeId)) {
+      // In this list already: the sheet reseeds from the new selection in place.
+      setEditingIds([editDuplicate.id]);
+      return;
+    }
+    const home = targetTypes.find((t) => projectTypeIds.has(t));
+    if (!home) return;
+    setEditingIds(null);
+    clear();
+    router.push({
+      pathname: '/project/[id]/type/[typeId]',
+      params: { id, typeId: home, open: editDuplicate.id },
+    });
+  }, [editDuplicate, typeId, projectTypeIds, clear, router, id]);
   const editInitialTypeIds = useMemo<string[] | undefined>(
     () => (editSingle ? effectiveTypeIds(editSingle) : undefined),
     [editSingle],
@@ -497,7 +573,12 @@ export default function IssueTypeScreen() {
   const applyEdit = useCallback(
     (
       attrs: Record<string, IssueAttrValue>,
-      single?: { title: string; description: string; typeIds?: string[] },
+      single?: {
+        title: string;
+        description: string;
+        typeIds?: string[];
+        dismissDuplicate?: boolean;
+      },
     ) => {
       // Title/description/type edits only come from a single-issue edit (the
       // sheet only shows those fields then). Normalize types so noteId stays the
@@ -509,6 +590,8 @@ export default function IssueTypeScreen() {
           ...(single ? { title: single.title, description: single.description } : {}),
           ...(typePatch ? { noteId: typePatch.noteId, typeIds: typePatch.typeIds } : {}),
         });
+        // App-only: the flag never reaches GitHub, so there is nothing to push.
+        if (single?.dismissDuplicate) dismissDuplicate(issueId);
         const issue = issues.find((i) => i.id === issueId);
         if (issue?.ghNumber != null) {
           // Push the issue's full (post-edit) type set as labels, not just this
@@ -530,7 +613,7 @@ export default function IssueTypeScreen() {
       setEditingIds(null);
       clear();
     },
-    [editingIds, updateIssue, clear, issues, pushAttrsToGithub, typeTitleById],
+    [editingIds, updateIssue, clear, issues, pushAttrsToGithub, typeTitleById, dismissDuplicate],
   );
 
   const headerTop = insets.top + Spacing.four;
@@ -571,6 +654,7 @@ export default function IssueTypeScreen() {
           }
           renderItem={({ item }) => {
             if ('spacer' in item) return <View style={[styles.cardCell, { width: columnWidth }]} />;
+            const duplicate = duplicateTargetOf(item);
             return (
               <View style={[styles.cardCell, { width: columnWidth }]}>
                 <IssueCard
@@ -581,6 +665,7 @@ export default function IssueTypeScreen() {
                     .map((tid) => typeTitleById.get(tid))
                     .filter((t): t is string => !!t)}
                   pendingPush={pendingGh.has(item.id)}
+                  duplicateOf={duplicate ? { title: duplicate.title, done: duplicate.done } : undefined}
                   selectionActive={selectionActive}
                   selected={isSelected(item.id)}
                   onToggleSelect={() => toggle(item.id)}
@@ -608,6 +693,9 @@ export default function IssueTypeScreen() {
           initialTypeIds={editInitialTypeIds}
           initialTitle={editSingle?.title}
           initialDescription={editSingle?.description}
+          duplicateTitle={editDuplicate?.title}
+          duplicateDone={editDuplicate?.done}
+          onOpenDuplicate={openDuplicate}
           onClose={() => {
             setEditingIds(null);
             clear();
@@ -703,6 +791,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
   },
   typeTagText: { color: ACCENT, fontSize: 11 },
+  duplicateTagText: { fontSize: 11 },
   description: { marginLeft: Spacing.three, lineHeight: 19 },
   state: { textAlign: 'center', marginTop: Spacing.five },
   pressed: { opacity: 0.6 },

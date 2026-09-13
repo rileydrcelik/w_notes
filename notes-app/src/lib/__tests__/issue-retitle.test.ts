@@ -71,6 +71,7 @@ vi.mock('@/lib/issue-title', () => ({
 }));
 
 type IssueRow = Issue & { deletedAt: number | null };
+type TitleResult = { title: string; duplicateOf: string | null };
 
 function makeRow(overrides: Partial<IssueRow> = {}): IssueRow {
   return {
@@ -125,7 +126,7 @@ async function load() {
 describe('retitleIssue — immediate path', () => {
   it('applies the model title right away and reports titled', async () => {
     const { retitle, issueTitle } = await load();
-    vi.mocked(issueTitle.requestIssueTitle).mockResolvedValue('Model title');
+    vi.mocked(issueTitle.requestIssueTitle).mockResolvedValue({ title: 'Model title', duplicateOf: null });
     const applyTitle = vi.fn().mockResolvedValue(true);
 
     const result = await retitle.retitleIssue(
@@ -135,7 +136,7 @@ describe('retitleIssue — immediate path', () => {
 
     expect(result).toEqual({ status: 'titled', title: 'Model title' });
     expect(applyTitle).toHaveBeenCalledWith('i1', 'Stub title', 'Model title');
-    expect(issueTitle.requestIssueTitle).toHaveBeenCalledWith('full text');
+    expect(issueTitle.requestIssueTitle).toHaveBeenCalledWith('full text', []);
     expect(retitle.pendingRetitleIssueIds().has('i1')).toBe(false);
   });
 });
@@ -159,7 +160,7 @@ describe('a transport failure queues the entry for a later flush', () => {
 
     // The next sync gets through.
     vi.mocked(db.getIssueById).mockResolvedValue(makeRow({ id: 'i1' }));
-    vi.mocked(issueTitle.requestIssueTitle).mockResolvedValueOnce('Model title');
+    vi.mocked(issueTitle.requestIssueTitle).mockResolvedValueOnce({ title: 'Model title', duplicateOf: null });
 
     const flushResult = await retitle.flushIssueRetitles({ applyTitle });
 
@@ -221,7 +222,7 @@ describe('a hand rename always wins', () => {
 
   it('keeps the rename and drops the entry when the conditional write finds the stand-in gone', async () => {
     const { retitle, issueTitle } = await load();
-    vi.mocked(issueTitle.requestIssueTitle).mockResolvedValue('Model title');
+    vi.mocked(issueTitle.requestIssueTitle).mockResolvedValue({ title: 'Model title', duplicateOf: null });
     // The rename committed while the model was writing, so the store's
     // stand-in-guarded write matches nothing.
     const applyTitle = vi.fn().mockResolvedValue(false);
@@ -239,9 +240,9 @@ describe('a hand rename always wins', () => {
 
   it('applies nothing when the issue is opened for editing while the request is out', async () => {
     const { retitle, issueTitle } = await load();
-    let resolveTitle: (title: string) => void = () => {};
+    let resolveTitle: (result: TitleResult) => void = () => {};
     vi.mocked(issueTitle.requestIssueTitle).mockReturnValue(
-      new Promise<string>((resolve) => {
+      new Promise<TitleResult>((resolve) => {
         resolveTitle = resolve;
       }),
     );
@@ -255,7 +256,7 @@ describe('a hand rename always wins', () => {
     expect(issueTitle.requestIssueTitle).toHaveBeenCalledTimes(1);
 
     await retitle.cancelIssueRetitle('i1');
-    resolveTitle('Model title');
+    resolveTitle({ title: 'Model title', duplicateOf: null });
 
     expect(await immediate).toEqual({ status: 'kept' });
     expect(applyTitle).not.toHaveBeenCalled();
@@ -267,7 +268,7 @@ describe('a hand rename always wins', () => {
 describe('isRetitlePending — what the GitHub outbox holds a create on', () => {
   it('is true from the moment retitleIssue is called, before the entry has persisted', async () => {
     const { retitle, issueTitle } = await load();
-    vi.mocked(issueTitle.requestIssueTitle).mockResolvedValue('Model title');
+    vi.mocked(issueTitle.requestIssueTitle).mockResolvedValue({ title: 'Model title', duplicateOf: null });
 
     const immediate = retitle.retitleIssue(
       { issueId: 'i1', stub: 'Stub title', text: 'full text' },
@@ -319,7 +320,7 @@ describe('the queue is per-identity', () => {
     // would happily hand back — proof that the skip below is really the
     // identity guard, and not a coincidental hold or drop.
     vi.mocked(db.getIssueById).mockResolvedValue(makeRow({ id: 'i1', title: 'Stub title' }));
-    vi.mocked(issueTitle.requestIssueTitle).mockResolvedValue('Should never be used');
+    vi.mocked(issueTitle.requestIssueTitle).mockResolvedValue({ title: 'Should never be used', duplicateOf: null });
     const applyTitle = vi.fn().mockResolvedValue(true);
     const flushResult = await retitle.flushIssueRetitles({ applyTitle });
 
@@ -337,8 +338,8 @@ describe('concurrency: the immediate attempt and a flush racing the same issue',
   it('never asks the model twice for one issue, even when a flush starts while the immediate attempt is still outstanding', async () => {
     const { retitle, db, issueTitle } = await load();
     vi.mocked(db.getIssueById).mockResolvedValue(makeRow({ id: 'i1' }));
-    let resolveTitle: (title: string) => void = () => {};
-    const pending = new Promise<string>((resolve) => {
+    let resolveTitle: (result: TitleResult) => void = () => {};
+    const pending = new Promise<TitleResult>((resolve) => {
       resolveTitle = resolve;
     });
     vi.mocked(issueTitle.requestIssueTitle).mockReturnValue(pending);
@@ -365,7 +366,7 @@ describe('concurrency: the immediate attempt and a flush racing the same issue',
     expect(flushResult).toEqual({ titled: 0, dropped: 0, remaining: 1 });
     expect(issueTitle.requestIssueTitle).toHaveBeenCalledTimes(1);
 
-    resolveTitle('Model title');
+    resolveTitle({ title: 'Model title', duplicateOf: null });
     const immediateResult = await immediate;
 
     expect(immediateResult).toEqual({ status: 'titled', title: 'Model title' });
@@ -377,10 +378,185 @@ describe('concurrency: the immediate attempt and a flush racing the same issue',
 
 // ---------------------------------------------------------------------------
 
+describe('duplicate verdicts — "DUPLICATES RIDE ALONG"', () => {
+  it('applies the duplicate before the title when the verdict names an offered candidate', async () => {
+    const { retitle, issueTitle } = await load();
+    const candidateList = [{ id: 'cand1', title: 'Earlier issue', description: '', done: false }];
+    vi.mocked(issueTitle.requestIssueTitle).mockResolvedValue({
+      title: 'Model title',
+      duplicateOf: 'cand1',
+    });
+    const order: string[] = [];
+    const applyDuplicate = vi.fn().mockImplementation(async () => {
+      order.push('applyDuplicate');
+      return true;
+    });
+    const applyTitle = vi.fn().mockImplementation(async () => {
+      order.push('applyTitle');
+      return true;
+    });
+    const candidates = vi.fn().mockReturnValue(candidateList);
+
+    const result = await retitle.retitleIssue(
+      { issueId: 'i1', stub: 'Stub title', text: 'full text' },
+      { applyTitle, applyDuplicate, candidates },
+    );
+
+    expect(result).toEqual({ status: 'titled', title: 'Model title' });
+    expect(applyDuplicate).toHaveBeenCalledWith('i1', 'cand1');
+    expect(issueTitle.requestIssueTitle).toHaveBeenCalledWith('full text', candidateList);
+    expect(order).toEqual(['applyDuplicate', 'applyTitle']);
+  });
+
+  it('does not apply a duplicate whose id was never among the offered candidates', async () => {
+    const { retitle, issueTitle } = await load();
+    vi.mocked(issueTitle.requestIssueTitle).mockResolvedValue({
+      title: 'Model title',
+      duplicateOf: 'not-offered',
+    });
+    const applyDuplicate = vi.fn().mockResolvedValue(true);
+    const applyTitle = vi.fn().mockResolvedValue(true);
+    const candidates = vi
+      .fn()
+      .mockReturnValue([{ id: 'cand1', title: '', description: '', done: false }]);
+
+    const result = await retitle.retitleIssue(
+      { issueId: 'i1', stub: 'Stub title', text: 'full text' },
+      { applyTitle, applyDuplicate, candidates },
+    );
+
+    expect(result).toEqual({ status: 'titled', title: 'Model title' });
+    expect(applyDuplicate).not.toHaveBeenCalled();
+    expect(applyTitle).toHaveBeenCalledWith('i1', 'Stub title', 'Model title');
+  });
+
+  it('applies neither the duplicate nor the title when cancelled while the request is out', async () => {
+    const { retitle, issueTitle } = await load();
+    let resolveTitle: (result: TitleResult) => void = () => {};
+    vi.mocked(issueTitle.requestIssueTitle).mockReturnValue(
+      new Promise<TitleResult>((resolve) => {
+        resolveTitle = resolve;
+      }),
+    );
+    const applyDuplicate = vi.fn().mockResolvedValue(true);
+    const applyTitle = vi.fn().mockResolvedValue(true);
+    const candidates = vi
+      .fn()
+      .mockReturnValue([{ id: 'cand1', title: '', description: '', done: false }]);
+
+    const immediate = retitle.retitleIssue(
+      { issueId: 'i1', stub: 'Stub title', text: 'full text' },
+      { applyTitle, applyDuplicate, candidates },
+    );
+    await drainMicrotasks();
+    expect(issueTitle.requestIssueTitle).toHaveBeenCalledTimes(1);
+
+    await retitle.cancelIssueRetitle('i1');
+    resolveTitle({ title: 'Model title', duplicateOf: 'cand1' });
+
+    expect(await immediate).toEqual({ status: 'kept' });
+    expect(applyDuplicate).not.toHaveBeenCalled();
+    expect(applyTitle).not.toHaveBeenCalled();
+  });
+
+  it('still applies the duplicate even when the title write loses to a hand rename', async () => {
+    const { retitle, issueTitle } = await load();
+    vi.mocked(issueTitle.requestIssueTitle).mockResolvedValue({
+      title: 'Model title',
+      duplicateOf: 'cand1',
+    });
+    const applyDuplicate = vi.fn().mockResolvedValue(true);
+    // The rename committed while the model was writing, so the store's
+    // stand-in-guarded title write matches nothing — outcome 'kept', per "a
+    // hand rename always wins" above.
+    const applyTitle = vi.fn().mockResolvedValue(false);
+    const candidates = vi
+      .fn()
+      .mockReturnValue([{ id: 'cand1', title: '', description: '', done: false }]);
+
+    const result = await retitle.retitleIssue(
+      { issueId: 'i1', stub: 'Stub title', text: 'full text' },
+      { applyTitle, applyDuplicate, candidates },
+    );
+
+    expect(result).toEqual({ status: 'kept' });
+    expect(applyDuplicate).toHaveBeenCalledWith('i1', 'cand1');
+  });
+
+  it('requests with no candidates and still applies the title when deps.candidates throws', async () => {
+    const { retitle, issueTitle } = await load();
+    vi.mocked(issueTitle.requestIssueTitle).mockResolvedValue({
+      title: 'Model title',
+      duplicateOf: null,
+    });
+    const applyTitle = vi.fn().mockResolvedValue(true);
+    const candidates = vi.fn().mockImplementation(() => {
+      throw new Error('boom');
+    });
+
+    const result = await retitle.retitleIssue(
+      { issueId: 'i1', stub: 'Stub title', text: 'full text' },
+      { applyTitle, candidates },
+    );
+
+    expect(result).toEqual({ status: 'titled', title: 'Model title' });
+    expect(issueTitle.requestIssueTitle).toHaveBeenCalledWith('full text', []);
+    expect(applyTitle).toHaveBeenCalledWith('i1', 'Stub title', 'Model title');
+  });
+
+  it('still applies the title when applyDuplicate throws', async () => {
+    const { retitle, issueTitle } = await load();
+    vi.mocked(issueTitle.requestIssueTitle).mockResolvedValue({
+      title: 'Model title',
+      duplicateOf: 'cand1',
+    });
+    const applyDuplicate = vi.fn().mockRejectedValue(new Error('boom'));
+    const applyTitle = vi.fn().mockResolvedValue(true);
+    const candidates = vi
+      .fn()
+      .mockReturnValue([{ id: 'cand1', title: '', description: '', done: false }]);
+
+    const result = await retitle.retitleIssue(
+      { issueId: 'i1', stub: 'Stub title', text: 'full text' },
+      { applyTitle, applyDuplicate, candidates },
+    );
+
+    expect(result).toEqual({ status: 'titled', title: 'Model title' });
+    expect(applyTitle).toHaveBeenCalledWith('i1', 'Stub title', 'Model title');
+  });
+
+  it('never gathers candidates or asks the model again when renamed before the flush runs', async () => {
+    const { retitle, db, issueTitle } = await load();
+    vi.mocked(issueTitle.requestIssueTitle).mockRejectedValueOnce(new TypeError('offline'));
+    const applyTitle = vi.fn();
+
+    await retitle.retitleIssue(
+      { issueId: 'i1', stub: 'Stub title', text: 'full text' },
+      { applyTitle },
+    );
+    expect(retitle.pendingRetitleIssueIds().has('i1')).toBe(true);
+
+    // The person renamed it by hand while the queue was waiting to retry.
+    vi.mocked(db.getIssueById).mockResolvedValue(makeRow({ id: 'i1', title: 'Renamed by hand' }));
+    const candidates = vi.fn().mockReturnValue([]);
+
+    const flushResult = await retitle.flushIssueRetitles({ applyTitle, candidates });
+
+    expect(flushResult).toEqual({ titled: 0, dropped: 1, remaining: 0 });
+    expect(candidates).not.toHaveBeenCalled();
+    // Still just the one call from the immediate attempt above — the flush's
+    // own attempt dropped the entry before reaching gatherCandidates or
+    // requestIssueTitle at all.
+    expect(issueTitle.requestIssueTitle).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+
 describe('onRetitled ordering', () => {
   it('runs onRetitled before the entry leaves pendingRetitleIssueIds()', async () => {
     const { retitle, issueTitle } = await load();
-    vi.mocked(issueTitle.requestIssueTitle).mockResolvedValue('Model title');
+    vi.mocked(issueTitle.requestIssueTitle).mockResolvedValue({ title: 'Model title', duplicateOf: null });
     let sawPendingDuringCallback: boolean | null = null;
     const onRetitled = vi.fn((issueId: string) => {
       sawPendingDuringCallback = retitle.pendingRetitleIssueIds().has(issueId);

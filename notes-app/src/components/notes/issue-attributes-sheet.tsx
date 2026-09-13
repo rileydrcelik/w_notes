@@ -33,6 +33,8 @@ import { noScrollbar } from '@/lib/scroll-style';
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 const ACCENT = '#16a394';
+// The done colour the issue list uses on its check-circle.
+const DONE_COLOR = '#3fb950';
 
 type Values = Record<string, IssueAttrValue>;
 
@@ -49,6 +51,9 @@ export function IssueAttributesSheet({
   initialTypeIds,
   initialTitle,
   initialDescription,
+  duplicateTitle,
+  duplicateDone,
+  onOpenDuplicate,
   onClose,
   onSubmit,
 }: {
@@ -66,12 +71,25 @@ export function IssueAttributesSheet({
    *  the Details fields are shown so the title/description can be edited here. */
   initialTitle?: string;
   initialDescription?: string;
+  /** Single-issue edit of an issue flagged as a likely duplicate: the title of
+   *  the issue it points at (primitives, not an object, so a re-render doesn't
+   *  read as a new issue and reseed the form under someone's typing). */
+  duplicateTitle?: string;
+  duplicateDone?: boolean;
+  /** Open the issue the duplicate flag points at. */
+  onOpenDuplicate?: () => void;
   onClose: () => void;
-  /** `single` is present only for a single-issue edit (title/description, and
-   *  typeIds when the Types picker was shown). */
+  /** `single` is present only for a single-issue edit (title/description,
+   *  typeIds when the Types picker was shown, and dismissDuplicate when the
+   *  duplicate flag was dismissed). */
   onSubmit: (
     attrs: Values,
-    single?: { title: string; description: string; typeIds?: string[] },
+    single?: {
+      title: string;
+      description: string;
+      typeIds?: string[];
+      dismissDuplicate?: boolean;
+    },
   ) => void;
 }) {
   const theme = useTheme();
@@ -85,6 +103,9 @@ export function IssueAttributesSheet({
   const [typeIds, setTypeIds] = useState<string[]>(initialTypeIds ?? []);
   const [title, setTitle] = useState(initialTitle ?? '');
   const [description, setDescription] = useState(initialDescription ?? '');
+  // Dismissing is saved on Apply, like everything else here. Writing it at once
+  // would change the issue under the open sheet, which reseeds the form.
+  const [dismissDuplicate, setDismissDuplicate] = useState(false);
   // Title/description editing (and the Types picker) only make sense for a
   // single issue; bulk edits touch attributes only.
   const single = count === 1;
@@ -98,6 +119,7 @@ export function IssueAttributesSheet({
     setTypeIds(initialTypeIds ?? []);
     setTitle(initialTitle ?? '');
     setDescription(initialDescription ?? '');
+    setDismissDuplicate(false);
     /* eslint-enable react-hooks/set-state-in-effect */
   }, [open, initial, initialTypeIds, initialTitle, initialDescription]);
 
@@ -166,6 +188,43 @@ export function IssueAttributesSheet({
                       {...noScrollbar}
                       style={styles.body}
                       keyboardShouldPersistTaps="handled">
+                      {single && duplicateTitle !== undefined && !dismissDuplicate && (
+                        // Two sibling Pressables, never nested: open the issue it
+                        // points at, or say it isn't a duplicate.
+                        <View
+                          style={[styles.duplicateRow, { borderColor: hexToRgba(theme.text, 0.12) }]}>
+                          <Pressable
+                            onPress={onOpenDuplicate}
+                            accessibilityRole="button"
+                            accessibilityLabel={`Open possible duplicate: ${duplicateTitle || 'Untitled issue'}${
+                              duplicateDone ? ', done' : ''
+                            }`}
+                            style={({ pressed }) => [styles.duplicateOpen, pressed && styles.pressed]}>
+                            <Feather name="layers" size={16} color={theme.textSecondary} />
+                            <View style={styles.duplicateText}>
+                              <ThemedText type="small" themeColor="textSecondary">
+                                Possible duplicate of
+                              </ThemedText>
+                              <ThemedText type="smallBold" numberOfLines={1}>
+                                {duplicateTitle || 'Untitled issue'}
+                              </ThemedText>
+                            </View>
+                            {/* Done reads the way it does on the list: the green check. */}
+                            {duplicateDone && <Feather name="check-circle" size={14} color={DONE_COLOR} />}
+                            <Feather name="chevron-right" size={16} color={theme.textSecondary} />
+                          </Pressable>
+                          <Pressable
+                            onPress={() => setDismissDuplicate(true)}
+                            // Smaller than the header's 8: the open row sits a gap
+                            // away, and a wider slop would take taps meant for it.
+                            hitSlop={4}
+                            accessibilityRole="button"
+                            accessibilityLabel="Not a duplicate"
+                            style={({ pressed }) => [styles.duplicateDismiss, pressed && styles.pressed]}>
+                            <Feather name="x" size={16} color={theme.textSecondary} />
+                          </Pressable>
+                        </View>
+                      )}
                       {single && (
                         <View style={styles.detailsSection}>
                           <ThemedText type="small" themeColor="textSecondary" style={styles.typesLabel}>
@@ -242,7 +301,12 @@ export function IssueAttributesSheet({
                       onSubmit(
                         values,
                         single
-                          ? { title, description, typeIds: showTypes ? typeIds : undefined }
+                          ? {
+                              title,
+                              description,
+                              typeIds: showTypes ? typeIds : undefined,
+                              dismissDuplicate: dismissDuplicate || undefined,
+                            }
                           : undefined,
                       )
                     }
@@ -307,6 +371,18 @@ const styles = StyleSheet.create({
   ctaText: { color: '#FFFFFF', fontWeight: '600', fontSize: 15 },
   ctaDisabled: { opacity: 0.4 },
   detailsSection: { gap: Spacing.two, marginBottom: Spacing.three },
+  duplicateRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.two,
+    borderWidth: 1.5,
+    borderRadius: Spacing.three,
+    padding: Spacing.two,
+    marginBottom: Spacing.three,
+  },
+  duplicateOpen: { flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', gap: Spacing.two },
+  duplicateText: { flex: 1, minWidth: 0 },
+  duplicateDismiss: { padding: Spacing.half },
   input: {
     borderWidth: 1.5,
     borderRadius: Spacing.three,

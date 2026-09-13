@@ -29,9 +29,19 @@
  * GITHUB WAITS FOR IT. While an issue is titling (`isRetitlePending`), the
  * outbox holds back opening it on GitHub, so the stand-in never becomes the
  * GitHub title that back-sync would later copy over the real one.
+ *
+ * DUPLICATES RIDE ALONG. The same request carries earlier issues from the
+ * project (`deps.candidates`, read fresh at request time) and may come back
+ * naming one as a likely duplicate. That verdict follows this entry's lifecycle
+ * exactly — cancelled, given up on or renamed before the request went out, and
+ * no check happens. It is recorded BEFORE the title: if the app dies between the
+ * two writes, the stand-in is still there, so the retry asks again and the
+ * set-once flag refuses a second write. The other order would leave a real
+ * title, which drops the entry, and lose the verdict for good.
  */
 import { AuthUnavailableError } from '@/lib/auth/token';
 import { db } from '@/lib/db';
+import type { DuplicateCandidate } from '@/lib/issue-duplicates';
 import { requestIssueTitle } from '@/lib/issue-title';
 import { Sentry } from '@/lib/sentry';
 import { ApiError } from '@/lib/sync/api';
@@ -80,6 +90,19 @@ export type RetitleDeps = {
    * back-sync until that push has at least been queued.
    */
   onRetitled?: (issueId: string, title: string) => Promise<void> | void;
+  /**
+   * Earlier issues from the same project to check this one against. A throw
+   * means "check against nothing" — it never holds the title back.
+   */
+  candidates?: (
+    issueId: string,
+    text: string,
+  ) => Promise<DuplicateCandidate[]> | DuplicateCandidate[];
+  /**
+   * Record the verdict, only if the issue has none yet and both issues are live
+   * (the issues store's `applyDuplicateIfUnset`). Resolves whether it did.
+   */
+  applyDuplicate?: (issueId: string, duplicateOf: string) => Promise<boolean>;
 };
 
 export type RetitleOutcome =
@@ -293,6 +316,23 @@ function track(issueId: string, run: Promise<AttemptResult>): Promise<AttemptRes
   return run;
 }
 
+/** What to check this issue against; never throws, and never blocks titling. */
+async function gatherCandidates(
+  issueId: string,
+  text: string,
+  deps: RetitleDeps,
+): Promise<DuplicateCandidate[]> {
+  if (!deps.candidates) return [];
+  try {
+    return await deps.candidates(issueId, text);
+  } catch (e) {
+    if (!isDbLockedError(e)) {
+      Sentry.captureException(e, { tags: { source: 'issue-retitle', op: 'candidates' } });
+    }
+    return [];
+  }
+}
+
 /**
  * One request for one entry.
  *
@@ -326,10 +366,12 @@ async function attemptOnce(
     return KEPT;
   }
 
+  const candidates = await gatherCandidates(entry.issueId, text, deps);
   await bumpAttempts(entry);
   let title: string;
+  let duplicateOf: string | null;
   try {
-    title = await requestIssueTitle(text);
+    ({ title, duplicateOf } = await requestIssueTitle(text, candidates));
   } catch (e) {
     if (isRetryableTitleError(e) && entry.attempts < MAX_ATTEMPTS) return OFFLINE;
     // 402 is the everyday case for an account with no key — not an error.
@@ -344,6 +386,15 @@ async function attemptOnce(
 
   // Cancelled (opened for editing) or cleared (sign-out) while the model wrote.
   if (!entries.has(entry.issueId)) return KEPT;
+  // Before the title — see "DUPLICATES RIDE ALONG" above. Only an id that was
+  // actually offered counts; the server checks that too.
+  if (duplicateOf && deps.applyDuplicate && candidates.some((c) => c.id === duplicateOf)) {
+    try {
+      await deps.applyDuplicate(entry.issueId, duplicateOf);
+    } catch (e) {
+      Sentry.captureException(e, { tags: { source: 'issue-retitle', op: 'apply-duplicate' } });
+    }
+  }
   if (!(await deps.applyTitle(entry.issueId, entry.stub, title))) {
     await drop(entry.issueId, 'renamed or trashed while titling');
     return KEPT;

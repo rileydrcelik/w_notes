@@ -20,7 +20,7 @@ from __future__ import annotations
 import logging
 
 import sentry_sdk
-from sqlalchemy import func, select, text
+from sqlalchemy import func, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from fastapi import APIRouter, BackgroundTasks, Depends, Query
@@ -90,6 +90,24 @@ _PRESERVE_IF_NULL = {
     Issue: ("type_ids",),
 }
 
+# Columns that only ever go from NULL to a value, and merge as "first non-null
+# wins" whatever the ``updated_at`` order.
+#
+# _PRESERVE_IF_NULL is not enough for these. It guards against a NULL from a
+# client that doesn't know the column, but a set-once value can also be carried
+# only by a copy of the row that *loses* last-writer-wins — the device that
+# titled an issue and judged it a duplicate syncs after another device edited
+# the same issue — and the upsert drops that copy whole. So `_upsert` stores the
+# stored value first in the UPDATE, and then separately fills in whatever the
+# losing copy knew that the stored row doesn't. Safe only because nothing, the
+# UI included, ever clears them: that is what makes an older NULL mean "I don't
+# know" rather than "I undid it".
+_MERGE_ONCE = {
+    # A likely-duplicate verdict, and the person's "not a duplicate". A boolean
+    # dismissed flag would have been a real value a stale device pushes back.
+    Issue: ("duplicate_of", "duplicate_dismissed_at"),
+}
+
 # Columns the server owns outright: a client may never write them, in either
 # direction of the upsert.
 #
@@ -116,15 +134,19 @@ async def _upsert(session: AsyncSession, model, user_id: str, row: dict) -> None
     owned = _SERVER_OWNED.get(model, ())
     values = {k: v for k, v in {**row, "user_id": user_id}.items() if k not in owned}
     preserve = _PRESERVE_IF_NULL.get(model, ())
+    once = _MERGE_ONCE.get(model, ())
     stmt = pg_insert(model).values(**values)
     update_cols = {}
     for col in values:
         if col in _IMMUTABLE:
             continue
         incoming = getattr(stmt.excluded, col)
+        if col in once:
+            # Stored first: the first value to arrive stays, not the newest.
+            update_cols[col] = func.coalesce(getattr(model, col), incoming)
         # Never let an older client's NULL wipe a value it simply doesn't know
         # about; keep the stored one when the incoming column is NULL.
-        if col in preserve:
+        elif col in preserve:
             update_cols[col] = func.coalesce(incoming, getattr(model, col))
         else:
             update_cols[col] = incoming
@@ -137,6 +159,26 @@ async def _upsert(session: AsyncSession, model, user_id: str, row: dict) -> None
         where=stmt.excluded.updated_at >= model.updated_at,
     )
     await session.execute(stmt)
+
+    # The set-once values a losing copy carried, which the skip above just threw
+    # away. Runs only when it adds something, so a re-sent push changes nothing
+    # and bumps no seq; when it does add, the bump is what gets it to every
+    # other device. See _MERGE_ONCE.
+    gains = {col: values[col] for col in once if values.get(col) is not None}
+    if gains:
+        await session.execute(
+            update(model)
+            .where(
+                model.user_id == user_id,
+                model.id == values["id"],
+                or_(*(getattr(model, col).is_(None) for col in gains)),
+            )
+            .values(
+                **{col: func.coalesce(getattr(model, col), v) for col, v in gains.items()},
+                server_seq=text("nextval('sync_seq')"),
+            )
+            .execution_options(synchronize_session=False)
+        )
 
 
 async def _upsert_batch(session: AsyncSession, model, user_id: str, rows) -> None:

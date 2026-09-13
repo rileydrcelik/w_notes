@@ -297,3 +297,122 @@ def test_clean_title_caps_length_with_an_ellipsis():
 
 def test_clean_title_leaves_a_short_title_untouched():
     assert issue_title.clean_title("Short title") == "Short title"
+
+
+# --------------------------------------------------------------------------
+# Duplicates ride along with the title request.
+# --------------------------------------------------------------------------
+
+
+async def test_no_candidates_uses_the_title_only_schema_and_null_duplicate(
+    client, device, anthropic_key, fake_anthropic
+):
+    fake_anthropic(json.dumps({"title": "Fine"}))
+    res = await _title(client, device)
+    assert res.status_code == 200
+    assert _calls[0]["output_config"]["format"]["schema"] == issue_title._TITLE_SCHEMA
+    assert res.json()["duplicate_of"] is None
+
+
+async def test_a_numeric_answer_maps_to_the_matching_candidates_id(
+    client, device, anthropic_key, fake_anthropic
+):
+    fake_anthropic(json.dumps({"title": "Fine", "duplicate_of": 2}))
+    candidates = [
+        {"id": "cand-a", "title": "First candidate", "description": "d1"},
+        {"id": "cand-b", "title": "Second candidate", "description": "d2"},
+    ]
+    res = await _title(client, device, candidates=candidates)
+    assert res.status_code == 200
+    assert res.json()["duplicate_of"] == "cand-b"
+    assert _calls[0]["output_config"]["format"]["schema"] == issue_title._TITLE_AND_DUPLICATE_SCHEMA
+
+    prompt = _calls[0]["messages"][0]["content"]
+    assert "<existing_issues>" in prompt
+    # The model sees candidates by number, never by id.
+    assert "cand-a" not in prompt
+    assert "cand-b" not in prompt
+
+
+@pytest.mark.parametrize("value", [0, 3, -1, "2", True])
+async def test_an_out_of_range_or_wrong_typed_answer_is_simply_no_duplicate(
+    client, device, anthropic_key, fake_anthropic, value
+):
+    """0 (none qualifies), 3 (N+1 — only 2 candidates offered), -1, a string, and
+    a bool (which `isinstance(x, int)` would otherwise wrongly accept, since
+    `bool` subclasses `int`) all fall back to "no duplicate" rather than 502ing
+    the title along with them."""
+    fake_anthropic(json.dumps({"title": "Fine", "duplicate_of": value}))
+    candidates = [
+        {"id": "cand-a", "title": "First candidate", "description": ""},
+        {"id": "cand-b", "title": "Second candidate", "description": ""},
+    ]
+    res = await _title(client, device, candidates=candidates)
+    assert res.status_code == 200
+    assert res.json()["title"] == "Fine"
+    assert res.json()["duplicate_of"] is None
+
+
+async def test_omitting_duplicate_of_is_no_duplicate(client, device, anthropic_key, fake_anthropic):
+    fake_anthropic(json.dumps({"title": "Fine"}))
+    candidates = [{"id": "cand-a", "title": "First candidate", "description": ""}]
+    res = await _title(client, device, candidates=candidates)
+    assert res.status_code == 200
+    assert res.json()["title"] == "Fine"
+    assert res.json()["duplicate_of"] is None
+
+
+async def test_two_hundred_hefty_candidates_dont_413_and_the_prompt_is_capped(
+    client, device, anthropic_key, fake_anthropic
+):
+    """A candidate list far past the budget must still get the issue its title —
+    "clamped, never rejected", per the router's own docstring."""
+    fake_anthropic(json.dumps({"title": "Fine", "duplicate_of": 0}))
+    candidates = [
+        {"id": f"cand-{i}", "title": f"Candidate {i}", "description": "x" * 5_000}
+        for i in range(200)
+    ]
+    res = await _title(client, device, candidates=candidates)
+    assert res.status_code == 200
+    assert res.json()["title"] == "Fine"
+
+    prompt = _calls[0]["messages"][0]["content"]
+    listing = json.loads(prompt.split("<existing_issues>\n", 1)[1].split("\n</existing_issues>", 1)[0])
+    assert len(listing) <= issue_title.MAX_CANDIDATES
+    assert len(listing) < len(candidates)
+
+
+async def test_more_than_max_candidates_are_capped_to_max_candidates(
+    client, device, anthropic_key, fake_anthropic
+):
+    """Isolates the *count* cap from the byte budget above: these candidates are
+    tiny, so MAX_CANDIDATES (not MAX_CANDIDATES_CHARS) is what has to stop the
+    list."""
+    fake_anthropic(json.dumps({"title": "Fine", "duplicate_of": 0}))
+    candidates = [
+        {"id": f"cand-{i}", "title": f"C{i}", "description": ""} for i in range(200)
+    ]
+    res = await _title(client, device, candidates=candidates)
+    assert res.status_code == 200
+
+    prompt = _calls[0]["messages"][0]["content"]
+    listing = json.loads(prompt.split("<existing_issues>\n", 1)[1].split("\n</existing_issues>", 1)[0])
+    assert len(listing) == issue_title.MAX_CANDIDATES
+
+
+async def test_malformed_candidates_are_dropped_not_a_422(
+    client, device, anthropic_key, fake_anthropic
+):
+    fake_anthropic(json.dumps({"title": "Fine", "duplicate_of": 0}))
+    candidates = [
+        {"id": "", "title": "Blank id", "description": ""},
+        {"id": "cand-a", "title": "Real candidate", "description": ""},
+        {"id": "cand-a", "title": "Same id again", "description": ""},
+    ]
+    res = await _title(client, device, candidates=candidates)
+    assert res.status_code == 200
+
+    prompt = _calls[0]["messages"][0]["content"]
+    listing = json.loads(prompt.split("<existing_issues>\n", 1)[1].split("\n</existing_issues>", 1)[0])
+    assert len(listing) == 1
+    assert listing[0]["title"] == "Real candidate"
