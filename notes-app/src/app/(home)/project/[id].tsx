@@ -62,6 +62,10 @@ function IssueTypeCard({ projectId, note }: { projectId: string; note: Note }) {
   const { active, isSelected, toggle } = useItemSelection();
   const issues = getIssuesForNote(note.id);
   const connected = parseTypeConfig(note.pluginConfig).githubConnected;
+  // The badge counts work still open, matching the project card on the home
+  // grid. The preview below still lists completed issues (struck through) —
+  // it's showing what's in the type, not what's left to do.
+  const openCount = issues.reduce((n, i) => (i.done ? n : n + 1), 0);
   const preview = issues.slice(0, 4);
   const selected = isSelected('issuetype', note.id);
   const onSelectToggle = () => toggle({ type: 'issuetype', id: note.id });
@@ -94,7 +98,7 @@ function IssueTypeCard({ projectId, note }: { projectId: string; note: Note }) {
           </ThemedText>
           {connected && <Feather name="github" size={12} color={GITHUB_ACCENT} />}
           <ThemedText type="small" themeColor="textSecondary">
-            {issues.length}
+            {openCount}
           </ThemedText>
         </View>
         {preview.length > 0 ? (

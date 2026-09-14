@@ -14,7 +14,7 @@ import { db } from '@/lib/db';
 import { isDbLockedError } from '@/lib/web-db-lock';
 import { requestSync, subscribeSynced, syncNow } from '@/lib/sync/sync-engine';
 import { effectiveTypeIds, type Issue, type IssueAttrValue } from '@/data/notes';
-import { countIssuesInTypes, indexIssuesByType } from '@/lib/issue-counts';
+import { countIssuesInTypes, indexActiveIssuesByType } from '@/lib/issue-counts';
 
 const today = () => new Date().toISOString().slice(0, 10);
 
@@ -57,7 +57,8 @@ type IssuesContextValue = {
    *  sync from treating a not-yet-loaded store as "no issues" and re-importing). */
   hydrated: boolean;
   /**
-   * How many issues are filed under any of these type-notes, counted once each.
+   * How many *open* issues are filed under any of these type-notes, counted
+   * once each. Completed issues are finished business and don't count.
    *
    * Distinct, not a sum: an issue can belong to several types, so adding up the
    * per-type totals would count it once per type it appears in and a project
@@ -261,8 +262,9 @@ export function IssuesProvider({ children }: { children: ReactNode }) {
 
   // Indexed once and shared: the home grid can render a card per project, and
   // each scanning the whole tracker for a subtitle would make that quadratic in
-  // the number of issues.
-  const issueIdsByType = useMemo(() => indexIssuesByType(issues), [issues]);
+  // the number of issues. Done issues are left out of the index, so every count
+  // drawn from it is work still open.
+  const issueIdsByType = useMemo(() => indexActiveIssuesByType(issues), [issues]);
 
   const getIssueCountForTypes = useCallback(
     (typeIds: readonly string[]) => countIssuesInTypes(issueIdsByType, typeIds),

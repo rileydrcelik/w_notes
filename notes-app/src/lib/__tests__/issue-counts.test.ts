@@ -4,16 +4,26 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { countIssuesInTypes, indexIssuesByType, type CountableIssue } from '@/lib/issue-counts';
+import {
+  countIssuesInTypes,
+  indexActiveIssuesByType,
+  type CountableIssue,
+} from '@/lib/issue-counts';
 
 const issue = (id: string, noteId: string, typeIds: string[] = []): CountableIssue => ({
   id,
   noteId,
   typeIds,
+  done: false,
+});
+
+const done = (id: string, noteId: string, typeIds: string[] = []): CountableIssue => ({
+  ...issue(id, noteId, typeIds),
+  done: true,
 });
 
 const count = (issues: CountableIssue[], typeIds: string[]) =>
-  countIssuesInTypes(indexIssuesByType(issues), typeIds);
+  countIssuesInTypes(indexActiveIssuesByType(issues), typeIds);
 
 describe('countIssuesInTypes', () => {
   it('counts the issues under a single type', () => {
@@ -53,17 +63,34 @@ describe('countIssuesInTypes', () => {
   it('does not count a type twice when it is asked for twice', () => {
     expect(count([issue('i1', 'bug')], ['bug', 'bug'])).toBe(1);
   });
+
+  it('leaves out an issue that is already done', () => {
+    expect(count([issue('i1', 'bug'), done('i2', 'bug')], ['bug'])).toBe(1);
+  });
+
+  it('is zero once every issue in the project is done', () => {
+    expect(count([done('i1', 'bug'), done('i2', 'chore')], ['bug', 'chore'])).toBe(0);
+  });
+
+  it('leaves out a done issue from every type it was filed under', () => {
+    expect(count([done('i1', 'bug', ['bug', 'chore'])], ['chore'])).toBe(0);
+  });
 });
 
-describe('indexIssuesByType', () => {
+describe('indexActiveIssuesByType', () => {
   it('files an issue under every type it belongs to', () => {
-    const index = indexIssuesByType([issue('i1', 'bug', ['bug', 'chore'])]);
+    const index = indexActiveIssuesByType([issue('i1', 'bug', ['bug', 'chore'])]);
     expect(index.get('bug')).toEqual(new Set(['i1']));
     expect(index.get('chore')).toEqual(new Set(['i1']));
   });
 
   it('is built once and answers for every project — no entry for an unused type', () => {
-    const index = indexIssuesByType([issue('i1', 'bug')]);
+    const index = indexActiveIssuesByType([issue('i1', 'bug')]);
     expect(index.get('chore')).toBeUndefined();
+  });
+
+  it('never files a done issue, so nothing downstream can count it', () => {
+    const index = indexActiveIssuesByType([done('i1', 'bug')]);
+    expect(index.get('bug')).toBeUndefined();
   });
 });
