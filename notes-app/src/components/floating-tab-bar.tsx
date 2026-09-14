@@ -37,6 +37,7 @@ import {
   isEditorActive,
   subscribeActiveEditor,
 } from '@/lib/active-editor';
+import { DRAFT_COPA_ID } from '@/lib/copa-block';
 import { getEditAction, runEditAction, subscribeEditAction } from '@/lib/edit-action';
 import {
   getVersionAction,
@@ -664,7 +665,7 @@ function CreateMenu({
     createFolder,
     getNote,
   } = useNotes();
-  const { createCopa, createFileCopa } = useCopa();
+  const { createFileCopa } = useCopa();
   const { sentryEnabled, githubEnabled, taskManagerEnabled, financeEnabled, resumeEnabled } =
     useCreateOptions();
   // Inside a task-manager project (its feed or a per-type screen), the menu leads
@@ -740,11 +741,12 @@ function CreateMenu({
   };
 
   // A new text block is empty, so the only thing to do with it is write in it —
-  // open its editor, the same as a new note.
+  // open its editor, focused. Nothing is stored yet: the draft becomes a real
+  // block on the first keystroke (see app/copa/[id].tsx), so one opened and
+  // backed out of leaves nothing behind on this device or any other.
   const onCreateBlock = () => {
     onClose();
-    const id = createCopa();
-    router.push({ pathname: '/copa/[id]', params: { id } });
+    router.push({ pathname: '/copa/[id]', params: { id: DRAFT_COPA_ID } });
   };
 
   // A file block is finished the moment it's picked, so it stays in the feed
@@ -899,7 +901,6 @@ function CreateButton({
   const router = useRouter();
   const pathname = usePathname();
   const { createNote, getNote } = useNotes();
-  const { createCopa } = useCopa();
   const buttonRef = useRef<View | null>(null);
   const scale = useSharedValue(1);
   const animatedStyle = useAnimatedStyle(() => ({ transform: [{ scale: scale.value }] }));
@@ -939,8 +940,7 @@ function CreateButton({
     // belongs to the long-press — answering the tap as well made adding a block
     // the one create in the app whose common case cost two taps.
     if (onCopa) {
-      const id = createCopa();
-      router.push({ pathname: '/copa/[id]', params: { id } });
+      router.push({ pathname: '/copa/[id]', params: { id: DRAFT_COPA_ID } });
       return;
     }
     const id = createNote(currentFolderId(pathname, getNote));

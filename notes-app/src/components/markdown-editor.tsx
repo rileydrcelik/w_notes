@@ -10,7 +10,7 @@ import {
 
 import { hexToRgba, type Palette } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
-import { setActiveEditorDismiss } from '@/lib/active-editor';
+import { clearActiveEditorDismiss, setActiveEditorDismiss } from '@/lib/active-editor';
 import { hasEscapedBlockMarkup } from '@/lib/html-text';
 import { Sentry } from '@/lib/sentry';
 
@@ -137,6 +137,22 @@ export function MarkdownEditor({
     // exhaustive-deps rule without re-seeding.
   }, [initialValue, editor]);
 
+  // Drop the navbar's blur hook if this editor is torn down while still focused.
+  // A hardware back or an edge-swipe unmounts it without ever firing `onBlur`,
+  // and the stale registration then made the next (+) press read as "finish
+  // editing" and do nothing — app-wide, with the button still drawn as a plus.
+  // The web editor has always cleared this on destroy; native hadn't.
+  //
+  // By identity, so an editor going away can't release a slot that a different,
+  // still-focused one has taken in the meantime.
+  const dismissRef = useRef<(() => void) | null>(null);
+  useEffect(
+    () => () => {
+      if (dismissRef.current) clearActiveEditorDismiss(dismissRef.current);
+    },
+    [],
+  );
+
   // Watch for the native parser giving up on a paste. When it can't read the
   // pasted markup it drops the raw tags into the buffer as text (see the
   // `useHtmlNormalizer` note below), the next serialize escapes them, and the
@@ -216,7 +232,9 @@ export function MarkdownEditor({
         touched.current = true;
         // The native editor isn't registered with RN's TextInputState, so the
         // navbar's "done" can't reach it via Keyboard.dismiss(). Expose a blur.
-        setActiveEditorDismiss(() => editor.current?.blur());
+        const dismiss = () => editor.current?.blur();
+        dismissRef.current = dismiss;
+        setActiveEditorDismiss(dismiss);
         setFocused(true);
         onFocusChange?.(true);
       }}

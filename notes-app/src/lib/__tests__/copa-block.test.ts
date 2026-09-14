@@ -5,7 +5,7 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { isEmptyCopaBlock, isFileBlock } from '@/lib/copa-block';
+import { DRAFT_COPA_ID, isEmptyCopaBlock, isFileBlock } from '@/lib/copa-block';
 
 /** A file block as it arrives on a device that hasn't fetched the bytes. */
 const pulledFile = { fileName: 'report.pdf', fileUri: null, label: 'report.pdf', content: '' };
@@ -60,5 +60,51 @@ describe('isEmptyCopaBlock', () => {
   it('reads the passed text, not the stored row, so a mid-edit block is judged on screen', () => {
     const stored = { label: '', content: '' };
     expect(isEmptyCopaBlock(stored, 'typed just now', '')).toBe(false);
+  });
+});
+
+/**
+ * `app/copa/[id].tsx`'s `promote()` gates the draft→real-row write with this
+ * exact call: `isEmptyCopaBlock({}, nextLabel, nextContent)` — no stored block
+ * at all, because a draft has no row yet. This is the call that decides whether
+ * a keystroke ever reaches `createCopa()`, so it's pinned on the literal `{}`
+ * shape rather than the `localFile`/`pulledFile` fixtures above, and on the
+ * specific inputs a real keyboard/editor can actually produce: a title that's
+ * pure whitespace, and the bare `<p></p>` an empty rich editor serializes to
+ * (as opposed to the `<html>`-wrapped variant already covered above).
+ */
+describe('the promote gate (isEmptyCopaBlock({}, label, content), as promote() calls it)', () => {
+  it('a freshly opened draft — both fields untouched — is empty', () => {
+    expect(isEmptyCopaBlock({}, '', '')).toBe(true);
+  });
+
+  it('a title of only whitespace, with the editor still on its empty paragraph', () => {
+    expect(isEmptyCopaBlock({}, '   ', '<p></p>')).toBe(true);
+  });
+
+  it('tabs and newlines count as whitespace too, not just spaces', () => {
+    expect(isEmptyCopaBlock({}, '\t\n  \n', '')).toBe(true);
+  });
+
+  it('an empty paragraph carrying only a non-breaking space still flattens to nothing', () => {
+    expect(isEmptyCopaBlock({}, '', '<p>&nbsp;</p>')).toBe(true);
+  });
+
+  it('a real title over the bare empty paragraph promotes the draft', () => {
+    expect(isEmptyCopaBlock({}, 'ssh key', '<p></p>')).toBe(false);
+  });
+
+  it('real body text under a whitespace-only title also promotes the draft', () => {
+    expect(isEmptyCopaBlock({}, '   ', '<p>ssh-rsa AAAA</p>')).toBe(false);
+  });
+});
+
+describe('DRAFT_COPA_ID', () => {
+  it('is the sentinel both the create paths and the copa screen route on', () => {
+    // Pinned to the literal value: the e2e suite asserts the URL against
+    // `/\/copa\/new$/` directly rather than importing this constant, so the
+    // two can silently drift apart if this ever changes without the string
+    // being grepped for everywhere it's hardcoded.
+    expect(DRAFT_COPA_ID).toBe('new');
   });
 });

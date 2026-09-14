@@ -181,27 +181,36 @@ test('pasting text on the copa feed creates a block', async ({ page }) => {
 /**
  * A new copy block is empty, so the only thing to do with it is write in it —
  * both create paths (a tap on the navbar button, and "New copy block" from its
- * long-press/right-click menu) now open the new block's editor instead of
- * leaving you on the feed looking at a blank card. "Add file" from that same
- * menu deliberately does *not* navigate (a file block is finished the moment
- * it's picked) and is out of scope here — it needs a real file picker.
+ * long-press/right-click menu) open it with the editor already focused. "Add
+ * file" from that same menu deliberately does *not* navigate (a file block is
+ * finished the moment it's picked) and is out of scope here — it needs a real
+ * file picker.
+ *
+ * The block does not exist yet at this point: (+) opens a *draft*, and the row
+ * is written on the first keystroke — which is why the URL carries the draft
+ * sentinel rather than a block id. The test after this one covers the other
+ * half of that bargain, that an untouched draft leaves nothing behind.
  */
-test('creating a copy block opens its editor', async ({ page }) => {
+test('creating a copy block opens its editor, focused', async ({ page }) => {
   await page.goto('/copa');
   await ready(page);
 
   // Tap path: the navbar create button itself.
   await page.getByLabel('Create').click();
 
-  // The URL assertion is deliberately specific to a real block id, not just
-  // `/copa` — that's the half of the behaviour change that regresses if the
-  // `router.push` following `createCopa()` is ever dropped.
-  await expect(page).toHaveURL(/\/copa\/copa-/);
+  // Still deliberately more specific than `/copa`, which would match the feed:
+  // a dropped `router.push` is caught here exactly as it was before.
+  await expect(page).toHaveURL(/\/copa\/new$/);
   await expect(page.getByPlaceholder('Title')).toBeVisible();
   // The body is a tiptap editor on web: its placeholder is a `data-placeholder`
   // decoration on the empty paragraph, not an input's `placeholder` attribute.
   await expect(page.locator('[data-placeholder="Contents to copy…"]')).toBeVisible();
-  const firstBlockUrl = page.url();
+
+  // Focused, not merely on screen — the part the previous version of this test
+  // left open, while being named for it. The navbar's create button becomes the
+  // done check the moment an editor takes focus, so its label is the observable
+  // proof that focus actually landed.
+  await expect(page.getByLabel('Done')).toBeVisible();
 
   // Menu path: right-click the create button to open the long-press menu, and
   // use its "New copy block" row instead of the tap shortcut.
@@ -211,12 +220,47 @@ test('creating a copy block opens its editor', async ({ page }) => {
   await page.getByLabel('Create').click({ button: 'right' });
   await page.getByLabel('New copy block').click();
 
-  await expect(page).toHaveURL(/\/copa\/copa-/);
-  await expect(page).not.toHaveURL(firstBlockUrl);
+  await expect(page).toHaveURL(/\/copa\/new$/);
   await expect(page.getByPlaceholder('Title')).toBeVisible();
-  // The body is a tiptap editor on web: its placeholder is a `data-placeholder`
-  // decoration on the empty paragraph, not an input's `placeholder` attribute.
   await expect(page.locator('[data-placeholder="Contents to copy…"]')).toBeVisible();
+  await expect(page.getByLabel('Done')).toBeVisible();
+});
+
+/**
+ * The other half of the draft: nothing is written until you type.
+ *
+ * A block used to be created the instant (+) was pressed, so opening one and
+ * backing out left a blank tile behind — and copa syncs within 150ms, so that
+ * tile reached every other device, where nothing would ever clear it. The only
+ * automatic cleanup in the app ran when the block's own screen unmounted, which
+ * is not something any other device ever does on its behalf.
+ */
+test('a copy block abandoned empty is never created', async ({ page }) => {
+  await page.goto('/copa');
+  await ready(page);
+
+  await page.getByLabel('Create').click();
+  await expect(page).toHaveURL(/\/copa\/new$/);
+  await page.getByLabel('Go back').click();
+
+  // A text tile is labelled `Copy <label>`, so an empty one would be "Copy "
+  // and nothing more. This asserts no such tile exists at all.
+  await expect(page.getByLabel(/^Copy\s*$/)).toHaveCount(0);
+
+  // The same draft, typed into, does become a real block. Reload the feed
+  // first: clicking back blurred the focused editor, and a create press within
+  // 300ms of that reads as the tail of the same "done" gesture and is swallowed
+  // (see `editorJustDismissed`). A fresh page resets that window; without it
+  // this races the runner rather than testing anything.
+  await page.goto('/copa');
+  await ready(page);
+
+  const title = `e2e draft ${Date.now()}`;
+  await page.getByLabel('Create').click();
+  await page.getByPlaceholder('Title').fill(title);
+  await page.getByLabel('Go back').click();
+
+  await expect(page.getByText(title)).toBeVisible();
 });
 
 test('dropping a file on the copa feed creates a file block', async ({ page }) => {

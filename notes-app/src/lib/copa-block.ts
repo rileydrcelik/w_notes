@@ -20,6 +20,18 @@
  */
 import { htmlToPlainText } from '@/lib/html-text';
 
+/**
+ * The `[id]` a copy block screen carries before it holds anything.
+ *
+ * Tapping (+) opens a *draft*: a screen with no row behind it. The block is
+ * written on the first keystroke, so backing out of one you never typed in
+ * leaves nothing — here or on any other device. It used to be written empty up
+ * front, which synced 150ms later (copa is a clipboard; it syncs fast) and
+ * stranded a blank tile everywhere, because the only cleanup in the app ran
+ * when the block's own screen unmounted and nothing guaranteed it ever would.
+ */
+export const DRAFT_COPA_ID = 'new';
+
 /** The parts of a copy block these rules read. */
 export type BlockShape = {
   fileName?: string | null;

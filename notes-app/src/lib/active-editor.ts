@@ -22,6 +22,20 @@ export function setActiveEditorDismiss(fn: (() => void) | null): void {
   listeners.forEach((l) => l());
 }
 
+/**
+ * Release the slot, but only if `fn` still holds it.
+ *
+ * An editor torn down while focused has to clear its own registration — a
+ * hardware back or an edge-swipe unmounts it without ever firing `onBlur` — but
+ * clearing the slot blindly would also clear a *different* editor that has since
+ * taken focus, leaving the navbar with no "done" for the editor actually on
+ * screen. Same ownership rule as `clearEditAction`.
+ */
+export function clearActiveEditorDismiss(fn: () => void): void {
+  if (activeDismiss !== fn) return;
+  setActiveEditorDismiss(null);
+}
+
 /** Dismiss the currently focused editor, if any. Returns whether one handled it. */
 export function dismissActiveEditor(): boolean {
   if (!activeDismiss) return false;

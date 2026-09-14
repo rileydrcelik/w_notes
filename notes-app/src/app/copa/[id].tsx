@@ -4,6 +4,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { Stack, useLocalSearchParams } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
 import {
+  InteractionManager,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -23,6 +24,7 @@ import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Spacing } from '@/constants/theme';
 import { type CopaItem } from '@/data/copa';
+import { DRAFT_COPA_ID, isEmptyCopaBlock } from '@/lib/copa-block';
 import {
   downloadCopaFile,
   fileIconFor,
@@ -35,14 +37,13 @@ import { useEditAction } from '@/hooks/use-edit-action';
 import { useScreenFadeStyle } from '@/hooks/use-screen-fade';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
 import { useTheme } from '@/hooks/use-theme';
-import { htmlToPlainText } from '@/lib/html-text';
 import { noFocusOutline } from '@/lib/web-style';
 import { useCopa } from '@/store/copa-store';
 import { noScrollbar } from '@/lib/scroll-style';
 
 export default function CopaBlockScreen() {
-  const { id } = useLocalSearchParams<{ id: string }>();
-  const { getCopa, updateCopa, deleteCopa } = useCopa();
+  const { id: routeId } = useLocalSearchParams<{ id: string }>();
+  const { getCopa, createCopa, updateCopa, deleteCopa } = useCopa();
   const theme = useTheme();
   const tabBarInset = useTabBarInset();
   const insets = useSafeAreaInsets();
@@ -52,6 +53,21 @@ export default function CopaBlockScreen() {
   // Measured height of the sticky title block, so the fade gradient sits right
   // beneath it regardless of how many lines the title wraps to.
   const [titleHeight, setTitleHeight] = useState(0);
+
+  // A draft: (+) opened this screen without writing anything. The row appears on
+  // the first keystroke (`promote` below), and its id is held here rather than
+  // pushed into the URL — changing `routeId` mid-edit would remount the editor
+  // and take the caret with it. So everything about *identity* keys off
+  // `routeId`, and everything that reads or writes the store uses `id`.
+  //
+  // The URL keeps saying `/copa/new` after promotion, which is the deliberate
+  // half of that trade: reloading it on web opens a fresh draft rather than the
+  // block just written (which is safe in the feed, not lost). Putting the real
+  // id in the URL would re-run the seed effect and remount the editor mid-edit,
+  // and a caret lost on every first keystroke is the worse of the two.
+  const isDraft = routeId === DRAFT_COPA_ID;
+  const [draftId, setDraftId] = useState<string | null>(null);
+  const id = draftId ?? routeId;
 
   const item = getCopa(id);
   const [label, setLabel] = useState(item?.label ?? '');
@@ -71,12 +87,35 @@ export default function CopaBlockScreen() {
   // Bumped when a remote body is adopted, to remount the (uncontrolled) editor
   // so it reseeds — see MarkdownEditor, which freezes its initial value.
   const [contentRev, setContentRev] = useState(0);
+  // Turn a draft into a real block on the first keystroke that leaves something
+  // worth keeping. Created *with* the text rather than empty-then-updated, so
+  // there is never an empty row to push to the other devices.
+  //
+  // The editor reports a change when it seeds itself as well as when you type,
+  // so emptiness decides this, not the event. `isEmptyCopaBlock` is the same
+  // rule the unmount sweep below uses.
+  const promotedRef = useRef(false);
+  const promote = (nextLabel: string, nextContent: string) => {
+    if (!isDraft || promotedRef.current) return;
+    if (isEmptyCopaBlock({}, nextLabel, nextContent)) return;
+    promotedRef.current = true;
+    // Record what was just committed. Without this, `committedRef` stays at the
+    // mount value and the adopt effect below reads "local matches committed" the
+    // moment you delete what you typed — then adopts the stored text back as
+    // though another device had sent it, restoring the character you just
+    // removed and leaving behind the very block this draft exists to avoid.
+    committedRef.current = { label: nextLabel, content: nextContent };
+    setDraftId(createCopa({ label: nextLabel, content: nextContent }));
+  };
+
   const onChangeLabel = (t: string) => {
     editedRef.current = true;
+    promote(t, content);
     setLabel(t);
   };
   const onChangeContent = (html: string) => {
     editedRef.current = true;
+    promote(label, html);
     setContent(html);
   };
 
@@ -91,6 +130,22 @@ export default function CopaBlockScreen() {
   // plain create button. Registration follows *focus*, which matters here more
   // than anywhere: the copa tab stays mounted while you're on other screens.
   useEditAction(item?.fileUri ? null : () => editorRef.current?.focus());
+
+  // A draft has nothing to read, so it opens ready to type — the one screen that
+  // does. Everywhere else you arrive in a read view and tap the content to edit;
+  // a block you just asked for is empty by definition, and a pencil there only
+  // asks you to confirm you meant it. Deferred past the stack's slide-in so the
+  // focus can't race the transition or the editor's own imperative seed.
+  useEffect(() => {
+    if (!isDraft) return;
+    const task = InteractionManager.runAfterInteractions(() => {
+      // Someone who tapped the title and started typing during the transition
+      // has already chosen where the caret goes; don't take it back.
+      if (editedRef.current) return;
+      editorRef.current?.focus();
+    });
+    return () => task.cancel();
+  }, [isDraft]);
 
   // Latest edit state, refreshed after each render so the unmount flush below
   // can read it without writing refs during render.
@@ -109,8 +164,9 @@ export default function CopaBlockScreen() {
       committedRef.current = { label: current.label, content: current.content };
     }
     editedRef.current = false;
-    // Re-run only on a different block, not on every keystroke.
-  }, [id]);
+    // Re-run only on a different block, not on every keystroke — and never when
+    // a draft is promoted, which changes `id` but not the block on screen.
+  }, [routeId]);
 
   // Adopt an edit made to this block on another device. Without this the screen
   // kept rendering whatever it held when it opened, even though the change had
@@ -143,6 +199,9 @@ export default function CopaBlockScreen() {
   // trigger a write-back of our stale copy.
   useEffect(() => {
     if (!editedRef.current) return;
+    // A draft that has only ever held whitespace has no row to update, and `id`
+    // is still the sentinel.
+    if (id === DRAFT_COPA_ID) return;
     const timer = setTimeout(() => {
       // Skip a no-op write (e.g. typed then reverted) so we don't needlessly
       // bump updated_at and re-trigger sync. Compares against the latest stored
@@ -161,21 +220,15 @@ export default function CopaBlockScreen() {
   // `editedRef` so leaving a block that changed underneath us (remote) never
   // clobbers that remote change with our stale local copy.
   //
-  // "Has a file" is `fileName`, the metadata that travels with the row — never
-  // `fileUri` alone, which is this device's path to the downloaded bytes and is
-  // null on any device that has pulled the row but not yet fetched them. On web
-  // it's null for *every* file block after a reload, since object URLs die with
-  // the session and `prepareLocalFiles` clears them (see lib/sync/files.web.ts).
-  // Judging emptiness by `fileUri` therefore deleted real attachments — and copa
-  // has no trash, so there was nothing to restore.
+  // What counts as empty — and why a file block never does, even on a device
+  // holding the row but not the bytes — is `isEmptyCopaBlock`. The rule lives
+  // there, tested, rather than being re-derived here: this screen kept its own
+  // copy of it, so those tests could not have caught the two drifting apart.
   useEffect(
     () => () => {
       const { id: sid, label: sl, content: sc, stored } = snapshot.current;
       if (!stored) return;
-      const hasFile = !!stored.fileName || !!stored.fileUri;
-      const isEmpty =
-        !hasFile && sl.trim().length === 0 && htmlToPlainText(sc).length === 0;
-      if (isEmpty) {
+      if (isEmptyCopaBlock(stored, sl, sc)) {
         deleteCopa(sid);
         return;
       }
@@ -187,7 +240,10 @@ export default function CopaBlockScreen() {
     [updateCopa, deleteCopa],
   );
 
-  if (!item) {
+  // A draft has no row by design, so "not found" is only about a real id — and
+  // about a promoted draft whose row is momentarily missing from the store,
+  // which must keep showing the text being typed into it.
+  if (!item && !isDraft) {
     return (
       <ThemedView style={styles.empty}>
         <Stack.Screen options={{ title: 'Not found' }} />
@@ -227,11 +283,11 @@ export default function CopaBlockScreen() {
           ]}
           keyboardShouldPersistTaps="handled"
           {...noScrollbar}>
-          {item.fileUri ? (
+          {item?.fileUri ? (
             <FilePreview item={item} />
           ) : (
             <MarkdownEditor
-              key={`${id}:${contentRev}`}
+              key={`${routeId}:${contentRev}`}
               value={content}
               onChangeText={onChangeContent}
               placeholder="Contents to copy…"
@@ -250,7 +306,7 @@ export default function CopaBlockScreen() {
       </KeyboardAvoidingView>
       {/* Outside the KeyboardAvoidingView: it rides the keyboard inset itself.
           File blocks have no rich body, so the toolbar never applies to them. */}
-      {!item.fileUri && (
+      {!item?.fileUri && (
         <FormattingToolbar editorRef={editorRef} state={fmtState} visible={editing} />
       )}
     </ThemedView>

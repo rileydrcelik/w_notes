@@ -59,8 +59,12 @@ const persist = (write: Promise<unknown>) => {
 type CopaContextValue = {
   items: CopaItem[];
   getCopa: (id: string) => CopaItem | undefined;
-  /** Creates an empty copy block and returns its id. */
-  createCopa: () => string;
+  /**
+   * Creates a copy block and returns its id. Pass the text it starts with when
+   * promoting a draft: a block created empty is pushed to every other device
+   * within 150ms, and nothing there would ever sweep it up.
+   */
+  createCopa: (init?: { label?: string; content?: string }) => string;
   /**
    * Prompts to pick a file, imports it into a new file block, and returns the
    * new block's id — or `null` if the user cancelled the picker.
@@ -122,11 +126,13 @@ export function CopaProvider({ children }: { children: ReactNode }) {
     };
   }, [reload]);
 
-  const createCopa = useCallback<CopaContextValue['createCopa']>(() => {
+  const createCopa = useCallback<CopaContextValue['createCopa']>((init) => {
     const id = rid();
+    const label = init?.label ?? '';
+    const content = init?.content ?? '';
     // Prepend so the new block surfaces first in the feed.
-    setItems((prev) => [{ id, label: '', content: '' }, ...prev]);
-    persist(db.createCopa({ id }));
+    setItems((prev) => [{ id, label, content }, ...prev]);
+    persist(db.createCopa({ id, label, content }));
     return id;
   }, []);
 
