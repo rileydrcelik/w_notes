@@ -15,6 +15,17 @@
  */
 
 /** Identity on native: the caller already holds the only connection there is. */
-export function shareDbAcrossTabs<T extends object>(api: T): T {
+export function shareDbAcrossTabs<T extends object>(
+  api: T,
+  _options: { invalidates?: readonly string[] } = {},
+): T {
   return api;
+}
+
+/**
+ * No-op on native: there is one process, so nothing else can change the
+ * database underneath this one. Returns an unsubscribe for shape parity.
+ */
+export function subscribeDbChanged(_listener: () => void): () => void {
+  return () => {};
 }

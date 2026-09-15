@@ -49,6 +49,20 @@ type Request = { k: 'req'; id: number; from: string; method: string; args: unkno
 type Ack = { k: 'ack'; id: number };
 type SerializedError = { name: string; message: string };
 type Response = { k: 'res'; id: number; ok: boolean; value?: unknown; error?: SerializedError };
+type Changed = { k: 'changed' };
+
+/**
+ * How long changes are gathered before telling the other tabs. One
+ * announcement fans out to every store in every tab, and each store in a
+ * non-owning tab re-reads over the channel, so a burst of writes — typing,
+ * a paste, a sync pull — should cost one round of that, not one per write.
+ */
+const CHANGE_COALESCE_MS = 150;
+
+/** Methods whose effect other tabs must re-read. Set by `db.ts`. */
+let invalidating: ReadonlySet<string> = new Set();
+const changeListeners = new Set<() => void>();
+let changeTimer: ReturnType<typeof setTimeout> | null = null;
 
 /** A call this tab has sent and is still waiting on. */
 type Pending = {
@@ -94,12 +108,37 @@ function ownerLostError(method: string): Error {
   return err;
 }
 
+/** Tell this tab's stores to re-read. Coalesced; see `CHANGE_COALESCE_MS`. */
+function notifyChanged(): void {
+  if (changeTimer) return;
+  changeTimer = setTimeout(() => {
+    changeTimer = null;
+    for (const listener of changeListeners) listener();
+  }, CHANGE_COALESCE_MS);
+}
+
+/**
+ * Say that the database changed, so other tabs re-read it.
+ *
+ * Only for writes that change what someone is looking at. Broadcasting every
+ * write would not just be wasteful, it would not terminate: re-reading runs
+ * `purgeExpiredTrash` (`notes-store.tsx`), which is itself a write, so tab A
+ * would wake tab B, which would wake tab A, for as long as both stayed open.
+ */
+function announceDbChanged(): void {
+  requests?.postMessage({ k: 'changed' } satisfies Changed);
+}
+
 function ensureChannels(): void {
   if (requests || typeof BroadcastChannel === 'undefined') return;
 
   requests = new BroadcastChannel(REQUEST_CHANNEL);
-  requests.onmessage = (e: MessageEvent<Request>) => {
+  requests.onmessage = (e: MessageEvent<Request | Changed>) => {
     const msg = e.data;
+    if (msg?.k === 'changed') {
+      notifyChanged();
+      return;
+    }
     if (msg?.k !== 'req') return;
     // Only the owner answers, and only it can: everyone else has no connection.
     if (!isDbLeader() || !served) return;
@@ -148,6 +187,12 @@ async function serve(msg: Request): Promise<void> {
     back.postMessage({ k: 'ack', id: msg.id } satisfies Ack);
     try {
       const value = await (method as AsyncMethod)(...msg.args);
+      if (invalidating.has(msg.method)) {
+        announceDbChanged();
+        // And this tab's own stores: the write came from somewhere else, so
+        // nothing here applied it optimistically the way the calling tab did.
+        notifyChanged();
+      }
       back.postMessage({ k: 'res', id: msg.id, ok: true, value } satisfies Response);
     } catch (e) {
       back.postMessage({
@@ -221,9 +266,13 @@ function callOwner(method: string, args: unknown[]): Promise<unknown> {
  * own first moments — including the tab about to become the owner, whose calls
  * would then be addressed to nobody.
  */
-export function shareDbAcrossTabs<T extends object>(api: T): T {
+export function shareDbAcrossTabs<T extends object>(
+  api: T,
+  options: { invalidates?: readonly string[] } = {},
+): T {
   const source = api as Record<string, unknown>;
   served = source;
+  invalidating = new Set(options.invalidates ?? []);
   // Listen from the moment the API exists, not from this tab's first call: the
   // owner has to be able to answer a follower that asks before it has asked
   // anything itself. This also starts election, via `subscribeDbRole`.
@@ -240,9 +289,28 @@ export function shareDbAcrossTabs<T extends object>(api: T): T {
       await whenRoleSettled();
       // Looked up per call, not captured, so replacing a method on the source
       // object after wrapping (as `serializeWrite` does) is still honoured.
-      if (isDbLeader()) return (source[name] as AsyncMethod)(...args);
-      return callOwner(name, args);
+      if (!isDbLeader()) return callOwner(name, args);
+      const value = await (source[name] as AsyncMethod)(...args);
+      // Other tabs only; this one already shows the change optimistically.
+      if (invalidating.has(name)) announceDbChanged();
+      return value;
     };
   }
   return shared as T;
+}
+
+/**
+ * Hear that another tab changed the database. Returns an unsubscribe function.
+ *
+ * The listener's job is to re-read — `refreshFromDb` in the sync engine, which
+ * is the same path a sync pull already uses, so every store hydrates the way it
+ * always has. Without this, a second tab keeps rendering whatever it loaded and
+ * will happily let someone edit a note the other tab moved to the trash.
+ */
+export function subscribeDbChanged(listener: () => void): () => void {
+  ensureChannels();
+  changeListeners.add(listener);
+  return () => {
+    changeListeners.delete(listener);
+  };
 }

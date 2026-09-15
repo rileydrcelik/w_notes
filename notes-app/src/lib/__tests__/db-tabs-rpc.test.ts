@@ -175,3 +175,85 @@ describe('the owning tab', () => {
     expect(ran).toBe(true);
   });
 });
+
+describe('telling the other tabs the database changed', () => {
+  it('announces a write that changes what someone is looking at', async () => {
+    const owner = await openTab();
+    const ownerDb = owner.shareDbAcrossTabs(
+      { createNote: async () => {} },
+      { invalidates: ['createNote'] },
+    );
+    await flush();
+
+    const follower = await openTab();
+    follower.shareDbAcrossTabs({ createNote: async () => {} }, { invalidates: ['createNote'] });
+    const heard = vi.fn();
+    follower.subscribeDbChanged(heard);
+
+    await ownerDb.createNote();
+    await new Promise((r) => setTimeout(r, 200)); // past the coalescing window
+
+    expect(heard).toHaveBeenCalled();
+  });
+
+  it('says nothing for housekeeping, so two tabs cannot wake each other forever', async () => {
+    // Re-reading runs `purgeExpiredTrash`, which is itself a write. Announce it
+    // and tab A wakes tab B, which wakes tab A, for as long as both are open.
+    const owner = await openTab();
+    const ownerDb = owner.shareDbAcrossTabs(
+      { purgeExpiredTrash: async () => {} },
+      { invalidates: [] },
+    );
+    await flush();
+
+    const follower = await openTab();
+    follower.shareDbAcrossTabs({ purgeExpiredTrash: async () => {} }, { invalidates: [] });
+    const heard = vi.fn();
+    follower.subscribeDbChanged(heard);
+
+    await ownerDb.purgeExpiredTrash();
+    await new Promise((r) => setTimeout(r, 200));
+
+    expect(heard).not.toHaveBeenCalled();
+  });
+
+  it('wakes the owner too when it served a write for somebody else', async () => {
+    // The write came from another tab, so nothing here applied it optimistically
+    // — without this the owner keeps rendering stale content it wrote itself.
+    const owner = await openTab();
+    owner.shareDbAcrossTabs({ createNote: async () => {} }, { invalidates: ['createNote'] });
+    const ownerHeard = vi.fn();
+    owner.subscribeDbChanged(ownerHeard);
+    await flush();
+
+    const follower = await openTab();
+    const followerDb = follower.shareDbAcrossTabs(
+      { createNote: async () => {} },
+      { invalidates: ['createNote'] },
+    );
+
+    await followerDb.createNote();
+    await new Promise((r) => setTimeout(r, 200));
+
+    expect(ownerHeard).toHaveBeenCalled();
+  });
+
+  it('coalesces a burst into one announcement', async () => {
+    const owner = await openTab();
+    const ownerDb = owner.shareDbAcrossTabs(
+      { updateNote: async () => {} },
+      { invalidates: ['updateNote'] },
+    );
+    await flush();
+
+    const follower = await openTab();
+    follower.shareDbAcrossTabs({ updateNote: async () => {} }, { invalidates: ['updateNote'] });
+    const heard = vi.fn();
+    follower.subscribeDbChanged(heard);
+
+    for (let i = 0; i < 10; i++) await ownerDb.updateNote();
+    await new Promise((r) => setTimeout(r, 200));
+
+    expect(heard).toHaveBeenCalledTimes(1);
+  });
+});

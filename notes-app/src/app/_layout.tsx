@@ -32,7 +32,8 @@ import { CreateOptionsProvider } from '@/store/create-options-store';
 import { AppThemeProvider, useThemePref } from '@/store/theme-store';
 import { installSyncFlush } from '@/lib/sync/flush-on-hide';
 import { installSyncPoll } from '@/lib/sync/poll';
-import { reopenDbAndRefresh } from '@/lib/sync/sync-engine';
+import { refreshFromDb, reopenDbAndRefresh } from '@/lib/sync/sync-engine';
+import { subscribeDbChanged } from '@/lib/db-tabs';
 import { subscribeDbRole } from '@/lib/web-db-lock';
 
 // Top-level routes that the pager slides between. Everything else (a folder or
@@ -116,6 +117,12 @@ function AppShell() {
     () => subscribeDbRole((role) => role === 'leader' && void reopenDbAndRefresh()),
     [],
   );
+
+  // Another tab changed the database: re-read it. Same path a sync pull uses,
+  // so every store hydrates the way it always has. Without this a second tab
+  // keeps showing what it loaded and will let someone edit a note the other tab
+  // has already trashed. No-op on native, where there is only one process.
+  useEffect(() => subscribeDbChanged(refreshFromDb), []);
 
   // Android backdrop blur is capture-based: the navbar's BlurView blurs the
   // content of a BlurTargetView, which must wrap the screens but NOT the navbar

@@ -2839,10 +2839,25 @@ for (const name of WRITE_METHODS) {
 }
 
 /**
+ * Housekeeping writes: they change the database without changing anything
+ * anyone is looking at, so another tab has no reason to re-read.
+ *
+ * `purgeExpiredTrash` is not merely pointless to announce, it is the one that
+ * must not be: re-reading runs it (`notes-store.tsx`), so announcing it would
+ * have each tab wake the other for as long as both stayed open. Nothing is lost
+ * by leaving it out — the trash list filters expired entries as it reads, which
+ * is the real mechanism; the sweep only reclaims the rows. `markSynced` and
+ * `setCursor` are sync's own bookkeeping, invisible to every screen.
+ */
+const HOUSEKEEPING_WRITES: readonly string[] = ['purgeExpiredTrash', 'markSynced', 'setCursor'];
+
+/**
  * The database every caller sees.
  *
  * Wrapped *after* the write chain above is installed, so a call that arrives
  * through the seam lands on the serialized method rather than around it. On
  * native this is the same object, untouched.
  */
-export const db = shareDbAcrossTabs(localDb);
+export const db = shareDbAcrossTabs(localDb, {
+  invalidates: WRITE_METHODS.filter((name) => !HOUSEKEEPING_WRITES.includes(name)),
+});
