@@ -574,3 +574,38 @@ describe('onRetitled ordering', () => {
     expect(retitle.pendingRetitleIssueIds().has('i1')).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------
+
+describe('only the tab that owns the database flushes', () => {
+  it('bills nobody and keeps the entry queued when another tab owns the database', async () => {
+    // A retitle is a model call billed to the user's own key. Two tabs
+    // replaying the queue would pay for every title twice and then race to
+    // write the winner; `flushing` dedupes only within one realm.
+    const { retitle, db, issueTitle } = await load();
+    const { ownsBackgroundWork } = await import('@/lib/web-db-lock');
+    const applyTitle = vi.fn().mockResolvedValue(true);
+
+    vi.mocked(issueTitle.requestIssueTitle).mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    await retitle.retitleIssue(
+      { issueId: 'i1', stub: 'Stub title', text: 'full text' },
+      { applyTitle },
+    );
+    expect(retitle.pendingRetitleIssueIds().has('i1')).toBe(true);
+
+    vi.mocked(db.getIssueById).mockResolvedValue(makeRow({ id: 'i1' }));
+    vi.mocked(issueTitle.requestIssueTitle).mockResolvedValue({
+      title: 'Model title',
+      duplicateOf: null,
+    });
+    vi.mocked(ownsBackgroundWork).mockResolvedValue(false);
+
+    const flushResult = await retitle.flushIssueRetitles({ applyTitle });
+
+    expect(issueTitle.requestIssueTitle).not.toHaveBeenCalledTimes(2);
+    expect(applyTitle).not.toHaveBeenCalled();
+    // Kept, not dropped: the owning tab still has to title it.
+    expect(flushResult).toEqual({ titled: 0, dropped: 0, remaining: 1 });
+    expect(retitle.pendingRetitleIssueIds().has('i1')).toBe(true);
+  });
+});

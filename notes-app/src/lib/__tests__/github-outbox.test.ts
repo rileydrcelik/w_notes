@@ -715,3 +715,30 @@ describe('reassignGithubOutbox', () => {
     expect(db.setSetting).not.toHaveBeenCalled();
   });
 });
+
+// ---------------------------------------------------------------------------
+
+describe('flushGithubOutbox — only the tab that owns the database', () => {
+  it('files nothing and keeps the entry queued when another tab owns the database', async () => {
+    // Opening a GitHub issue is not idempotent — the queue exists precisely
+    // because these are side effects that cannot be re-run — so two tabs
+    // flushing the same entry files the same issue twice. `flushing` dedupes
+    // only within one realm, so this gate is the whole defence.
+    const { outbox, db, issueGithub } = await load();
+    const { ownsBackgroundWork } = await import('@/lib/web-db-lock');
+    await outbox.queueGithubPush('i1', 'acme/widgets', {});
+    vi.mocked(db.getIssueById).mockResolvedValue(makeRow({ id: 'i1' }));
+    vi.mocked(issueGithub.createGithubIssue).mockResolvedValue(99);
+    vi.mocked(ownsBackgroundWork).mockResolvedValue(false);
+
+    const result = await outbox.flushGithubOutbox({
+      resolve: vi.fn().mockReturnValue(makeCtx()),
+      setGhNumber: vi.fn(),
+    });
+
+    expect(issueGithub.createGithubIssue).not.toHaveBeenCalled();
+    expect(issueGithub.updateGithubIssue).not.toHaveBeenCalled();
+    // Kept, not dropped: the owning tab still has to push it.
+    expect(result).toEqual({ pushed: 0, dropped: 0, remaining: 1 });
+  });
+});
