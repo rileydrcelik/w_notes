@@ -27,6 +27,7 @@ import { emptyFacets } from '@/lib/latex/corpus';
 import { normalizeHex, storedFolderColor } from '@/lib/folder-color';
 import { foldersToRehome } from '@/lib/folder-tree';
 import { liveSessionIds, pageSessionId } from '@/lib/page-session';
+import { COPA_UPSERT_SQL } from '@/lib/sync/copa-upsert';
 import type { CopaItem } from '@/data/copa';
 
 /**
@@ -2399,18 +2400,10 @@ export const db = {
         changed += r.changes;
       }
       for (const c of payload.copa_items) {
+        // Held in its own module so a unit test can run it against a real
+        // SQLite; the rules it encodes fail silently. See `copa-upsert.ts`.
         const r = await database.runAsync(
-          `INSERT INTO copa_items
-             (id, label, content, favorite, created_at, updated_at, deleted_at,
-              file_name, mime_type, file_size, remote_key, dirty)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
-           ON CONFLICT(id) DO UPDATE SET
-             label = excluded.label, content = excluded.content,
-             favorite = excluded.favorite, created_at = excluded.created_at,
-             updated_at = excluded.updated_at, deleted_at = excluded.deleted_at,
-             file_name = excluded.file_name, mime_type = excluded.mime_type,
-             file_size = excluded.file_size, remote_key = excluded.remote_key, dirty = 0
-           WHERE excluded.updated_at >= copa_items.updated_at`,
+          COPA_UPSERT_SQL,
           [
             c.id,
             c.label,
