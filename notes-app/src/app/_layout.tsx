@@ -175,8 +175,9 @@ function AppShell() {
               a second bottom-left dock collided with the navbar's back button
               at phone width, so the finance screen opens it from the formatting
               toolbar instead. */}
-          {/* Web-only: covers extra browser tabs, which can't hold the SQLite
-              database (OPFS is single-owner). Native renders nothing. */}
+          {/* Web-only: covers a tab that can't reach the database — the tab
+              holding it stopped answering, or there's no channel to ask over.
+              Every other tab is a full tab. Native renders nothing. */}
           <DbTabGuard />
           {/* Replays GitHub issue pushes that were held back while offline.
               Renders nothing; lives here so a push queued on a screen the user

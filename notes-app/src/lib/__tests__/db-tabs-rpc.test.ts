@@ -33,13 +33,22 @@ class FakeChannel {
   }
 }
 
-/** First requester wins the lock; later ones are told it's taken. */
+/**
+ * First requester wins the lock; later ones are told it's taken and queue. A
+ * queued request is granted by `handOverLock`, which is what the browser does
+ * for a tab that took over — the ordinary way a guarded tab stops being guarded.
+ */
+const queued: ((lock: unknown) => Promise<void>)[] = [];
+
 function fakeLockManager(held: Set<string>) {
   return {
     request: (name: string, ...rest: unknown[]) => {
       const opts = (typeof rest[0] === 'object' ? rest[0] : {}) as { ifAvailable?: boolean };
       const cb = rest[rest.length - 1] as (lock: unknown) => Promise<void>;
-      if (!opts.ifAvailable) return new Promise<void>(() => {}); // queued forever
+      if (!opts.ifAvailable) {
+        queued.push(cb);
+        return new Promise<void>(() => {}); // held until granted
+      }
       if (held.has(name)) return Promise.resolve(cb(null));
       held.add(name);
       void cb({ name });
@@ -47,6 +56,12 @@ function fakeLockManager(held: Set<string>) {
     },
     query: async () => ({ held: [], pending: [] }),
   };
+}
+
+/** The previous owner let go: grant the lock to the tab that queued first. */
+function handOverLock(): void {
+  const next = queued.shift();
+  void next?.({ name: 'wnotes-db-owner' });
 }
 
 const heldLocks = new Set<string>();
@@ -69,6 +84,7 @@ const flush = () => new Promise((r) => setTimeout(r, 0));
 beforeEach(() => {
   registry.clear();
   heldLocks.clear();
+  queued.length = 0;
   setNavigator({ locks: fakeLockManager(heldLocks) });
   (globalThis as { BroadcastChannel?: unknown }).BroadcastChannel = FakeChannel;
 });
@@ -255,5 +271,178 @@ describe('telling the other tabs the database changed', () => {
     await new Promise((r) => setTimeout(r, 200));
 
     expect(heard).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * A frozen owner. The browser stops running a background tab's tasks without
+ * closing it or releasing its lock, so from here it looks like a tab that is
+ * still there and answers nothing. Silencing its request handler is exactly
+ * that, and restoring it is the thaw when the user looks at it again.
+ */
+function freezeOwner(): () => void {
+  const [ownerChannel] = [...(registry.get('wnotes-db-rpc') ?? [])];
+  const handler = ownerChannel.onmessage;
+  ownerChannel.onmessage = null;
+  return () => {
+    ownerChannel.onmessage = handler;
+  };
+}
+
+describe('noticing that the owning tab stopped answering', () => {
+  it('says nothing is wrong while the owner answers', async () => {
+    const owner = await openTab();
+    owner.shareDbAcrossTabs({ getNote: async () => 'ok' });
+    await flush();
+
+    const follower = await openTab();
+    follower.shareDbAcrossTabs({ getNote: async () => 'unused' });
+
+    expect(follower.isDbUnreachable()).toBe(false);
+  });
+
+  it('is never unreachable to the tab that holds the database', async () => {
+    const owner = await openTab();
+    owner.shareDbAcrossTabs({ getNote: async () => 'ok' });
+    await flush();
+
+    expect(owner.isDbUnreachable()).toBe(false);
+  });
+
+  it('stops being unreachable the moment it takes the database over', async () => {
+    // What "Use here" is for. The guard reads this, so if taking over left the
+    // tab still looking unreachable the guard would stay up over a tab that now
+    // holds the database and is perfectly able to serve everyone else.
+    vi.useFakeTimers();
+    try {
+      const owner = await openTab();
+      owner.shareDbAcrossTabs({ getNote: async () => 'ok' });
+      await vi.advanceTimersByTimeAsync(1);
+
+      const follower = await openTab();
+      const followerDb = follower.shareDbAcrossTabs({ getNote: async () => 'local' });
+      const heard = vi.fn();
+      follower.subscribeDbReachable(heard);
+
+      freezeOwner();
+      void followerDb.getNote().catch(() => {});
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(follower.isDbUnreachable()).toBe(true);
+      heard.mockClear();
+
+      // The unresponsive owner reloaded and let go of the lock.
+      handOverLock();
+      await vi.advanceTimersByTimeAsync(1);
+
+      expect(follower.isDbUnreachable()).toBe(false);
+      // Taking over is not itself a reply, so the only thing that can tell a
+      // listener the guard should come down is the role change.
+      expect(heard).toHaveBeenCalled();
+      await expect(followerDb.getNote()).resolves.toBe('local');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('gives up on an owner that never answers, and tells its listeners', async () => {
+    vi.useFakeTimers();
+    try {
+      const owner = await openTab();
+      owner.shareDbAcrossTabs({ getNote: async () => 'ok' });
+      await vi.advanceTimersByTimeAsync(1);
+
+      const follower = await openTab();
+      const followerDb = follower.shareDbAcrossTabs({ getNote: async () => 'unused' });
+      const heard = vi.fn();
+      follower.subscribeDbReachable(heard);
+
+      freezeOwner();
+      // Handled synchronously: the rejection lands inside the timer advance
+      // below, and attaching afterwards would make it an unhandled rejection.
+      const settled = followerDb.getNote().then(
+        () => null,
+        (e: Error) => e,
+      );
+      // The call is still outstanding, so nothing is known yet.
+      await vi.advanceTimersByTimeAsync(1);
+      expect(follower.isDbUnreachable()).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(await settled).toMatchObject({ name: 'DbOwnerLost' });
+      expect(follower.isDbUnreachable()).toBe(true);
+      expect(heard).toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('notices on its own when the owner comes back', async () => {
+    // Nothing else would ask: the guard is covering the screen and the
+    // once-per-profile jobs belong to the owner, so without the probe this tab
+    // stays behind the guard for as long as it is open.
+    vi.useFakeTimers();
+    try {
+      const owner = await openTab();
+      owner.shareDbAcrossTabs({ getNote: async () => 'ok' });
+      await vi.advanceTimersByTimeAsync(1);
+
+      const follower = await openTab();
+      const followerDb = follower.shareDbAcrossTabs({ getNote: async () => 'unused' });
+      const heard = vi.fn();
+      follower.subscribeDbReachable(heard);
+
+      const thaw = freezeOwner();
+      void followerDb.getNote().catch(() => {});
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(follower.isDbUnreachable()).toBe(true);
+
+      thaw();
+      await vi.advanceTimersByTimeAsync(3_000);
+
+      expect(follower.isDbUnreachable()).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('stops asking once nobody is listening', async () => {
+    vi.useFakeTimers();
+    try {
+      const owner = await openTab();
+      owner.shareDbAcrossTabs({ getNote: async () => 'ok' });
+      await vi.advanceTimersByTimeAsync(1);
+
+      const follower = await openTab();
+      const followerDb = follower.shareDbAcrossTabs({ getNote: async () => 'unused' });
+      const stop = follower.subscribeDbReachable(() => {});
+
+      const thaw = freezeOwner();
+      void followerDb.getNote().catch(() => {});
+      await vi.advanceTimersByTimeAsync(30_000);
+      stop();
+      thaw();
+
+      const asked = vi.fn();
+      const [ownerChannel] = [...(registry.get('wnotes-db-rpc') ?? [])];
+      ownerChannel.onmessage = asked;
+      await vi.advanceTimersByTimeAsync(9_000);
+
+      expect(asked).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('has nothing to reach when the browser has no BroadcastChannel', async () => {
+    // Another tab already holds the database, and this one has no way to ask it
+    // for anything. Election itself needs only the Web Locks API, so the tab
+    // still knows it is a follower — it just has nowhere to send a call.
+    heldLocks.add('wnotes-db-owner');
+    (globalThis as { BroadcastChannel?: unknown }).BroadcastChannel = undefined;
+    const tab = await openTab();
+    tab.shareDbAcrossTabs({ getNote: async () => 'unused' });
+    await flush();
+
+    expect(tab.isDbUnreachable()).toBe(true);
   });
 });

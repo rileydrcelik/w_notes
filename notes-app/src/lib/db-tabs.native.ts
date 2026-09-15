@@ -29,3 +29,22 @@ export function shareDbAcrossTabs<T extends object>(
 export function subscribeDbChanged(_listener: () => void): () => void {
   return () => {};
 }
+
+/**
+ * Never on native: this process holds the database itself, so there is no other
+ * tab to fail to reach. The pair below says the same thing three ways because
+ * the web module's callers need all three shapes.
+ */
+export function isDbUnreachable(): boolean {
+  return false;
+}
+
+/** Never changes on native, so the listener is never called. */
+export function subscribeDbReachable(_listener: () => void): () => void {
+  return () => {};
+}
+
+/** Always reachable on native. What the (web-only) guard overlay reads. */
+export function useDbUnreachable(): boolean {
+  return false;
+}

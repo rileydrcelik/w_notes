@@ -1,28 +1,29 @@
-import { useEffect, useState } from 'react';
-
 /**
- * Single-tab guard for the web SQLite database.
+ * Which tab holds the web SQLite database.
  *
  * On web, expo-sqlite runs SQLite through wa-sqlite's OPFS `AccessHandlePoolVFS`,
  * which takes an *exclusive* OS-level lock on the database files
  * (`createSyncAccessHandle`). Only one browser tab can hold that lock at a time —
- * a second tab's `openDatabaseAsync` throws `NoModificationAllowedError`, its
- * bootstrap fails, and it silently shows no content (while Firebase auth, which
- * lives in cross-tab IndexedDB, still shows the right account). See db.ts.
+ * a second tab's `openDatabaseAsync` throws `NoModificationAllowedError`, and a
+ * failed open leaves wa-sqlite's VFS wedged for the rest of the page's life, so
+ * a later open can't recover without a reload. See db.ts.
  *
- * So exactly one tab can own the database. This module elects that owner with the
- * Web Locks API and lets the app show a "already open in another tab" screen in
- * the others, with a one-click takeover:
+ * That constraint is on the *file*, not on the app: every tab is a full tab, it
+ * just doesn't hold its own connection. This module answers the one question
+ * that follows — who holds it — and `db-tabs.ts` routes the other tabs' calls to
+ * whoever that is.
  *
  *  - The first tab acquires an exclusive lock and holds it for its lifetime →
- *    it's the `leader` (the only tab that can touch the DB).
- *  - Later tabs can't get the lock → they're `follower`s and render the guard
- *    overlay. Each also *queues* for the lock, so the instant the leader closes
- *    (or hands off) it's promoted; since the DB never opened while it waited, it
- *    reloads to get a clean connection now that the file is free.
- *  - "Use here" broadcasts a takeover: the current leader reloads (releasing its
- *    lock on unload), which lets the queued follower that asked take over first
- *    (Web Locks grants queued requests FIFO, so the asking tab wins the race).
+ *    it's the `leader`, the only tab that opens the OPFS file. It also runs the
+ *    once-per-profile background jobs (see `ownsBackgroundWork`).
+ *  - Later tabs can't get the lock → they're `follower`s, which route their
+ *    database calls to the leader instead of opening anything. Each also
+ *    *queues* for the lock, so the moment the leader closes it's promoted in
+ *    place — and because it never touched the file while it waited, that first
+ *    open starts from a clean VFS.
+ *  - "Use here" (`requestDbTakeover`) broadcasts a takeover for the case where
+ *    the leader has stopped answering: it reloads, releasing its lock, and the
+ *    queued follower that asked wins it (Web Locks grants queued requests FIFO).
  */
 
 export type DbTabRole = 'leader' | 'follower';
@@ -140,12 +141,18 @@ function start(): void {
     return;
   }
 
-  channel = new BroadcastChannel(CHANNEL_NAME);
-  channel.onmessage = (e) => {
-    // A follower wants the DB. Release our lock by reloading; on the way back up
-    // we'll find the file taken by that follower and settle in as a follower too.
-    if (e.data === TAKEOVER && role === 'leader') window.location.reload();
-  };
+  // Guarded separately from `navigator.locks`: election works without a channel,
+  // it just can't be handed over. `db-tabs.ts` guards its own channels the same
+  // way, and a tab that assumed one existed would throw here and never elect at
+  // all — leaving every tab a follower with nothing to follow.
+  if (typeof BroadcastChannel !== 'undefined') {
+    channel = new BroadcastChannel(CHANNEL_NAME);
+    channel.onmessage = (e) => {
+      // A follower wants the DB. Release our lock by reloading; on the way back
+      // up we'll find the file taken by that follower and settle in as one too.
+      if (e.data === TAKEOVER && role === 'leader') window.location.reload();
+    };
+  }
 
   // Try to grab ownership without waiting. If it's free we're the leader and hold
   // the lock for the tab's whole lifetime (the callback promise never resolves).
@@ -207,25 +214,4 @@ export function isDbLockedError(e: unknown): boolean {
   const name = (e as { name?: string })?.name;
   const message = String((e as { message?: string })?.message ?? e ?? '');
   return name === 'NoModificationAllowedError' || /NoModificationAllowed|access handle/i.test(message);
-}
-
-/**
- * The database ownership role for this tab. `follower` means another tab holds
- * the DB and this one should show the guard instead of (empty) content. Always
- * `leader` on native, where there are no tabs and this whole module is stubbed.
- */
-export function useDbTabRole(): DbTabRole {
-  const [current, setCurrent] = useState<DbTabRole>(role);
-  useEffect(() => {
-    start();
-    // Sync in case the role changed between this component's first render and
-    // now (start() elects asynchronously); later changes arrive via subscribe.
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- reconcile role
-    setCurrent(role);
-    subscribers.add(setCurrent);
-    return () => {
-      subscribers.delete(setCurrent);
-    };
-  }, []);
-  return current;
 }

@@ -27,6 +27,8 @@
  * per tab listening.
  */
 
+import { useEffect, useState } from 'react';
+
 import { isDbLeader, subscribeDbRole, whenRoleSettled } from '@/lib/web-db-lock';
 
 /** The shape of the object being shared: async methods, as `db` exposes. */
@@ -50,6 +52,8 @@ type Ack = { k: 'ack'; id: number };
 type SerializedError = { name: string; message: string };
 type Response = { k: 'res'; id: number; ok: boolean; value?: unknown; error?: SerializedError };
 type Changed = { k: 'changed' };
+type Ping = { k: 'ping'; from: string };
+type Pong = { k: 'pong' };
 
 /**
  * How long changes are gathered before telling the other tabs. One
@@ -63,6 +67,21 @@ const CHANGE_COALESCE_MS = 150;
 let invalidating: ReadonlySet<string> = new Set();
 const changeListeners = new Set<() => void>();
 let changeTimer: ReturnType<typeof setTimeout> | null = null;
+
+/**
+ * Whether the owning tab is answering. False only after a call went unanswered
+ * long enough to give up on — a tab the browser froze or discarded, or an owner
+ * that went away between election and the reply.
+ */
+let reachable = true;
+const reachListeners = new Set<() => void>();
+
+function setReachable(next: boolean): void {
+  if (reachable === next) return;
+  reachable = next;
+  updateProbe();
+  for (const listener of reachListeners) listener();
+}
 
 /** A call this tab has sent and is still waiting on. */
 type Pending = {
@@ -133,10 +152,19 @@ function ensureChannels(): void {
   if (requests || typeof BroadcastChannel === 'undefined') return;
 
   requests = new BroadcastChannel(REQUEST_CHANNEL);
-  requests.onmessage = (e: MessageEvent<Request | Changed>) => {
+  requests.onmessage = (e: MessageEvent<Request | Changed | Ping>) => {
     const msg = e.data;
     if (msg?.k === 'changed') {
       notifyChanged();
+      return;
+    }
+    if (msg?.k === 'ping') {
+      // Answered before `served` is consulted: the question is whether this tab
+      // is running, not whether it can do anything in particular.
+      if (!isDbLeader()) return;
+      const back = new BroadcastChannel(replyChannel(msg.from));
+      back.postMessage({ k: 'pong' } satisfies Pong);
+      back.close();
       return;
     }
     if (msg?.k !== 'req') return;
@@ -146,8 +174,12 @@ function ensureChannels(): void {
   };
 
   replies = new BroadcastChannel(replyChannel(tabId));
-  replies.onmessage = (e: MessageEvent<Ack | Response>) => {
+  replies.onmessage = (e: MessageEvent<Ack | Response | Pong>) => {
     const msg = e.data;
+    if (msg?.k === 'pong') {
+      setReachable(true);
+      return;
+    }
     if (msg?.k === 'ack') {
       const call = pending.get(msg.id);
       if (call) call.started = true;
@@ -158,6 +190,7 @@ function ensureChannels(): void {
     if (!call) return;
     pending.delete(msg.id);
     clearTimeout(call.timer);
+    setReachable(true);
     call.settle(
       msg.ok
         ? { ok: true, value: msg.value }
@@ -244,6 +277,7 @@ function callOwner(method: string, args: unknown[]): Promise<unknown> {
       outcome.ok ? resolve(outcome.value) : reject(outcome.error);
     const timer = setTimeout(() => {
       pending.delete(id);
+      setReachable(false);
       settle({ ok: false, error: ownerLostError(method) });
     }, CALL_TIMEOUT_MS);
     pending.set(id, { method, args, started: false, settle, timer });
@@ -313,4 +347,85 @@ export function subscribeDbChanged(listener: () => void): () => void {
   return () => {
     changeListeners.delete(listener);
   };
+}
+
+/** How often a tab that has lost its owner asks whether it is back. */
+const PROBE_MS = 3_000;
+
+/**
+ * Ask the owner whether it is there. Nothing waits on this: a live owner's reply
+ * marks it reachable, and silence leaves the answer where it already was.
+ */
+function probeOwner(): void {
+  requests?.postMessage({ k: 'ping', from: tabId } satisfies Ping);
+}
+
+let probeTimer: ReturnType<typeof setInterval> | null = null;
+
+/**
+ * Keep asking while this tab has given up and somebody is listening for it to
+ * stop having given up.
+ *
+ * A frozen tab thaws when the user looks at it again, and nothing else here
+ * would ever notice — the guard is covering the screen, and the once-per-profile
+ * jobs belong to the owner — so a tab would sit behind the guard long after the
+ * tab it was waiting for came back.
+ */
+function updateProbe(): void {
+  const wanted = Boolean(requests) && reachListeners.size > 0 && isDbUnreachable();
+  if (wanted === Boolean(probeTimer)) return;
+  if (wanted) {
+    probeTimer = setInterval(probeOwner, PROBE_MS);
+    probeOwner();
+  } else if (probeTimer) {
+    clearInterval(probeTimer);
+    probeTimer = null;
+  }
+}
+
+/**
+ * Whether this tab can neither reach the database itself nor reach the tab that
+ * holds it — the one state where it genuinely has nothing to show.
+ *
+ * The owner is never unreachable to itself, and a tab with no
+ * `BroadcastChannel` can never route, so it is unreachable from the start.
+ * Otherwise this only turns true once a call has actually gone unanswered,
+ * rather than guessing from a heartbeat: the browser may freeze or discard the
+ * owning tab, and the first thing to notice is a reply that never comes.
+ */
+export function isDbUnreachable(): boolean {
+  ensureChannels();
+  return !isDbLeader() && (!requests || !reachable);
+}
+
+/**
+ * Hear when that answer changes. Returns an unsubscribe function.
+ *
+ * Also listens for the role, because gaining the database is one of the ways a
+ * tab stops being unable to reach it — and the one the takeover button aims for.
+ */
+export function subscribeDbReachable(listener: () => void): () => void {
+  ensureChannels();
+  reachListeners.add(listener);
+  const stopRole = subscribeDbRole(() => {
+    updateProbe();
+    listener();
+  });
+  updateProbe();
+  return () => {
+    reachListeners.delete(listener);
+    stopRole();
+    updateProbe();
+  };
+}
+
+/** `isDbUnreachable` as React state. What the guard overlay renders from. */
+export function useDbUnreachable(): boolean {
+  const [unreachable, setUnreachable] = useState(false);
+  useEffect(() => {
+    const read = () => setUnreachable(isDbUnreachable());
+    read();
+    return subscribeDbReachable(read);
+  }, []);
+  return unreachable;
 }

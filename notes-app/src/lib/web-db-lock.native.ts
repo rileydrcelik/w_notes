@@ -52,8 +52,3 @@ export function requestDbTakeover(): void {}
 export function isDbLockedError(): boolean {
   return false;
 }
-
-/** Native is always the sole database owner. */
-export function useDbTabRole(): DbTabRole {
-  return 'leader';
-}
