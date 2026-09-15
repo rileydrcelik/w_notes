@@ -44,9 +44,35 @@ const subscribers = new Set<(role: DbTabRole) => void>();
 let owns = false;
 const ownerWaiters: Array<() => void> = [];
 
+/**
+ * Resolves once this tab knows which it is — leader or follower.
+ *
+ * Election is asynchronous: `navigator.locks.request` answers in a later task,
+ * so for a moment after start-up every tab looks like a non-owner. Routing a
+ * database call on that would have the *leader's* own first calls addressed to
+ * a leader that doesn't exist. So callers wait for the question to be decided
+ * rather than reading the default.
+ */
+let markSettled: (() => void) | null = null;
+const settled = new Promise<void>((resolve) => {
+  markSettled = resolve;
+});
+
+function settle(): void {
+  markSettled?.();
+  markSettled = null;
+}
+
+/** Resolves when this tab's role is known. Starts election if it hasn't begun. */
+export function whenRoleSettled(): Promise<void> {
+  start();
+  return settled;
+}
+
 function grantOwnership(): void {
   owns = true;
   setRole('leader');
+  settle();
   for (const w of ownerWaiters.splice(0)) w();
 }
 
@@ -60,6 +86,19 @@ export function whenDbOwner(): Promise<void> {
   if (typeof navigator === 'undefined' || !navigator.locks) return Promise.resolve();
   if (owns) return Promise.resolve();
   return new Promise<void>((resolve) => ownerWaiters.push(resolve));
+}
+
+/**
+ * Whether this tab holds the database connection, right now, synchronously.
+ *
+ * `whenDbOwner()` answers the same question but only ever resolves *towards*
+ * ownership, which suits the open path and nothing else. Routing a call has to
+ * decide in the moment and be able to hear "no", so it reads this instead.
+ * Deliberately not React state: it is consulted on every database call.
+ */
+export function isDbLeader(): boolean {
+  start();
+  return owns;
 }
 
 function setRole(next: DbTabRole): void {
@@ -100,6 +139,8 @@ function start(): void {
     // Someone else owns the DB — we're a follower. Queue for the lock so that the
     // moment the leader releases it (close or takeover) we're promoted.
     setRole('follower');
+    // Decided: this tab is not the owner. Calls can be routed from here.
+    settle();
     await navigator.locks.request(LOCK_NAME, { mode: 'exclusive' }, async () => {
       // Promoted: hold the lock for this tab's lifetime and become the leader in
       // place. We must NOT reload here — reloading would release the lock we just

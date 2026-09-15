@@ -19,6 +19,19 @@ export function whenDbOwner(): Promise<void> {
 }
 
 /**
+ * Native owns the connection from the start, so the question is never open.
+ * The web module has to elect asynchronously; here there is nothing to wait for.
+ */
+export function whenRoleSettled(): Promise<void> {
+  return Promise.resolve();
+}
+
+/** Native is always the owner, so every database call runs locally. */
+export function isDbLeader(): boolean {
+  return true;
+}
+
+/**
  * Native has one "tab" and its role never changes, so a subscriber can never
  * have anything to hear. Matches the web module, which only notifies on an
  * actual role *change* — a native listener would never fire there either.
