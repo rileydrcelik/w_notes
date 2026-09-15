@@ -26,6 +26,7 @@ import type {
 import { emptyFacets } from '@/lib/latex/corpus';
 import { normalizeHex, storedFolderColor } from '@/lib/folder-color';
 import { foldersToRehome } from '@/lib/folder-tree';
+import { shareDbAcrossTabs } from '@/lib/db-tabs';
 import { liveSessionIds, pageSessionId } from '@/lib/page-session';
 import { COPA_UPSERT_SQL } from '@/lib/sync/copa-upsert';
 import type { CopaItem } from '@/data/copa';
@@ -1169,7 +1170,12 @@ async function buildTrash(database: SQLite.SQLiteDatabase): Promise<TrashEntry[]
 
 // ---- Public API (mirrors the data the stores need) ----
 
-export const db = {
+/**
+ * The methods as they run against this realm's own connection. Exported as `db`
+ * at the bottom of the file, through the cross-tab seam and after the write
+ * chain is installed — so callers get the wrapped object and never this one.
+ */
+const localDb = {
   /**
    * Open (and migrate) the database if it isn't already, resolving once it's
    * ready. Throws the "another tab owns the OPFS lock" error on web when this
@@ -2828,6 +2834,15 @@ const WRITE_METHODS = [
 ] as const;
 
 for (const name of WRITE_METHODS) {
-  const methods = db as Record<string, (...args: unknown[]) => Promise<unknown>>;
-  methods[name] = serializeWrite(methods[name].bind(db));
+  const methods = localDb as Record<string, (...args: unknown[]) => Promise<unknown>>;
+  methods[name] = serializeWrite(methods[name].bind(localDb));
 }
+
+/**
+ * The database every caller sees.
+ *
+ * Wrapped *after* the write chain above is installed, so a call that arrives
+ * through the seam lands on the serialized method rather than around it. On
+ * native this is the same object, untouched.
+ */
+export const db = shareDbAcrossTabs(localDb);
