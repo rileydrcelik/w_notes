@@ -27,6 +27,20 @@ from app.config import get_settings
 from conftest import BACKEND_DIR
 
 
+@pytest.fixture(autouse=True)
+def _clean_tables():
+    """Opt out of conftest's TRUNCATE (this overrides it for this module only).
+
+    Nothing here touches the session's database — the fixture below makes one of
+    its own — and the truncate would be the first casualty of the very failure
+    under test: a migration that commits nothing leaves no tables to truncate, so
+    every test in the suite errors in setup and this one never gets to say why.
+    Without the override the diagnosis costs a bisect; with it, one named test
+    fails with the reason.
+    """
+    yield
+
+
 def _split(url: str) -> tuple[str, str]:
     """(admin DSN on `postgres`, database name) from a SQLAlchemy URL."""
     raw = url.replace("postgresql+asyncpg://", "postgresql://")
