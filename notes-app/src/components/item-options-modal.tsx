@@ -16,10 +16,14 @@ import { LinearGradient } from 'expo-linear-gradient';
 import Animated, { FadeIn, FadeOut, SlideInDown, SlideOutDown } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { ColorPicker } from '@/components/color-picker';
 import { ConfirmDialog } from '@/components/confirm-dialog';
 import { GlassSurface } from '@/components/glass-surface';
 import { ThemedText } from '@/components/themed-text';
-import { hexToRgba, Spacing } from '@/constants/theme';
+import { Accent, hexToRgba, Spacing } from '@/constants/theme';
+import { readableTextColor } from '@/lib/color-contrast';
+import { FOLDER_SWATCHES, folderColor } from '@/lib/folder-color';
+import { useKeyboardPadding } from '@/hooks/use-keyboard-inset';
 import { useTheme } from '@/hooks/use-theme';
 import {
   openGithubIssueForIssue,
@@ -69,6 +73,21 @@ const SHEET_TINT_OPACITY = 0.85;
 const MOVE_FADE_HEIGHT = 40;
 
 /**
+ * The custom swatch's spectrum. It stands for "any colour", so it stays a fixed
+ * rainbow rather than a themed surface; the glyph on it sits at the centre of
+ * the diagonal, which is the middle stop.
+ */
+const CUSTOM_SWATCH_STOPS = ['#ff4d4d', '#ffd84d', '#4dff88', '#4dc3ff', '#b84dff'] as const;
+const CUSTOM_SWATCH_MID = CUSTOM_SWATCH_STOPS[2];
+
+/**
+ * The colour dialog's tint, shared by its glass and the fade over its body for
+ * the same reason the move sheet shares one: the fade has to end on the colour
+ * the dialog already is, or it reads as a band rather than "there's more below".
+ */
+const COLOR_DIALOG_TINT_OPACITY = 0.9;
+
+/**
  * Hosts the single long-press options sheet shared by every note and folder
  * card. Mounted once near the root so the sheet stacks above the navbar; any
  * card opens it through `useItemOptions().openOptions(...)`. Rename and move
@@ -80,6 +99,7 @@ export function ItemOptionsProvider({ children }: { children: ReactNode }) {
   const [renameTarget, setRenameTarget] = useState<OptionsTarget | null>(null);
   const [moveTargets, setMoveTargets] = useState<OptionsTarget[] | null>(null);
   const [deleteTargets, setDeleteTargets] = useState<OptionsTarget[] | null>(null);
+  const [colorTargets, setColorTargets] = useState<OptionsTarget[] | null>(null);
 
   const openOptions = useCallback((next: OptionsTarget[]) => {
     if (next.length > 0) setTargets(next);
@@ -96,6 +116,10 @@ export function ItemOptionsProvider({ children }: { children: ReactNode }) {
   const openDelete = useCallback((next: OptionsTarget[]) => {
     setTargets([]);
     setDeleteTargets(next);
+  }, []);
+  const openColor = useCallback((next: OptionsTarget[]) => {
+    setTargets([]);
+    setColorTargets(next);
   }, []);
   const confirmDelete = useCallback(() => {
     deleteTargets?.forEach((t) => {
@@ -154,10 +178,12 @@ export function ItemOptionsProvider({ children }: { children: ReactNode }) {
         onClose={closeOptions}
         onRename={openRename}
         onMove={openMove}
+        onColor={openColor}
         onDelete={openDelete}
       />
       <RenameDialog target={renameTarget} onClose={() => setRenameTarget(null)} />
       <MoveSheet targets={moveTargets} onClose={() => setMoveTargets(null)} />
+      <FolderColorDialog targets={colorTargets} onClose={() => setColorTargets(null)} />
       <ConfirmDialog
         open={deleteCount > 0}
         title={deleteTitle}
@@ -195,12 +221,14 @@ function OptionsSheet({
   onClose,
   onRename,
   onMove,
+  onColor,
   onDelete,
 }: {
   targets: OptionsTarget[];
   onClose: () => void;
   onRename: (target: OptionsTarget) => void;
   onMove: (targets: OptionsTarget[]) => void;
+  onColor: (targets: OptionsTarget[]) => void;
   onDelete: (targets: OptionsTarget[]) => void;
 }) {
   const colors = useTheme();
@@ -227,6 +255,8 @@ function OptionsSheet({
   // selection withdraws the option for the whole set rather than moving some of
   // it and silently leaving the rest.
   const allMovable = count > 0 && targets.every((t) => t.type === 'note' || t.type === 'folder');
+  // Colour is a folder's alone — a note card has no tab to paint.
+  const allFolders = count > 0 && targets.every((t) => t.type === 'folder');
   const isFavorited = (t: OptionsTarget) =>
     (t.type === 'folder' ? getFolder(t.id)?.favorite : getNote(t.id)?.favorite) ?? false;
   const allFavorited = count > 0 && targets.every(isFavorited);
@@ -298,6 +328,7 @@ function OptionsSheet({
       ? [{ key: 'favorite', label: `${allFavorited ? 'Unfavorite' : 'Favorite'}${suffix}`, icon: 'star' as FeatherName }]
       : []),
     ...(single ? [{ key: 'rename', label: 'Rename', icon: 'edit-3' as FeatherName }] : []),
+    ...(allFolders ? [{ key: 'color', label: `Color${suffix}`, icon: 'droplet' as FeatherName }] : []),
     ...(issueType && typeRepo
       ? [{ key: 'github', label: typeConnected ? 'Stop tracking on GitHub' : 'Track with GitHub', icon: 'github' as FeatherName }]
       : []),
@@ -360,6 +391,9 @@ function OptionsSheet({
         break;
       case 'move':
         onMove(targets);
+        break;
+      case 'color':
+        onColor(targets);
         break;
       case 'share': {
         onClose();
@@ -545,6 +579,284 @@ function RenameDialog({ target, onClose }: { target: OptionsTarget | null; onClo
               </GlassSurface>
             </Animated.View>
           </View>
+        </>
+      )}
+    </View>
+  );
+}
+
+/**
+ * Centred dialog for colouring the selected folder(s): the theme default, one of
+ * the basic swatches, or a custom colour from the picker. Seeds from the colour
+ * the folders share, and opens straight onto the picker when that colour isn't
+ * one of the swatches — otherwise the current choice would have nothing marked.
+ * Nothing is written until Save, so dragging around the picker doesn't churn a
+ * sync write per frame.
+ */
+function FolderColorDialog({
+  targets,
+  onClose,
+}: {
+  targets: OptionsTarget[] | null;
+  onClose: () => void;
+}) {
+  const colors = useTheme();
+  const { getFolder, updateFolder } = useNotes();
+  const items = targets ?? [];
+  const open = items.length > 0;
+  const key = items.map((t) => t.id).join(',');
+  const [seededKey, setSeededKey] = useState<string | null>(null);
+  /** The picked colour; null is the theme default. */
+  const [draft, setDraft] = useState<string | null>(null);
+  const [custom, setCustom] = useState(false);
+  /** The selected folders don't already agree on a colour. */
+  const [mixed, setMixed] = useState(false);
+  /** The person has chosen something since the dialog opened. */
+  const [picked, setPicked] = useState(false);
+
+  if (open && seededKey !== key) {
+    const current = new Set(
+      items.map((t) => {
+        const folder = getFolder(t.id);
+        return folder ? folderColor(folder) : null;
+      }),
+    );
+    const agreed = current.size === 1;
+    const shared = agreed ? [...current][0] : null;
+    setDraft(shared);
+    setMixed(!agreed);
+    setPicked(false);
+    setCustom(!!shared && !FOLDER_SWATCHES.some((s) => s.hex === shared));
+    setSeededKey(key);
+  } else if (!open && seededKey !== null) {
+    setSeededKey(null);
+  }
+
+  // A mixed selection has no colour to show as current, and `null` can't stand
+  // in for one: it already means "the theme", so seeding it would check the
+  // theme swatch — an assertion that is false — and a trusting Save would then
+  // clear colours the person never touched, on every device, with no undo. So
+  // nothing is marked and Save does nothing until they actually pick. The move
+  // sheet answers a mixed selection the same way, with no marked destination.
+  const asserted = !mixed || picked;
+  const pick = (color: string | null) => {
+    setDraft(color);
+    setPicked(true);
+  };
+
+  const isSwatch = FOLDER_SWATCHES.some((s) => s.hex === draft);
+  const onSave = () => {
+    if (!asserted) return;
+    items.forEach((t) => {
+      const folder = getFolder(t.id);
+      // Writing a colour a folder already has still bumps `updated_at`, which
+      // floats it to the front of the grid and syncs a row for nothing.
+      if (folder && folderColor(folder) === draft) return;
+      updateFolder(t.id, { color: draft });
+    });
+    Keyboard.dismiss();
+    onClose();
+  };
+  const onCancel = () => {
+    Keyboard.dismiss();
+    onClose();
+  };
+
+  const keyboardPad = useKeyboardPadding();
+  // Whether anything is left below the fold, measured rather than counted: the
+  // picker is only mounted while `custom` is open, and row heights move with the
+  // font scale.
+  const [more, setMore] = useState(false);
+  const viewportH = useRef(0);
+  const contentH = useRef(0);
+  const scrollY = useRef(0);
+  const recomputeMore = () =>
+    setMore(contentH.current - viewportH.current - scrollY.current > 1);
+
+  return (
+    <View style={styles.overlay} pointerEvents={open ? 'box-none' : 'none'}>
+      {open && (
+        <>
+          <AnimatedPressable
+            entering={FadeIn.duration(180)}
+            exiting={FadeOut.duration(180)}
+            style={styles.backdrop}
+            onPress={onCancel}
+            accessibilityRole="button"
+            accessibilityLabel="Cancel color"
+          />
+
+          {/* The host carries the keyboard inset rather than the dialog: padding
+              shrinks the box the dialog is centred in, so with the hex field
+              focused the dialog re-centres in what's left instead of sitting
+              under the keyboard. `KeyboardAvoidingView` is no use here — under
+              edge-to-edge Android the IME is drawn over a window that never
+              resizes (see `use-keyboard-inset`). */}
+          <Animated.View style={[styles.dialogHost, keyboardPad]} pointerEvents="box-none">
+            <Animated.View
+              entering={FadeIn.duration(180)}
+              exiting={FadeOut.duration(140)}
+              style={styles.dialogShrink}>
+              <GlassSurface
+                intensity={75}
+                tintOpacity={COLOR_DIALOG_TINT_OPACITY}
+                style={[styles.dialog, styles.colorDialog]}>
+                <ThemedText style={styles.dialogTitle}>
+                  {items.length > 1 ? `Color ${items.length} folders` : 'Folder color'}
+                </ThemedText>
+
+                <View style={styles.colorBodyWrap}>
+                  <ScrollView
+                    {...noScrollbar}
+                    style={styles.colorBody}
+                    contentContainerStyle={styles.colorBodyContent}
+                    bounces={false}
+                    scrollEventThrottle={16}
+                    onLayout={(e) => {
+                      viewportH.current = e.nativeEvent.layout.height;
+                      recomputeMore();
+                    }}
+                    onContentSizeChange={(_w, h) => {
+                      contentH.current = h;
+                      recomputeMore();
+                    }}
+                    onScroll={(e) => {
+                      scrollY.current = e.nativeEvent.contentOffset.y;
+                      recomputeMore();
+                    }}>
+                    <View style={styles.swatches}>
+                      <Pressable
+                        onPress={() => {
+                          pick(null);
+                          setCustom(false);
+                        }}
+                        accessibilityRole="button"
+                        accessibilityLabel="Theme color"
+                        accessibilityState={{
+                          selected: asserted && draft === null,
+                        }}
+                        style={({ pressed }) => [
+                          styles.swatch,
+                          styles.themeSwatch,
+                          {
+                            backgroundColor: colors.backgroundElement,
+                            borderColor: colors.backgroundSelected,
+                          },
+                          pressed && styles.pressed,
+                        ]}>
+                        <Feather
+                          name={asserted && draft === null ? 'check' : 'slash'}
+                          size={18}
+                          color={asserted && draft === null ? colors.text : colors.textSecondary}
+                        />
+                      </Pressable>
+                      {FOLDER_SWATCHES.map((swatch) => {
+                        const selected = asserted && draft === swatch.hex;
+                        return (
+                          <Pressable
+                            key={swatch.hex}
+                            onPress={() => {
+                              pick(swatch.hex);
+                              setCustom(false);
+                            }}
+                            accessibilityRole="button"
+                            accessibilityLabel={swatch.name}
+                            accessibilityState={{ selected }}
+                            style={({ pressed }) => [
+                              styles.swatch,
+                              { backgroundColor: swatch.hex },
+                              pressed && styles.pressed,
+                            ]}>
+                            {/* Derived, not white: white on the yellow swatch
+                                is ~1.8:1 and effectively invisible. */}
+                            {selected && (
+                              <Feather
+                                name="check"
+                                size={18}
+                                color={readableTextColor(swatch.hex)}
+                              />
+                            )}
+                          </Pressable>
+                        );
+                      })}
+                      <Pressable
+                        onPress={() => setCustom((c) => !c)}
+                        accessibilityRole="button"
+                        accessibilityLabel="Custom color"
+                        accessibilityState={{
+                          expanded: custom,
+                          selected: asserted && draft !== null && !isSwatch,
+                        }}
+                        style={({ pressed }) => [styles.swatch, pressed && styles.pressed]}>
+                        <LinearGradient
+                          pointerEvents="none"
+                          colors={CUSTOM_SWATCH_STOPS}
+                          start={{ x: 0, y: 0 }}
+                          end={{ x: 1, y: 1 }}
+                          style={styles.customSwatchFill}
+                        />
+                        <Feather
+                          name={asserted && draft !== null && !isSwatch ? 'check' : 'plus'}
+                          size={18}
+                          color={readableTextColor(CUSTOM_SWATCH_MID)}
+                        />
+                      </Pressable>
+                    </View>
+
+                    {custom && (
+                      <Animated.View
+                        entering={FadeIn.duration(180)}
+                        exiting={FadeOut.duration(120)}>
+                        <ColorPicker value={draft ?? Accent} onChange={pick} />
+                      </Animated.View>
+                    )}
+                  </ScrollView>
+                  {/* Same promise the move sheet makes: with no scrollbar on
+                      either platform, a capped body would otherwise end in a
+                      hard cut that reads as the end of the dialog. Only while
+                      something is actually below. */}
+                  {more && (
+                    <LinearGradient
+                      pointerEvents="none"
+                      colors={[
+                        hexToRgba(colors.backgroundElement, 0),
+                        hexToRgba(colors.backgroundElement, COLOR_DIALOG_TINT_OPACITY),
+                      ]}
+                      style={styles.colorBodyFade}
+                    />
+                  )}
+                </View>
+
+                <View style={styles.dialogActions}>
+                  <Pressable
+                    onPress={onCancel}
+                    accessibilityRole="button"
+                    accessibilityLabel="Cancel"
+                    style={({ pressed }) => [styles.dialogButton, pressed && styles.pressed]}>
+                    <ThemedText style={[styles.dialogButtonText, { color: colors.textSecondary }]}>
+                      Cancel
+                    </ThemedText>
+                  </Pressable>
+                  <Pressable
+                    onPress={onSave}
+                    accessibilityRole="button"
+                    accessibilityLabel="Save"
+                    accessibilityState={{ disabled: !asserted }}
+                    style={({ pressed }) => [
+                      styles.dialogButton,
+                      styles.dialogButtonPrimary,
+                      { backgroundColor: colors.backgroundSelected },
+                      !asserted && styles.dialogButtonIdle,
+                      pressed && styles.pressed,
+                    ]}>
+                    <ThemedText style={[styles.dialogButtonText, { color: colors.text }]}>
+                      Save
+                    </ThemedText>
+                  </Pressable>
+                </View>
+              </GlassSurface>
+            </Animated.View>
+          </Animated.View>
         </>
       )}
     </View>
@@ -802,11 +1114,66 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: '700',
   },
+  // The colour dialog is the one that can outgrow a short screen — the custom
+  // picker roughly doubles its height, and the keyboard takes what's left. It
+  // shrinks instead of centring past the edges, which is what would put Save
+  // out of reach.
+  dialogShrink: {
+    width: '100%',
+    maxWidth: 360,
+    flexShrink: 1,
+  },
+  colorDialog: {
+    flexShrink: 1,
+  },
+  colorBodyWrap: {
+    flexShrink: 1,
+  },
+  colorBody: {
+    flexGrow: 0,
+    flexShrink: 1,
+  },
+  colorBodyContent: {
+    gap: Spacing.three,
+  },
+  colorBodyFade: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    height: MOVE_FADE_HEIGHT,
+  },
+  dialogButtonIdle: {
+    opacity: 0.4,
+  },
   input: {
     borderRadius: Spacing.three,
     paddingHorizontal: Spacing.three,
     paddingVertical: Spacing.two + Spacing.half,
     fontSize: 16,
+  },
+  swatches: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: Spacing.two,
+  },
+  swatch: {
+    width: 40,
+    height: 40,
+    borderRadius: Spacing.three,
+    overflow: 'hidden',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  themeSwatch: {
+    borderWidth: 1,
+  },
+  customSwatchFill: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
   },
   dialogActions: {
     flexDirection: 'row',

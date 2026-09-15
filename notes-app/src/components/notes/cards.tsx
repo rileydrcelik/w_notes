@@ -14,6 +14,7 @@ import { ACCENT as RESUME_ACCENT } from '@/components/resume/accent';
 import { ThemedText } from '@/components/themed-text';
 import { Fonts, Spacing, type Palette } from '@/constants/theme';
 import type { Folder, Note } from '@/data/notes';
+import { folderColor } from '@/lib/folder-color';
 import { sentryTarget } from '@/lib/sentry-note';
 import { githubTarget } from '@/lib/github-note';
 import { isResumeNote, resumeSourceExcerpt, resumeTitle } from '@/lib/resume-note';
@@ -84,15 +85,17 @@ function PlainFolderCard({ folder }: { folder: Folder }) {
     () => toggleFolderFavorite(folder.id),
   );
   const onSelectToggle = () => toggle({ type: 'folder', id: folder.id });
+  const accent = folderColor(folder);
 
   return (
     <Pressable
       style={({ pressed }) => [styles.cardWrapper, { height: tileHeight }, pressed && styles.pressed]}
       onPress={active ? onSelectToggle : openOrFavorite}
       onLongPress={onSelectToggle}>
-      <FolderShape selected={selected}>
+      <FolderShape selected={selected} accent={accent}>
         <View style={styles.cardFooter}>
           <View style={styles.titleRow}>
+            {accent && <Feather name="folder" size={13} color={accent} />}
             <ThemedText type="smallBold" numberOfLines={1} style={styles.titleText}>
               {folder.name}
             </ThemedText>
@@ -128,6 +131,7 @@ function ProjectFolderCard({ folder }: { folder: Folder }) {
     () => toggleFolderFavorite(folder.id),
   );
   const onSelectToggle = () => toggle({ type: 'folder', id: folder.id });
+  const accent = folderColor(folder);
 
   return (
     <Pressable
@@ -135,10 +139,10 @@ function ProjectFolderCard({ folder }: { folder: Folder }) {
       onPress={active ? onSelectToggle : openOrFavorite}
       onLongPress={onSelectToggle}>
       {/* Same folder silhouette as a plain folder, marked as a task manager. */}
-      <FolderShape selected={selected}>
+      <FolderShape selected={selected} accent={accent}>
         <View style={styles.cardFooter}>
           <View style={styles.titleRow}>
-            <Feather name="columns" size={13} color={PROJECT_ACCENT} />
+            <Feather name="columns" size={13} color={accent ?? PROJECT_ACCENT} />
             <ThemedText type="smallBold" numberOfLines={1} style={styles.titleText}>
               {folder.name || 'Project'}
             </ThemedText>

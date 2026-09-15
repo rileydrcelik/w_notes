@@ -42,24 +42,41 @@ const INSET = Math.SQRT1_2 * (BORDER / 2 - 0.5);
  * edges that face inwards aren't left transparent; they're painted with the
  * fill, and the seam closes. Web paints under its borders and is unchanged.
  */
-export function FolderShape({ selected, children }: { selected: boolean; children: ReactNode }) {
+export function FolderShape({
+  selected,
+  accent,
+  children,
+}: {
+  selected: boolean;
+  /** The folder's own colour, painted on the tab; null/absent for the theme. */
+  accent?: string | null;
+  children: ReactNode;
+}) {
   const theme = useTheme();
   const progress = useSelectionFade(selected);
   const resting = theme.backgroundElement;
   const wash = selectedFill(theme);
+  // Without a colour, tab and body take one fill so they read as a single sheet
+  // of paper. With one, the tab carries it — and keeps it through selection: the
+  // outline is what says "selected", and a tab that washed out to the selection
+  // tint would make every coloured folder look alike while picked.
+  const tabResting = accent ?? resting;
+  const tabWash = accent ?? wash;
 
-  // Tab and body take one fill so they read as a single sheet of paper.
   const fill = useAnimatedStyle(() => ({
     backgroundColor: selectionFill(progress, resting, wash),
   }));
+  const tabFill = useAnimatedStyle(() => ({
+    backgroundColor: selectionFill(progress, tabResting, tabWash),
+  }));
   const slantFill = useAnimatedStyle(() => ({
-    borderBottomColor: selectionFill(progress, resting, wash),
+    borderBottomColor: selectionFill(progress, tabResting, tabWash),
   }));
   // The two edges of the tab's flat that are on the outside of the silhouette.
   // Its other two face the slant and the body, so they take the fill instead.
   const flatEdges = useAnimatedStyle(() => {
     const color = selectionOutline(progress);
-    const seam = selectionFill(progress, resting, wash);
+    const seam = selectionFill(progress, tabResting, tabWash);
     return {
       borderTopColor: color,
       borderLeftColor: color,
@@ -84,7 +101,7 @@ export function FolderShape({ selected, children }: { selected: boolean; childre
   return (
     <View style={styles.shape}>
       <View style={styles.tabRow}>
-        <Animated.View style={[styles.flat, fill, flatEdges]} />
+        <Animated.View style={[styles.flat, tabFill, flatEdges]} />
         <View style={styles.slant}>
           <Animated.View style={[styles.slantFill, slantFill]} />
           <Animated.View pointerEvents="none" style={[styles.slantStroke, stroke]} />

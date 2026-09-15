@@ -74,6 +74,12 @@ export type Folder = {
    * `@/lib/project`). Absent on an unconfigured project, which renders a setup UI.
    */
   config?: string;
+  /**
+   * The folder's own accent (`#rrggbb`), painted on its tab and title glyph.
+   * Absent means the theme default. Read it through `folderColor` in
+   * `@/lib/folder-color`, which also rejects a malformed value.
+   */
+  color?: string;
 };
 
 /** An attribute value on an issue: a picked option, a star count, or a list. */

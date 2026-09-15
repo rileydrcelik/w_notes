@@ -170,7 +170,11 @@ type NotesContextValue = {
   /** Creates an unnamed folder inside the given parent (null = root); returns its id. */
   createFolder: (parentId: string | null) => string;
   updateNote: (id: string, patch: Partial<Pick<Note, 'title' | 'body' | 'pluginConfig'>>) => void;
-  updateFolder: (id: string, patch: Partial<Pick<Folder, 'name' | 'config'>>) => void;
+  /** `color: null` resets the folder to the theme colour. */
+  updateFolder: (
+    id: string,
+    patch: Partial<Pick<Folder, 'name' | 'config'>> & { color?: string | null },
+  ) => void;
   /** Moves a note into a folder, or to the home screen when folderId is null. */
   moveNote: (id: string, folderId: string | null) => void;
   /**
@@ -411,7 +415,12 @@ export function NotesProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const updateFolder = useCallback<NotesContextValue['updateFolder']>((id, patch) => {
-    setFolders((prev) => touch(prev, id, patch));
+    // In memory a reset is just an absent colour; the db layer is what spells it
+    // as a stored token (see `db.updateFolder`).
+    const { color, ...rest } = patch;
+    setFolders((prev) =>
+      touch(prev, id, color === undefined ? rest : { ...rest, color: color ?? undefined }),
+    );
     persist(db.updateFolder(id, patch));
   }, []);
 

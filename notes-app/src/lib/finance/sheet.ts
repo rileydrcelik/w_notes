@@ -371,29 +371,11 @@ export function resizeSheet(sheet: Sheet, rows: number, cols: number): Sheet {
  * invisible. Highlighting without also picking a text colour is the common
  * path, so the readable colour has to be derived rather than left to the theme.
  *
- * Uses WCAG relative luminance, so it stays correct if the swatch list changes.
+ * Re-exported rather than defined here: folder colours need the same derivation,
+ * and a second copy of the luminance maths is a second place for the threshold
+ * to drift. The sheet's callers already import it from this module.
  */
-export function readableTextColor(background: string): string {
-  const hex = background.replace('#', '');
-  const full =
-    hex.length === 3
-      ? hex
-          .split('')
-          .map((c) => c + c)
-          .join('')
-      : hex;
-  if (!/^[0-9a-fA-F]{6}$/.test(full)) return DARK_INK;
-
-  const channel = (offset: number) => {
-    const v = parseInt(full.slice(offset, offset + 2), 16) / 255;
-    return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
-  };
-  const luminance = 0.2126 * channel(0) + 0.7152 * channel(2) + 0.0722 * channel(4);
-  return luminance > 0.45 ? DARK_INK : LIGHT_INK;
-}
-
-const DARK_INK = '#1A1A1A';
-const LIGHT_INK = '#F5F5F5';
+export { readableTextColor } from '@/lib/color-contrast';
 
 /** Top-level and per-cell keys this version of the app knows how to read. */
 const KNOWN_SHEET_KEYS = ['version', 'rows', 'cols', 'cells', 'colWidths'];

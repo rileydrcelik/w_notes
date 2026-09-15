@@ -93,6 +93,10 @@ class Folder(Base):
     # folders. The individual issues live in the separate ``issues`` table.
     kind: Mapped[str | None] = mapped_column(String)
     config: Mapped[str | None] = mapped_column(Text)
+    # The folder's accent: '#rrggbb', or 'theme' once the user resets it. NULL
+    # means never set (or set by a client that predates the column) — kept
+    # distinct from 'theme' so sync can COALESCE-preserve it.
+    color: Mapped[str | None] = mapped_column(String)
 
     created_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
     updated_at: Mapped[int] = mapped_column(BigInteger, nullable=False)

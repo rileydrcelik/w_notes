@@ -24,6 +24,7 @@ import type {
   ResumeVersion,
 } from '@/data/notes';
 import { emptyFacets } from '@/lib/latex/corpus';
+import { normalizeHex, storedFolderColor } from '@/lib/folder-color';
 import { foldersToRehome } from '@/lib/folder-tree';
 import type { CopaItem } from '@/data/copa';
 
@@ -85,6 +86,8 @@ type FolderRow = {
   // ordinary folders.
   kind: string | null;
   config: string | null;
+  // '#rrggbb', the reset token, or null when never set (see `@/lib/folder-color`).
+  color: string | null;
 };
 
 type IssueRow = {
@@ -213,6 +216,7 @@ export type FolderSync = {
   trashed_with_folder_id: string | null;
   kind: string | null;
   config: string | null;
+  color: string | null;
 };
 
 export type IssueSync = {
@@ -406,6 +410,7 @@ async function open(): Promise<SQLite.SQLiteDatabase> {
       trashed_with_folder_id TEXT,
       kind                   TEXT,
       config                 TEXT,
+      color                  TEXT,
       dirty                  INTEGER NOT NULL DEFAULT 1
     );
 
@@ -742,6 +747,12 @@ async function ensureFolderColumns(database: SQLite.SQLiteDatabase): Promise<voi
     await database.execAsync('ALTER TABLE folders ADD COLUMN kind TEXT');
     await database.execAsync('ALTER TABLE folders ADD COLUMN config TEXT');
   }
+  // A folder's own colour. Nullable with no default: NULL is "never set", which
+  // sync preserves, whereas a default of the reset token would have every
+  // upgraded folder push a reset over a colour chosen on another device.
+  if (!has('color')) {
+    await database.execAsync('ALTER TABLE folders ADD COLUMN color TEXT');
+  }
 }
 
 /**
@@ -862,6 +873,8 @@ function toFolder(r: FolderRow): Folder {
     favorite: !!r.favorite,
     kind: (r.kind ?? undefined) as Folder['kind'],
     config: r.config ?? undefined,
+    // The reset token and anything malformed both read as "use the theme".
+    color: normalizeHex(r.color) ?? undefined,
   };
 }
 
@@ -1234,7 +1247,10 @@ export const db = {
 
   async updateFolder(
     id: string,
-    patch: Partial<Pick<Folder, 'name' | 'favorite' | 'config' | 'parentId'>>,
+    patch: Partial<Pick<Folder, 'name' | 'favorite' | 'config' | 'parentId'>> & {
+      /** A `#rrggbb` colour, or null to reset to the theme. */
+      color?: string | null;
+    },
   ): Promise<void> {
     dbCrumb('updateFolder', { id, fields: Object.keys(patch) });
     const database = await getDb();
@@ -1246,6 +1262,10 @@ export const db = {
     // A project's config (repo + attribute schema) is set after creation when the
     // user configures it; it syncs like any other column.
     if (patch.config !== undefined) (sets.push('config = ?'), args.push(patch.config));
+    // A reset is stored as a token, never NULL — the server preserves a NULL
+    // colour, so a NULL reset would bounce straight back on the next pull.
+    if (patch.color !== undefined)
+      (sets.push('color = ?'), args.push(storedFolderColor(patch.color)));
     // Re-parenting, i.e. moving a folder into another folder (or back to Home,
     // which is `null` — a real value here, which is why every check in this
     // method is against `undefined` rather than falsiness).
@@ -2088,7 +2108,7 @@ export const db = {
     ] = await Promise.all([
       database.getAllAsync<FolderSync>(
         `SELECT id, name, parent_id, favorite, created_at, updated_at, deleted_at,
-                trashed_with_folder_id, kind, config
+                trashed_with_folder_id, kind, config, color
          FROM folders WHERE dirty = 1 AND id NOT LIKE ?`,
         [skipSeed],
       ),
@@ -2241,14 +2261,17 @@ export const db = {
         const r = await database.runAsync(
           `INSERT INTO folders
              (id, name, parent_id, favorite, created_at, updated_at, deleted_at,
-              trashed_with_folder_id, kind, config, dirty)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+              trashed_with_folder_id, kind, config, color, dirty)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
            ON CONFLICT(id) DO UPDATE SET
              name = excluded.name, parent_id = excluded.parent_id,
              favorite = excluded.favorite, created_at = excluded.created_at,
              updated_at = excluded.updated_at, deleted_at = excluded.deleted_at,
              trashed_with_folder_id = excluded.trashed_with_folder_id,
-             kind = excluded.kind, config = excluded.config, dirty = 0
+             kind = excluded.kind, config = excluded.config,
+             -- COALESCE: a reset arrives as the 'theme' token, so a NULL here only
+             -- ever means a backend that predates the column, not "no colour".
+             color = COALESCE(excluded.color, folders.color), dirty = 0
            WHERE excluded.updated_at >= folders.updated_at`,
           [
             f.id,
@@ -2261,6 +2284,7 @@ export const db = {
             f.trashed_with_folder_id,
             f.kind ?? null,
             f.config ?? null,
+            f.color ?? null,
           ],
         );
         changed += r.changes;

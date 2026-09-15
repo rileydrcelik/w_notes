@@ -79,7 +79,11 @@ _PULL_PAGE_MAX = 1000
 # trashed_with_folder_id, gh_number) are deliberately excluded — a NULL there is
 # a genuine user action (move to home, restore, untrack) and must propagate.
 _PRESERVE_IF_NULL = {
-    Folder: ("kind", "config"),
+    # color: a user *can* clear a folder's colour, but that is written as the
+    # non-NULL token 'theme' precisely so it can sit in this list. NULL only ever
+    # means "this client predates the column", and must not wipe a colour chosen
+    # elsewhere.
+    Folder: ("kind", "config", "color"),
     # published: a client that predates the publish-to-website feature sends
     # NULL; without preservation a single sync from such a device would
     # unpublish every note on the public site.

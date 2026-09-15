@@ -28,6 +28,10 @@ class FolderIn(_Syncable):
     # repo + attribute schema). None for ordinary folders.
     kind: str | None = None
     config: str | None = None
+    # '#rrggbb', 'theme' (reset), or None (unknown). Deliberately unvalidated: a
+    # 422 here fails the whole push, stranding every dirty row behind one bad
+    # value. The client validates when it renders.
+    color: str | None = None
 
 
 class NoteIn(_Syncable):
