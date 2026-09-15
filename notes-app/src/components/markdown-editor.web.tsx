@@ -219,6 +219,10 @@ export function MarkdownEditor({
       element,
       extensions: extensions(placeholderText),
       content: seed,
+      // ProseMirror's default parse collapses space runs and drops a paragraph's
+      // leading space, so an indent would vanish every time a note loads. `true`
+      // (not 'full') still ignores formatting whitespace *between* blocks.
+      parseOptions: { preserveWhitespace: true },
       editorProps: { attributes: { class: 'wn-rich-input' } },
       onUpdate: ({ editor: e }) => cbRef.current.onChangeText(tiptapHtmlToStored(e.getHTML())),
       onFocus: () => {

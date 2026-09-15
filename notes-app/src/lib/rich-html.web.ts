@@ -14,6 +14,11 @@
  * Web-only: leans on the browser DOM; imported solely from `*.web` files.
  */
 
+import { encodeSignificantSpaces } from '@/lib/html-space';
+
+/** Elements whose text runs as one line, for deciding where a space "opens" one. */
+const SPACE_BLOCKS = 'p,li,h1,h2,h3,h4,h5,h6,blockquote,td,th';
+
 /** Stored native HTML → the HTML TipTap should parse when seeding the editor. */
 export function storedHtmlToTiptap(html: string): string {
   if (!html || !html.trim()) return '';
@@ -71,13 +76,40 @@ export function tiptapHtmlToStored(html: string): string {
     if (first?.tagName === 'P') first.replaceWith(...Array.from(first.childNodes));
   });
 
+  // Pin deliberate spaces as &nbsp; so neither the next load here nor the native
+  // parser collapses them (see html-space.ts). Walked per text node, carrying
+  // "ended in a space" across the inline marks that split one block's text.
+  const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT);
+  let block: Element | null = null;
+  let afterSpace = true;
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    const parent = node.parentElement;
+    const owner = parent?.closest(SPACE_BLOCKS) ?? null;
+    // Text outside a block is formatting whitespace; <pre> keeps its own spaces.
+    if (!owner || parent?.closest('pre')) continue;
+    if (owner !== block) {
+      block = owner;
+      afterSpace = true;
+    }
+    const text = node.nodeValue ?? '';
+    if (!text) continue;
+    const encoded = encodeSignificantSpaces(text, afterSpace);
+    if (encoded !== text) node.nodeValue = encoded;
+    afterSpace = encoded.endsWith(' ');
+  }
+
   let out = doc.body.innerHTML;
   out = out.replace(/checked=""/g, 'checked');
   out = out.replace(/<p><\/p>/g, '<br>');
 
   // Empty body (no text and no structural content) stores as '' — an empty note
-  // has an empty body, not an empty <html> wrapper.
-  const text = out.replace(/<br\s*\/?>/gi, '').replace(/<[^>]+>/g, '').trim();
+  // has an empty body, not an empty <html> wrapper. A line of only spaces now
+  // serializes as &nbsp;, which is still nothing.
+  const text = out
+    .replace(/<br\s*\/?>/gi, '')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/g, '')
+    .trim();
   if (!text && !/<(ul|ol|img|hr)\b/i.test(out)) return '';
 
   return `<html>${out}</html>`;
