@@ -26,6 +26,7 @@ import type {
 import { emptyFacets } from '@/lib/latex/corpus';
 import { normalizeHex, storedFolderColor } from '@/lib/folder-color';
 import { foldersToRehome } from '@/lib/folder-tree';
+import { liveSessionIds, pageSessionId } from '@/lib/page-session';
 import type { CopaItem } from '@/data/copa';
 
 /**
@@ -380,12 +381,34 @@ function getDb(): Promise<SQLite.SQLiteDatabase> {
  * serialization chain those go through would deadlock for the same reason, and
  * nothing else can be writing yet at this point in startup.
  *
+ * Scoped to sessions that are actually gone (`file_session`, see
+ * `@/lib/page-session`). "Dead" is a property of the document that minted the
+ * URL, not of this database: with a second tab open, clearing every `blob:` row
+ * would null a URL another live page is still holding — and for an attachment
+ * that hasn't uploaded yet (`remote_key` still NULL) those bytes exist nowhere
+ * else, so the block would keep its label and lose its file with nothing
+ * logged. A row whose session can't be identified (written before the column
+ * existed) is treated as dead, which is what it almost certainly is.
+ *
  * Device-local paths, so this doesn't mark anything dirty. No-op on native,
  * where paths are durable `file://` URIs and no row matches.
  */
 async function clearEphemeralFilePaths(database: SQLite.SQLiteDatabase): Promise<void> {
+  const live = await liveSessionIds();
+  // No way to tell a live page from a dead one: clear everything, as this did
+  // before sessions were tracked. Also the native path, where nothing matches.
+  if (!live || live.size === 0) {
+    await database.runAsync(
+      "UPDATE copa_items SET file_uri = NULL, thumb_uri = NULL WHERE file_uri LIKE 'blob:%'",
+    );
+    return;
+  }
+  const holes = Array.from(live, () => '?').join(', ');
   await database.runAsync(
-    "UPDATE copa_items SET file_uri = NULL, thumb_uri = NULL WHERE file_uri LIKE 'blob:%'",
+    `UPDATE copa_items SET file_uri = NULL, thumb_uri = NULL, file_session = NULL
+     WHERE file_uri LIKE 'blob:%'
+       AND (file_session IS NULL OR file_session NOT IN (${holes}))`,
+    Array.from(live),
   );
 }
 
@@ -449,7 +472,9 @@ async function open(): Promise<SQLite.SQLiteDatabase> {
       mime_type   TEXT,
       file_size   INTEGER,
       thumb_uri   TEXT,
-      remote_key  TEXT
+      remote_key  TEXT,
+      -- The page session that minted file_uri; device-local, never synced.
+      file_session TEXT
     );
 
     CREATE TABLE IF NOT EXISTS issues (
@@ -822,6 +847,13 @@ async function ensureSyncColumns(database: SQLite.SQLiteDatabase): Promise<void>
   // Cross-device file sync added `remote_key` (the S3 object key) after that.
   if (!copaCols.includes('remote_key')) {
     await database.execAsync('ALTER TABLE copa_items ADD COLUMN remote_key TEXT');
+  }
+  // Which page session minted this row's local path. Device-local and never
+  // synced (it isn't in `CopaSync`): it only says whether a `blob:` URL is still
+  // resolvable, so a second tab's open can't clear one that is. NULL on rows
+  // written before this existed, which `clearEphemeralFilePaths` reads as dead.
+  if (!copaCols.includes('file_session')) {
+    await database.execAsync('ALTER TABLE copa_items ADD COLUMN file_session TEXT');
   }
 
   // Multi-type issues were added later: an issue can be filed under several
@@ -1560,8 +1592,8 @@ export const db = {
     await database.runAsync(
       `INSERT INTO copa_items
          (id, label, content, created_at, updated_at,
-          file_uri, file_name, mime_type, file_size, thumb_uri)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          file_uri, file_name, mime_type, file_size, thumb_uri, file_session)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
         label,
@@ -1573,6 +1605,9 @@ export const db = {
         file?.mimeType ?? null,
         file?.fileSize ?? null,
         file?.thumbUri ?? null,
+        // Stamped only alongside a path, so a row with no file carries no
+        // session to go stale.
+        file?.fileUri ? pageSessionId() : null,
       ],
     );
   },
@@ -1680,11 +1715,10 @@ export const db = {
   async setCopaLocalFile(id: string, fileUri: string, thumbUri: string | null): Promise<void> {
     dbCrumb('setCopaLocalFile', { id });
     const database = await getDb();
-    await database.runAsync('UPDATE copa_items SET file_uri = ?, thumb_uri = ? WHERE id = ?', [
-      fileUri,
-      thumbUri,
-      id,
-    ]);
+    await database.runAsync(
+      'UPDATE copa_items SET file_uri = ?, thumb_uri = ?, file_session = ? WHERE id = ?',
+      [fileUri, thumbUri, pageSessionId(), id],
+    );
   },
 
   // ---- Issues (task-manager project rows) ----
