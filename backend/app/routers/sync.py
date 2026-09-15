@@ -22,6 +22,7 @@ import logging
 import sentry_sdk
 from sqlalchemy import func, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 from fastapi import APIRouter, BackgroundTasks, Depends, Query
 
@@ -190,6 +191,19 @@ async def _upsert_batch(session: AsyncSession, model, user_id: str, rows) -> Non
         try:
             async with session.begin_nested():
                 await _upsert(session, model, user_id, row.model_dump())
+        except OperationalError:
+            # A transient *infrastructure* failure must never be answered with
+            # 200. Skipping is only ever right for a row the server genuinely
+            # cannot store; the client clears `dirty` for everything it sent as
+            # soon as the push succeeds, so a row skipped for a passing reason is
+            # dropped permanently, by both sides, in silence.
+            #
+            # This became reachable when connections gained a `lock_timeout`
+            # (see app/config.py): a contended row lock now raises
+            # `lock_not_available` here instead of waiting. Letting it propagate
+            # 500s the push, which is safe — the rows stay dirty and the next
+            # pass retries them.
+            raise
         except Exception as exc:  # noqa: BLE001 — isolate, report, keep going
             log.warning(
                 "sync push: skipped bad %s row id=%s: %s",

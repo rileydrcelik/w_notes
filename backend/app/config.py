@@ -11,6 +11,63 @@ class Settings(BaseSettings):
     # asyncpg connection URL. docker-compose injects this for the container.
     database_url: str = "postgresql+asyncpg://wnotes:wnotes@localhost:5432/wnotes"
 
+    # --- Connection pool ---
+    #
+    # These were SQLAlchemy's defaults (5 + 10) until 2026-09-15, when leaving
+    # them implicit cost a day and a half of sync. One push wedged `idle in
+    # transaction` while holding `pg_advisory_xact_lock(hashtext(user_id))`
+    # (sync.py). The lock is transaction-scoped, so it was never released; every
+    # later push for that account blocked on it, each pinning a pooled
+    # connection, until all 15 were gone. `/health` shares that pool, so the
+    # container then failed its own health check and ECS killed it — roughly
+    # hourly, and every restart is a sync outage nothing in the app surfaces.
+    #
+    # RDS (db.t4g.micro) tops out near 87 connections and peaked at 16 during
+    # the incident, so the ceiling was ours, not the database's, and there is
+    # room to raise it.
+    db_pool_size: int = 10
+    db_max_overflow: int = 10
+
+    # Fail fast instead of queueing. The default was 30s, six times the ECS
+    # health probe's 5s timeout, so a busy pool failed the probe long before a
+    # request gave up. A caller that can't get a connection in 10s should shed
+    # load and let the client retry, which sync already does safely — rows stay
+    # dirty until a 2xx.
+    db_pool_timeout: float = 10.0
+
+    # Recycle below any idle cutoff on the network path (Cloudflare tunnel, RDS)
+    # so a long-idle connection is replaced rather than discovered dead.
+    db_pool_recycle_seconds: int = 1800
+
+    # --- Server-side timeouts (Postgres GUCs, milliseconds) ---
+    #
+    # The real cure for the incident above, because they bound waits the
+    # application cannot see.
+    #
+    # `lock_timeout` is the load-bearing one: a waiter on the advisory lock now
+    # gives up and hands its connection back instead of stacking. Seven had
+    # piled up over nine minutes when this was diagnosed. Normal contention here
+    # is milliseconds, so 15s is generous.
+    db_lock_timeout_ms: int = 15_000
+
+    # And this one stops a wedged holder lasting forever. It must stay well
+    # above the longest *legitimate* hold, since a handler that queries, then
+    # awaits something slow, sits idle in its transaction meanwhile.
+    #
+    # The binding constraint is the **GitHub and Sentry proxies**, not the AI
+    # endpoints: they authenticate via `require_user_token` (a SELECT, which
+    # autobegins) and then chain upstream calls while that transaction is open —
+    # `github_issues.list_repos` pages up to 20 times at a 15s timeout, so ~300s
+    # worst case, and the Sentry routes are similar. 10 minutes leaves that ~2x
+    # headroom.
+    #
+    # The resume tailor (180s) and LaTeX compile (60s) look like the long poles
+    # but hold no session at all — neither router touches `AsyncSession`, and
+    # `deps.get_current_user` commits and releases before the handler runs. Don't
+    # re-derive this budget from them; raising a proxy's timeout or page cap is
+    # what would actually eat the margin.
+    db_idle_in_transaction_timeout_ms: int = 600_000
+
     # Empty string => Sentry stays disabled (a no-op), so the app runs without it.
     sentry_dsn: str = ""
 
