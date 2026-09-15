@@ -19,8 +19,9 @@ from app import publisher
 from app.config import get_settings
 from app.publisher import PublishAction, collect_publish_actions, deliver, strip_html_wrapper
 from app.db import SessionLocal
-from app.models import User
-from sqlalchemy import select
+from app.models import Note, User
+from app.routers import sync as sync_router
+from sqlalchemy import select, text
 
 from tests.test_sync import note, push
 
@@ -269,6 +270,69 @@ def delivery(monkeypatch, publishing):
         return reported
 
     return run
+
+
+async def test_delivery_runs_after_the_push_has_committed(
+    client, device, publishing, monkeypatch, engine
+):
+    """The push must be committed, and its lock released, before delivery starts.
+
+    `deliver` is a background task, and on current FastAPI a yield dependency's
+    cleanup runs *after* the response — while Starlette runs background tasks
+    *inside* that window. So when `get_session` owned the commit, delivery ran
+    with the push transaction still open and the per-user advisory lock still
+    held. `record_embedded` then asked for that same lock from a second session
+    and neither side could finish: the push waited on its background task, the
+    task waited on the push. Postgres can't see it as a deadlock, so before
+    `lock_timeout` existed it waited forever and drained the pool (2026-09-15);
+    after, every placed note stalled the push 15s and recorded nothing — prod
+    held zero `embedded` values since the feature shipped.
+    """
+    publishing(PUBLISHER)
+    await push(client, device)
+    user_id = (await _user(device)).id
+    row = note(title="placed")
+
+    request = httpx.Request("POST", "https://portfolio.test/api/notes/ingest")
+    monkeypatch.setattr(
+        publisher.httpx,
+        "AsyncClient",
+        lambda **kw: _FakeClient(httpx.Response(200, request=request, json={}), []),
+    )
+
+    seen: dict[str, int] = {}
+    real_deliver = sync_router.deliver
+
+    async def observed(actions, user_id=None):
+        async with engine.connect() as conn:
+            # This user's lock exactly — the one record_embedded is about to ask
+            # for — so a lock some other test left behind can't decide this.
+            seen["lock_free"] = await conn.scalar(
+                text("SELECT pg_try_advisory_xact_lock(hashtext(:uid))"),
+                {"uid": user_id},
+            )
+            seen["visible"] = await conn.scalar(
+                text("SELECT count(*) FROM notes WHERE id = :id"), {"id": row["id"]}
+            )
+            await conn.rollback()
+        await real_deliver(actions, user_id)
+
+    monkeypatch.setattr(sync_router, "deliver", observed)
+
+    await push(client, device, notes=[row])
+
+    assert seen, "the push scheduled no delivery, so nothing here was tested"
+    assert seen["lock_free"] is True, (
+        "delivery started while the push still held the per-user advisory lock —"
+        " record_embedded will block on it until lock_timeout"
+    )
+    assert seen["visible"] == 1, (
+        "delivery started before the push committed — the client already has its"
+        " 200, so a failure from here on loses rows it has marked clean"
+    )
+    async with SessionLocal() as session:
+        embedded = await session.scalar(select(Note.embedded).where(Note.id == row["id"]))
+    assert embedded is True, "the portfolio's answer was never recorded on the note"
 
 
 # What the portfolio actually answers for a note nobody embedded -- verified

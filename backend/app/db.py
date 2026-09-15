@@ -2,6 +2,7 @@
 
 from collections.abc import AsyncIterator
 
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 
@@ -71,12 +72,56 @@ health_engine = create_async_engine(
 HealthSessionLocal = async_sessionmaker(health_engine, expire_on_commit=False)
 
 
+async def lock_user(session: AsyncSession, user_id: str) -> None:
+    """Take the per-user advisory lock, and bound how long it can be held idle.
+
+    Every writer that assigns `server_seq` serialises on this lock so sequence
+    numbers are committed in order (see routers/sync.py). It is transaction
+    scoped, which is what makes it correct — and what makes it dangerous: a
+    transaction that stops making progress without ending holds it, every later
+    push for that user queues behind it pinning a pooled connection of its own,
+    and the pool is gone within the hour.
+
+    That is what happened on 2026-09-15. The push left its commit to
+    `get_session`, which FastAPI runs after background tasks, so its `deliver`
+    task ran with the lock still held and `record_embedded` waited for a lock
+    only its own push could release. The push now commits before scheduling
+    anything, but the shape is one careless await away: anything slow between
+    taking this lock and committing.
+
+    So the transaction also gets an idle bound enforced by the server. `SET
+    LOCAL` scopes it to this transaction alone, leaving the long-running proxy
+    requests on the connection-wide budget. The flip side is a rule for callers:
+    never await network calls or background work while holding this lock. A
+    transaction idle past the budget is terminated and rolled back, and if its
+    response has already gone out, the client believes rows are stored that
+    are not.
+    """
+    # SET LOCAL takes no bind parameters. The value is an int from settings, so
+    # there is nothing to interpolate but a number.
+    await session.execute(
+        text(
+            "SET LOCAL idle_in_transaction_session_timeout = "
+            f"{int(_settings.db_locked_txn_idle_timeout_ms)}"
+        )
+    )
+    await session.execute(select(func.pg_advisory_xact_lock(func.hashtext(user_id))))
+
+
 async def get_session() -> AsyncIterator[AsyncSession]:
-    """FastAPI dependency yielding a session that commits on success."""
+    """FastAPI dependency yielding a session that commits on success.
+
+    This commit runs *after* the response is sent, and after any background
+    tasks — that is how FastAPI scopes yield dependencies. A handler whose 200
+    must mean "stored", or that schedules background work touching the same rows
+    or locks, commits for itself first (see `routers/sync.push`), and then there
+    is nothing left to do here.
+    """
     async with SessionLocal() as session:
         try:
             yield session
-            await session.commit()
+            if session.in_transaction():
+                await session.commit()
         except Exception:
             await session.rollback()
             raise

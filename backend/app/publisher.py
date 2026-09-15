@@ -43,11 +43,11 @@ from dataclasses import dataclass
 
 import httpx
 import sentry_sdk
-from sqlalchemy import func, select, text, update
+from sqlalchemy import select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.db import SessionLocal
+from app.db import SessionLocal, lock_user
 from app.models import Folder, Note, User
 
 log = logging.getLogger(__name__)
@@ -233,9 +233,7 @@ async def record_embedded(user_id: str, answers: dict[str, bool]) -> None:
         return
     try:
         async with SessionLocal() as session:
-            await session.execute(
-                select(func.pg_advisory_xact_lock(func.hashtext(user_id)))
-            )
+            await lock_user(session, user_id)
             for note_id, embedded in answers.items():
                 await session.execute(
                     update(Note)

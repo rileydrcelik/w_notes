@@ -68,6 +68,20 @@ class Settings(BaseSettings):
     # what would actually eat the margin.
     db_idle_in_transaction_timeout_ms: int = 600_000
 
+    # The same bound, but scoped to a transaction holding the per-user advisory
+    # lock — and far tighter, because those have no business idling at all.
+    #
+    # 10 minutes above is sized for the slowest legitimate request in the app.
+    # A locked transaction is the opposite: every gap between its statements is
+    # local work measured in microseconds, and while it sits there *every* other
+    # push for that user is blocked behind it. The 2026-09-15 outage was one such
+    # transaction stalled before its commit, waiting on a background task that
+    # was itself waiting for the lock (see `app.db.lock_user`).
+    #
+    # 60s is ~three orders of magnitude above any real gap and still bounds the
+    # damage to one minute instead of ten.
+    db_locked_txn_idle_timeout_ms: int = 60_000
+
     # Empty string => Sentry stays disabled (a no-op), so the app runs without it.
     sentry_dsn: str = ""
 

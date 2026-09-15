@@ -4,7 +4,10 @@ version = "0.1.0"
 description = "Sync backend for w_notes (FastAPI + Postgres)"
 requires-python = ">=3.12"
 dependencies = [
-    "fastapi>=0.115",
+    # >=0.118: yield-dependency cleanup runs after the response and its
+    # background tasks. app/db.py's get_session and the push's own commit are
+    # written against that (see routers/sync.py push).
+    "fastapi>=0.118",
     "uvicorn[standard]>=0.32",
     "sqlalchemy[asyncio]>=2.0",
     "asyncpg>=0.30",

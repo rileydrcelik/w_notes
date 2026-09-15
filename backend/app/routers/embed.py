@@ -21,11 +21,11 @@ import secrets
 
 from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import func, select, text, update
+from sqlalchemy import select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.db import get_session
+from app.db import get_session, lock_user
 from app.models import Folder, Note, User
 from app.publisher import strip_html_wrapper
 
@@ -88,7 +88,10 @@ async def _publisher_user_ids(session: AsyncSession) -> list[str]:
     emails = get_settings().publisher_email_set
     if not emails:
         return []
-    rows = (await session.execute(select(User))).scalars().all()
+    # Ordered, because `set_placement` takes each account's advisory lock in this
+    # order: two concurrent calls locking the same set in different orders can
+    # deadlock one another.
+    rows = (await session.execute(select(User).order_by(User.id))).scalars().all()
     return [u.id for u in rows if u.email and u.email.lower() in emails]
 
 
@@ -218,7 +221,7 @@ async def set_placement(
     # cannot be committed out of order with a concurrent push and stranded below
     # a device's cursor.
     for user_id in user_ids:
-        await session.execute(select(func.pg_advisory_xact_lock(func.hashtext(user_id))))
+        await lock_user(session, user_id)
 
     result = await session.execute(
         update(Note)
@@ -240,4 +243,7 @@ async def set_placement(
         if exists is None:
             raise HTTPException(status_code=404, detail="Note not found")
 
+    # Committed here, not by `get_session` after the response: the portfolio
+    # takes a 200 as "recorded", and these locks should not outlive the work.
+    await session.commit()
     return {"embedded": placement.embedded}

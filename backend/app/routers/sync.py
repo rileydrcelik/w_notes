@@ -26,7 +26,7 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 from fastapi import APIRouter, BackgroundTasks, Depends, Query
 
-from app.db import get_session
+from app.db import get_session, lock_user
 from app.deps import get_current_user
 from app.publisher import collect_publish_actions, deliver
 from app.models import (
@@ -228,9 +228,11 @@ async def push(
     # device. The lock is transaction-scoped (released on commit/rollback) and
     # keyed on the user, so different users never contend. Pulls are read-only
     # snapshots and need no lock.
-    await session.execute(
-        select(func.pg_advisory_xact_lock(func.hashtext(user.id)))
-    )
+    #
+    # `lock_user` also bounds how long the transaction may sit idle holding it:
+    # "released on commit/rollback" assumes the request reaches one, and on
+    # 2026-09-15 one stalled before its commit instead. See app/db.py.
+    await lock_user(session, user.id)
 
     await _upsert_batch(session, Folder, user.id, payload.folders)
     await _upsert_batch(session, Note, user.id, payload.notes)
@@ -256,13 +258,25 @@ async def push(
     actions = await collect_publish_actions(
         session, user, [n.id for n in payload.notes]
     )
+    high = await _high_water(session, user.id)
+
+    # Commit here rather than leaving it to `get_session`. FastAPI runs a yield
+    # dependency's cleanup *after* the response has been sent, and Starlette runs
+    # background tasks inside that window — so a commit there lands after
+    # `deliver`, not before. That cost twice: the client got its 200 before its
+    # rows were durable, and `deliver` ran while this transaction still held the
+    # advisory lock, so `record_embedded` queued for a lock that only this push
+    # could release, and this push was waiting for it to return (2026-09-15).
+    # Both reads above see this transaction's own uncommitted rows, so they have
+    # to stay above the commit.
+    await session.commit()
+
     if actions:
         # The user id rides along so the portfolio's answers can be recorded back
-        # onto the notes. It can't be read off the session later: this runs after
-        # the response, and by then the request's session is closed.
+        # onto the notes, from a session and transaction of their own.
         background.add_task(deliver, actions, user.id)
 
-    return PushResponse(server_seq=await _high_water(session, user.id))
+    return PushResponse(server_seq=high)
 
 
 @router.get("/pull", response_model=PullResponse)
