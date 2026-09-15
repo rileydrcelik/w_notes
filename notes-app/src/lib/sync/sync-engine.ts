@@ -13,7 +13,7 @@
  */
 import { Sentry } from '@/lib/sentry';
 import { db, type SyncPayload } from '@/lib/db';
-import { isDbLockedError } from '@/lib/web-db-lock';
+import { isDbLockedError, ownsBackgroundWork } from '@/lib/web-db-lock';
 import { AuthUnavailableError } from '@/lib/auth/token';
 import { clearGithubOutbox, reassignGithubOutbox } from '@/lib/github-outbox';
 import { clearIssueRetitles, reassignIssueRetitles } from '@/lib/issue-retitle';
@@ -162,6 +162,20 @@ export function syncNow(): Promise<SyncResult> {
 async function runSync(): Promise<SyncResult> {
   if (!syncConfigured) {
     return { status: 'skipped', reason: 'EXPO_PUBLIC_API_URL not set' };
+  }
+
+  // One pass per browser profile, not per tab. `inflight` above dedupes within
+  // a realm, which was the whole story while only one tab could reach the
+  // database; now that any tab can, each would run its own pass. They wouldn't
+  // corrupt anything — push is idempotent and the cursor can only move
+  // backwards under a race — but they would collide on the backend's per-user
+  // advisory lock, where the loser waits out `lock_timeout` holding a
+  // connection from a small pool. That is the shape of the outage in
+  // docs/HANDOFF-2026-09-15-sync-wedge.md, turned from an edge case into a
+  // steady state. Waiting for the role first because election settles in a
+  // later task, and the owner would otherwise skip its own first pass.
+  if (!(await ownsBackgroundWork())) {
+    return { status: 'skipped', reason: 'sync runs in the tab that owns the database' };
   }
 
   try {

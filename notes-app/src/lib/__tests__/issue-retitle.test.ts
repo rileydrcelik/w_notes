@@ -37,6 +37,8 @@ vi.mock('@/lib/db', () => ({
 
 vi.mock('@/lib/web-db-lock', () => ({
   isDbLockedError: vi.fn(() => false),
+  // This realm owns the database, so the single-runner gates let work through.
+  ownsBackgroundWork: vi.fn(() => Promise.resolve(true)),
 }));
 
 vi.mock('@/lib/auth/token', () => ({

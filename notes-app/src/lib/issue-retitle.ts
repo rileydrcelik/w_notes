@@ -45,7 +45,7 @@ import type { DuplicateCandidate } from '@/lib/issue-duplicates';
 import { requestIssueTitle } from '@/lib/issue-title';
 import { Sentry } from '@/lib/sentry';
 import { ApiError } from '@/lib/sync/api';
-import { isDbLockedError } from '@/lib/web-db-lock';
+import { isDbLockedError, ownsBackgroundWork } from '@/lib/web-db-lock';
 
 /** The device-local settings key the queue is stored under. */
 const STORAGE_KEY = 'issue_retitle_queue';
@@ -458,6 +458,12 @@ export function flushIssueRetitles(deps: RetitleDeps): Promise<RetitleFlushResul
 }
 
 async function runFlush(deps: RetitleDeps): Promise<RetitleFlushResult> {
+  // Owner tab only, for the same reason as the GitHub outbox: `flushing` above
+  // dedupes within one realm, and a retitle is a model call billed to the
+  // user's own key. Two tabs replaying the queue would pay for every title
+  // twice and then race to write the winner.
+  if (!(await ownsBackgroundWork())) return { titled: 0, dropped: 0, remaining: entries.size };
+
   await loadIssueRetitles();
   let titled = 0;
   let dropped = 0;

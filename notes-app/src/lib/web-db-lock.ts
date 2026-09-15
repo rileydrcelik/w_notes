@@ -69,6 +69,26 @@ export function whenRoleSettled(): Promise<void> {
   return settled;
 }
 
+/**
+ * Whether background work that must happen once per browser profile belongs to
+ * this tab — the sync pass, the GitHub outbox flush, the retitle queue.
+ *
+ * Each of those is guarded by a module-scoped "already running" flag, which
+ * dedupes within one JavaScript realm and was the whole story while only one
+ * tab could reach the database. Now that any tab can, every tab would run its
+ * own. The costs differ by job — a duplicate sync pass collides on the
+ * backend's per-user advisory lock, a duplicate outbox flush files the same
+ * GitHub issue twice, a duplicate retitle bills the user's key twice — but the
+ * rule is the same, so it lives here rather than being restated at each call.
+ *
+ * Waits for election first: it settles in a later task, and a tab reading the
+ * default would skip its own first pass as the owner.
+ */
+export async function ownsBackgroundWork(): Promise<boolean> {
+  await whenRoleSettled();
+  return isDbLeader();
+}
+
 function grantOwnership(): void {
   owns = true;
   setRole('leader');

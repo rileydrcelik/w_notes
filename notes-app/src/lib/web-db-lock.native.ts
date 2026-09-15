@@ -31,6 +31,11 @@ export function isDbLeader(): boolean {
   return true;
 }
 
+/** One process, one runner: background work always belongs to native. */
+export async function ownsBackgroundWork(): Promise<boolean> {
+  return true;
+}
+
 /**
  * Native has one "tab" and its role never changes, so a subscriber can never
  * have anything to hear. Matches the web module, which only notifies on an

@@ -23,7 +23,7 @@
  */
 import type { Issue, IssueAttrValue } from '@/data/notes';
 import { db } from '@/lib/db';
-import { isDbLockedError } from '@/lib/web-db-lock';
+import { isDbLockedError, ownsBackgroundWork } from '@/lib/web-db-lock';
 import { AuthUnavailableError } from '@/lib/auth/token';
 import { ApiError } from '@/lib/sync/api';
 import {
@@ -493,6 +493,15 @@ export async function flushGithubOutboxNow(
 type ResolvedContext = NonNullable<ReturnType<OutboxDeps['resolve']>>;
 
 async function runFlush(deps: OutboxDeps): Promise<FlushResult> {
+  // Only the tab that owns the database flushes. `flushing` above dedupes
+  // within one realm, which was enough while only one tab could reach the
+  // queue; now that any tab can, two would replay the same intents. Opening a
+  // GitHub issue is not idempotent — the queue exists precisely because these
+  // are side effects that can't be re-run — so two tabs flushing means two
+  // issues filed for one. The queue is also persisted as a single blob, so
+  // concurrent writers would drop each other's entries outright.
+  if (!(await ownsBackgroundWork())) return { pushed: 0, dropped: 0, remaining: entries.size };
+
   await loadGithubOutbox();
   let pushed = 0;
   let dropped = 0;
