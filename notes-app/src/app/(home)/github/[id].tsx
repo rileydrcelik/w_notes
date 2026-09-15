@@ -87,16 +87,9 @@ function stateColor(issue: Issue): string {
   return CLOSED_COLOR;
 }
 
-/** One issue as pasteable text: state, #number, title, url, body. */
+/** One issue as pasteable text: strictly its body, nothing else. */
 function issueToClipboardText(issue: Issue): string {
-  const lines: string[] = [`#${issue.number} ${issue.title}`.trim()];
-  const state = issue.state === 'open' ? 'open' : issue.state_reason === 'not_planned' ? 'closed (not planned)' : 'closed';
-  lines.push(`State: ${state}`);
-  if (issue.author) lines.push(`Author: ${issue.author}`);
-  if (issue.labels.length) lines.push(`Labels: ${issue.labels.map((l) => l.name).join(', ')}`);
-  if (issue.body) lines.push('', issue.body.trim());
-  if (issue.html_url) lines.push('', issue.html_url);
-  return lines.join('\n');
+  return issue.body?.trim() ?? '';
 }
 
 /** A rounded key/value chip for a GitHub label, tinted with the label's color. */
@@ -542,7 +535,8 @@ export default function GithubIssuesScreen() {
       const selected = issues.filter((i) => nums.has(i.number));
       if (selected.length === 0) return;
       clear();
-      const text = selected.map(issueToClipboardText).join(`\n\n${'─'.repeat(48)}\n\n`);
+      // Issues with no body contribute nothing, rather than an empty block between dividers.
+      const text = selected.map(issueToClipboardText).filter(Boolean).join(`\n\n${'─'.repeat(48)}\n\n`);
       void Clipboard.setStringAsync(text);
     },
     [issues, clear],

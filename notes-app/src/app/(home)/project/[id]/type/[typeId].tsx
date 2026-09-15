@@ -50,11 +50,9 @@ const ACCENT = '#16a394';
 const DONE_COLOR = '#3fb950';
 const GITHUB_ACCENT = '#8250df';
 
-/** Serialize an issue's title and description as text. */
+/** An issue as pasteable text: strictly its description, nothing else. */
 function issueToClipboardText(issue: Issue): string {
-  const lines: string[] = [issue.title.trim() || 'Untitled issue'];
-  if (issue.description.trim()) lines.push('', issue.description.trim());
-  return lines.join('\n');
+  return issue.description.trim();
 }
 
 /** Compact chips summarizing an issue's set attribute values. */
