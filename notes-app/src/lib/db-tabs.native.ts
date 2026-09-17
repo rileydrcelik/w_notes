@@ -23,6 +23,18 @@ export function shareDbAcrossTabs<T extends object>(
 }
 
 /**
+ * Identity on native: this process owns the database, so the operation runs
+ * here. The web module routes it to whichever tab holds the connection.
+ */
+export function runInDbOwner<A extends unknown[], R>(
+  _name: string,
+  fn: (...args: A) => Promise<R>,
+  _options: { timeoutMs?: number } = {},
+): (...args: A) => Promise<R> {
+  return fn;
+}
+
+/**
  * No-op on native: there is one process, so nothing else can change the
  * database underneath this one. Returns an unsubscribe for shape parity.
  */

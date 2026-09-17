@@ -25,6 +25,20 @@
  * on a channel named after itself, so a reply — which may be the whole library
  * from `bootstrap()` — is cloned once for the tab that asked rather than once
  * per tab listening.
+ *
+ * Two rules follow from a method body running in the owner's realm rather than
+ * the caller's, and both have already been broken once:
+ *
+ *  - **A shared method may not read ambient page state.** Anything it reads from
+ *    the document it happens to run in — a page session id, an object URL, a
+ *    window size — describes the owner, not the tab that asked. `db.ts` binds
+ *    this page's session into the arguments *before* they cross (see
+ *    `withPageSession`), which is the shape to copy.
+ *  - **Work that must happen once per profile belongs to the owner**, and asking
+ *    for it is not the same as doing it yourself. `runInDbOwner` routes a whole
+ *    operation — a sync pass, an account transition — the way a database call is
+ *    routed, so the tab that asked waits for the real answer instead of skipping
+ *    the work and reporting success.
  */
 
 import { useEffect, useState } from 'react';
@@ -51,9 +65,11 @@ type Request = { k: 'req'; id: number; from: string; method: string; args: unkno
 type Ack = { k: 'ack'; id: number };
 type SerializedError = { name: string; message: string };
 type Response = { k: 'res'; id: number; ok: boolean; value?: unknown; error?: SerializedError };
-type Changed = { k: 'changed' };
+type Changed = { k: 'changed'; from: string };
 type Ping = { k: 'ping'; from: string };
 type Pong = { k: 'pong' };
+/** A tab announcing that it now holds the database. */
+type Elected = { k: 'elected'; from: string };
 
 /**
  * How long changes are gathered before telling the other tabs. One
@@ -87,6 +103,8 @@ function setReachable(next: boolean): void {
 type Pending = {
   method: string;
   args: unknown[];
+  /** How long this call waits, so a re-post to a new owner waits as long again. */
+  timeoutMs: number;
   /** Set once the owner says it has begun; after that the call can't be retried. */
   started: boolean;
   settle: (outcome: { ok: true; value: unknown } | { ok: false; error: Error }) => void;
@@ -100,6 +118,23 @@ const pending = new Map<number, Pending>();
 
 /** The local API, registered by `shareDbAcrossTabs` so the owner can serve it. */
 let served: Record<string, unknown> | null = null;
+
+/**
+ * Whole operations the owner runs on another tab's behalf, registered by
+ * `runInDbOwner`. Kept beside `served` rather than in it: these aren't database
+ * methods, they're jobs that must happen once per browser profile, and each
+ * carries its own patience (a sync pass is allowed to take far longer than a
+ * query).
+ */
+const extraRoutes = new Map<string, { fn: AsyncMethod; timeoutMs: number }>();
+
+/** The local implementation of a routed name, or null if this tab has none. */
+function localMethod(name: string): AsyncMethod | null {
+  const extra = extraRoutes.get(name);
+  if (extra) return extra.fn;
+  const method = served?.[name];
+  return typeof method === 'function' ? (method as AsyncMethod) : null;
+}
 
 /**
  * An error carried across a channel. `name` survives because callers key off it
@@ -145,17 +180,24 @@ function notifyChanged(): void {
  * would wake tab B, which would wake tab A, for as long as both stayed open.
  */
 function announceDbChanged(): void {
-  requests?.postMessage({ k: 'changed' } satisfies Changed);
+  requests?.postMessage({ k: 'changed', from: tabId } satisfies Changed);
 }
 
 function ensureChannels(): void {
   if (requests || typeof BroadcastChannel === 'undefined') return;
 
   requests = new BroadcastChannel(REQUEST_CHANNEL);
-  requests.onmessage = (e: MessageEvent<Request | Changed | Ping>) => {
+  requests.onmessage = (e: MessageEvent<Request | Changed | Ping | Elected>) => {
     const msg = e.data;
     if (msg?.k === 'changed') {
-      notifyChanged();
+      // The owner answers a follower's write on the shared channel, so the tab
+      // that asked hears its own change come back. It already showed it
+      // optimistically; re-reading every store for it is pure cost.
+      if (msg.from !== tabId) notifyChanged();
+      return;
+    }
+    if (msg?.k === 'elected') {
+      repostUnstartedCalls();
       return;
     }
     if (msg?.k === 'ping') {
@@ -169,7 +211,10 @@ function ensureChannels(): void {
     }
     if (msg?.k !== 'req') return;
     // Only the owner answers, and only it can: everyone else has no connection.
-    if (!isDbLeader() || !served) return;
+    // Whether it knows this particular method is `serve`'s business — it answers
+    // an unknown one with an error, which is a far better outcome for the caller
+    // than silence until its timeout.
+    if (!isDbLeader() || (!served && extraRoutes.size === 0)) return;
     void serve(msg);
   };
 
@@ -198,9 +243,14 @@ function ensureChannels(): void {
     );
   };
 
-  // A tab that gains the connection can no longer be waiting on someone else's.
+  // A tab that gains the connection can no longer be waiting on someone else's,
+  // and the tabs still waiting on the *old* one need telling that there is
+  // somewhere to ask again — their requests were broadcast to a tab that has
+  // stopped listening, and nothing else would ever re-send them.
   subscribeDbRole((role) => {
-    if (role === 'leader') adoptPendingCalls();
+    if (role !== 'leader') return;
+    adoptPendingCalls();
+    requests?.postMessage({ k: 'elected', from: tabId } satisfies Elected);
   });
 }
 
@@ -208,8 +258,8 @@ function ensureChannels(): void {
 async function serve(msg: Request): Promise<void> {
   const back = new BroadcastChannel(replyChannel(msg.from));
   try {
-    const method = served?.[msg.method];
-    if (typeof method !== 'function') {
+    const method = localMethod(msg.method);
+    if (!method) {
       const error = serializeError(new Error(`unknown database method ${msg.method}`));
       back.postMessage({ k: 'res', id: msg.id, ok: false, error } satisfies Response);
       return;
@@ -219,7 +269,7 @@ async function serve(msg: Request): Promise<void> {
     // the database — from one that may already have written.
     back.postMessage({ k: 'ack', id: msg.id } satisfies Ack);
     try {
-      const value = await (method as AsyncMethod)(...msg.args);
+      const value = await method(...msg.args);
       if (invalidating.has(msg.method)) {
         announceDbChanged();
         // And this tab's own stores: the write came from somewhere else, so
@@ -251,12 +301,12 @@ function adoptPendingCalls(): void {
   for (const [id, call] of [...pending]) {
     pending.delete(id);
     clearTimeout(call.timer);
-    const method = served?.[call.method];
-    if (call.started || typeof method !== 'function') {
+    const method = localMethod(call.method);
+    if (call.started || !method) {
       call.settle({ ok: false, error: ownerLostError(call.method) });
       continue;
     }
-    void (method as AsyncMethod)(...call.args).then(
+    void method(...call.args).then(
       (value) => call.settle({ ok: true, value }),
       (error: unknown) => call.settle({ ok: false, error: error as Error }),
     );
@@ -264,7 +314,11 @@ function adoptPendingCalls(): void {
 }
 
 /** Send one call to the owning tab and wait for its answer. */
-function callOwner(method: string, args: unknown[]): Promise<unknown> {
+function callOwner(
+  method: string,
+  args: unknown[],
+  timeoutMs: number = CALL_TIMEOUT_MS,
+): Promise<unknown> {
   ensureChannels();
   if (!requests) {
     // No BroadcastChannel: nothing can be routed, and this tab has no
@@ -279,10 +333,40 @@ function callOwner(method: string, args: unknown[]): Promise<unknown> {
       pending.delete(id);
       setReachable(false);
       settle({ ok: false, error: ownerLostError(method) });
-    }, CALL_TIMEOUT_MS);
-    pending.set(id, { method, args, started: false, settle, timer });
+    }, timeoutMs);
+    pending.set(id, { method, args, timeoutMs, started: false, settle, timer });
     requests?.postMessage({ k: 'req', id, from: tabId, method, args } satisfies Request);
   });
+}
+
+/**
+ * Another tab just took the database. Ask it again for anything the last owner
+ * never acknowledged.
+ *
+ * Those calls were broadcast to a tab that has since stopped listening, and
+ * nothing re-sends them: with three tabs open, the one that loses the race to be
+ * promoted would otherwise sit out the full timeout and then report a write as
+ * *maybe* applied when it provably never ran. An acknowledged call is left
+ * alone — it may have been half-written, which is `adoptPendingCalls`' problem
+ * and not something a repeat could fix.
+ */
+function repostUnstartedCalls(): void {
+  for (const [id, call] of [...pending]) {
+    if (call.started) continue;
+    clearTimeout(call.timer);
+    call.timer = setTimeout(() => {
+      pending.delete(id);
+      setReachable(false);
+      call.settle({ ok: false, error: ownerLostError(call.method) });
+    }, call.timeoutMs);
+    requests?.postMessage({
+      k: 'req',
+      id,
+      from: tabId,
+      method: call.method,
+      args: call.args,
+    } satisfies Request);
+  }
 }
 
 /**
@@ -331,6 +415,41 @@ export function shareDbAcrossTabs<T extends object>(
     };
   }
   return shared as T;
+}
+
+/**
+ * Hand one whole operation to the tab that owns the database.
+ *
+ * For work that must happen once per browser profile and cannot be split: a
+ * sync pass, an account transition. Asking "do I own the database?" and
+ * skipping the job otherwise is *not* the same thing, and the difference is
+ * data: signing out of a follower tab skipped the flush that pushes unsaved
+ * work, then wiped the database through the seam anyway.
+ *
+ * The owner runs `fn` in its own realm — where the bearer identity, the device
+ * key cache and the in-memory queues actually live — and the calling tab waits
+ * for the real result. In the owner, and on native, this is `fn` itself.
+ *
+ * `timeoutMs` is the caller's patience. A sync pass is allowed far more than a
+ * query: it talks to the network, and giving up on it early would raise the
+ * guard over a tab whose owner is merely busy.
+ */
+export function runInDbOwner<A extends unknown[], R>(
+  name: string,
+  fn: (...args: A) => Promise<R>,
+  options: { timeoutMs?: number } = {},
+): (...args: A) => Promise<R> {
+  const timeoutMs = options.timeoutMs ?? CALL_TIMEOUT_MS;
+  // Registered at module load, so the owner can serve this the moment another
+  // tab asks — which may be before it has run the operation itself.
+  extraRoutes.set(name, { fn: fn as AsyncMethod, timeoutMs });
+  ensureChannels();
+  return async (...args: A): Promise<R> => {
+    ensureChannels();
+    await whenRoleSettled();
+    if (isDbLeader()) return fn(...args);
+    return (await callOwner(name, args, timeoutMs)) as R;
+  };
 }
 
 /**

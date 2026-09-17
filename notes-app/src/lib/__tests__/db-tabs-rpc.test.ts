@@ -446,3 +446,86 @@ describe('noticing that the owning tab stopped answering', () => {
     expect(tab.isDbUnreachable()).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+
+describe('a whole operation the owner runs for another tab', () => {
+  it('runs it here when this tab holds the database', async () => {
+    const owner = await openTab();
+    owner.shareDbAcrossTabs({ getNote: async () => 'unused' });
+    const ran: string[] = [];
+    const syncNow = owner.runInDbOwner('sync:now', async (why: unknown) => {
+      ran.push(String(why));
+      return 'done';
+    });
+    await flush();
+
+    await expect(syncNow('poll')).resolves.toBe('done');
+    expect(ran).toEqual(['poll']);
+  });
+
+  it('hands it to the owner from a tab that does not', async () => {
+    // The distinction that matters: the work happens, somewhere it can. A tab
+    // that decided it was not the owner and quietly reported success is how
+    // signing out skipped the flush and then wiped the database anyway.
+    const ownerRan: unknown[] = [];
+    const owner = await openTab();
+    owner.shareDbAcrossTabs({ getNote: async () => 'unused' });
+    owner.runInDbOwner('sync:now', async (why: unknown) => {
+      ownerRan.push(why);
+      return { status: 'ok' };
+    });
+    await flush();
+
+    const follower = await openTab();
+    follower.shareDbAcrossTabs({ getNote: async () => 'unused' });
+    const syncNow = follower.runInDbOwner('sync:now', async (_why: unknown) => {
+      throw new Error('a follower must not run the pass itself');
+    });
+
+    await expect(syncNow('poll')).resolves.toEqual({ status: 'ok' });
+    expect(ownerRan).toEqual(['poll']);
+  });
+});
+
+describe('another tab taking the database mid-call', () => {
+  it('re-sends a call the old owner never acknowledged', async () => {
+    vi.useFakeTimers();
+    try {
+      const owner = await openTab();
+      const served: string[] = [];
+      owner.shareDbAcrossTabs({
+        updateNote: async (...args: unknown[]) => {
+          served.push(String(args[0]));
+          return 'saved';
+        },
+      });
+      await vi.advanceTimersByTimeAsync(1);
+
+      const follower = await openTab();
+      const followerDb = follower.shareDbAcrossTabs({
+        updateNote: async (_id: unknown) => 'unused',
+      });
+      await vi.advanceTimersByTimeAsync(1);
+
+      // The owner goes quiet before it can even acknowledge the call.
+      const thaw = freezeOwner();
+      const call = followerDb.updateNote('n1');
+      await vi.advanceTimersByTimeAsync(1);
+      expect(served).toEqual([]);
+
+      // A different tab wins the database and announces it. This call was
+      // broadcast to a tab that is no longer listening, and nothing else would
+      // ever carry it: the follower would wait out its timeout and then report
+      // a write as *maybe* applied when it provably never ran.
+      thaw();
+      new FakeChannel('wnotes-db-rpc').postMessage({ k: 'elected', from: 'another-tab' });
+      await vi.advanceTimersByTimeAsync(1);
+
+      await expect(call).resolves.toBe('saved');
+      expect(served).toEqual(['n1']);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

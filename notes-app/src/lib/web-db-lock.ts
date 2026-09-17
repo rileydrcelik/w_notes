@@ -122,9 +122,22 @@ export function isDbLeader(): boolean {
   return owns;
 }
 
+/**
+ * Whether the role has ever been *announced*, as opposed to merely defaulting.
+ *
+ * `role` starts as `leader` because that is what a lone tab is, but the first
+ * election result is news even when it agrees with that default: subscribers
+ * registered before it landed are waiting to hear the question was settled at
+ * all. Without this, the first leader announced nothing, and a tab with no
+ * `BroadcastChannel` — which reads as unreachable until told otherwise — sat
+ * behind the guard forever while holding the database it was looking for.
+ */
+let announced = false;
+
 function setRole(next: DbTabRole): void {
-  if (role === next) return;
+  if (role === next && announced) return;
   role = next;
+  announced = true;
   for (const fn of subscribers) fn(next);
 }
 
