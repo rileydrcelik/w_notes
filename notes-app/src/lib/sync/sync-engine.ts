@@ -13,7 +13,8 @@
  */
 import { Sentry } from '@/lib/sentry';
 import { db, type SyncPayload } from '@/lib/db';
-import { isDbLockedError, ownsBackgroundWork } from '@/lib/web-db-lock';
+import { isDbLockedError } from '@/lib/web-db-lock';
+import { runInDbOwner } from '@/lib/db-tabs';
 import { AuthUnavailableError } from '@/lib/auth/token';
 import { clearGithubOutbox, reassignGithubOutbox } from '@/lib/github-outbox';
 import { clearIssueRetitles, reassignIssueRetitles } from '@/lib/issue-retitle';
@@ -28,6 +29,45 @@ import { downloadCopaFile, prepareLocalFiles, uploadCopaFile } from './files';
 const SYNCED_UID = 'synced_uid';
 
 type PullResponse = SyncPayload & { server_seq: number; has_more?: boolean };
+
+/**
+ * How long a tab waits for the owner to finish a pass or an account transition.
+ *
+ * Far more than an ordinary database call gets, because these talk to the
+ * network: the default 30s would give up on a slow first sync that is working
+ * perfectly and raise the "can't reach your notes" guard over it.
+ */
+const OWNER_CALL_TIMEOUT_MS = 120_000;
+
+/**
+ * Serializes account transitions against each other.
+ *
+ * Every tab hears the Firebase auth change and asks the owner to handle it, so
+ * the owner can be asked two or three times at once. Overlapping runs would
+ * each read `synced_uid` before either wrote it, and both would take the
+ * first-account branch — claiming, wiping and re-cursoring twice over.
+ */
+let accountTail: Promise<unknown> = Promise.resolve();
+
+function serializeAccountOp<T>(op: () => Promise<T>): Promise<T> {
+  const run = accountTail.then(op, op);
+  accountTail = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
+}
+
+/** Whose data a pass is for; '' while anonymous. */
+async function currentIdentity(fallback = ''): Promise<string> {
+  return (await db.getSetting(SYNCED_UID).catch(() => fallback)) ?? '';
+}
+
+/**
+ * A pass whose account changed underneath it. Its results describe the old
+ * identity, so its bookkeeping must not be written — see the guards below.
+ */
+const ACCOUNT_CHANGED: SyncResult = { status: 'skipped', reason: 'account changed mid-pass' };
 
 // Safety stop for the pull loop. Each page strictly advances the cursor, so this
 // can only be reached by a genuinely enormous backlog — in which case we stop,
@@ -151,7 +191,7 @@ let filesPrepared = false;
  * concurrent calls return the same in-flight promise, and it no-ops cleanly when
  * sync isn't configured.
  */
-export function syncNow(): Promise<SyncResult> {
+function syncNowHere(): Promise<SyncResult> {
   if (inflight) return inflight;
   inflight = runSync().finally(() => {
     inflight = null;
@@ -159,28 +199,43 @@ export function syncNow(): Promise<SyncResult> {
   return inflight;
 }
 
+/**
+ * One pass per browser profile, not per tab — so it runs in the tab that owns
+ * the database, wherever it was asked for.
+ *
+ * `inflight` above dedupes within a realm, which was the whole story while only
+ * one tab could reach the database. Now that any tab can, each would run its own
+ * pass; they would collide on the backend's per-user advisory lock, where the
+ * loser waits out `lock_timeout` holding a connection from a small pool — the
+ * outage in docs/HANDOFF-2026-09-15-sync-wedge.md, as a steady state.
+ *
+ * Routed rather than skipped, which is the distinction that matters: a tab that
+ * quietly reported "skipped" still looked like a tab that had synced. Sign-out
+ * believed it and wiped the database behind a flush that never ran, and a
+ * follower's edits waited on the owner's next poll — up to a minute, or forever
+ * while the owner sat throttled in the background.
+ */
+export const syncNow = runInDbOwner('sync:now', syncNowHere, {
+  timeoutMs: OWNER_CALL_TIMEOUT_MS,
+});
+
 async function runSync(): Promise<SyncResult> {
   if (!syncConfigured) {
     return { status: 'skipped', reason: 'EXPO_PUBLIC_API_URL not set' };
   }
 
-  // One pass per browser profile, not per tab. `inflight` above dedupes within
-  // a realm, which was the whole story while only one tab could reach the
-  // database; now that any tab can, each would run its own pass. They wouldn't
-  // corrupt anything — push is idempotent and the cursor can only move
-  // backwards under a race — but they would collide on the backend's per-user
-  // advisory lock, where the loser waits out `lock_timeout` holding a
-  // connection from a small pool. That is the shape of the outage in
-  // docs/HANDOFF-2026-09-15-sync-wedge.md, turned from an edge case into a
-  // steady state. Waiting for the role first because election settles in a
-  // later task, and the owner would otherwise skip its own first pass.
-  if (!(await ownsBackgroundWork())) {
-    return { status: 'skipped', reason: 'sync runs in the tab that owns the database' };
-  }
-
   try {
     // Ensure the device key exists + is persisted before the first request.
     await getDeviceKey();
+
+    // Whose data this pass is for, read once up front and re-checked before
+    // each piece of bookkeeping below. An account transition can land between
+    // this pass's requests and its writes — it runs in this same tab now, but
+    // any tab can start it — and the results belong to the identity the pass
+    // began under. Saving them afterwards is how a cursor earned under the
+    // anonymous device key gets stored as the account's, after which every
+    // older row of that account is silently never pulled again.
+    const identity = await currentIdentity();
 
     // Once per session, reconcile local file paths before any file pass. Both
     // platforms no-op today: clearing web's dead object URLs moved into the
@@ -207,6 +262,9 @@ async function runSync(): Promise<SyncResult> {
     const pushed = Object.values(dirty).reduce((total, rows) => total + rows.length, 0);
     if (pushed > 0) {
       await apiFetch('/sync/push', { method: 'POST', body: dirty });
+      // Clearing `dirty` for rows pushed under the previous account would strip
+      // the flags a claim just set, so those rows would never reach the new one.
+      if ((await currentIdentity(identity)) !== identity) return ACCOUNT_CHANGED;
       await db.markSynced(dirty);
     }
 
@@ -220,6 +278,7 @@ async function runSync(): Promise<SyncResult> {
     let changed = 0;
     for (let page = 0; page < MAX_PULL_PAGES; page += 1) {
       const pulled = await apiFetch<PullResponse>(`/sync/pull?since=${cursor}`);
+      if ((await currentIdentity(identity)) !== identity) return ACCOUNT_CHANGED;
       changed += await db.applyServerRows(pulled);
       await db.setCursor(pulled.server_seq);
       // Defend the loop rather than trust the server: a cursor that fails to
@@ -320,7 +379,7 @@ async function downloadMissingFiles(): Promise<number> {
  * identity); a different account replaces the local data instead. Either way we
  * reset the pull cursor — we're a different server user now — then sync.
  */
-export async function onSignIn(uid: string): Promise<void> {
+async function applySignIn(uid: string): Promise<void> {
   const prev = await db.getSetting(SYNCED_UID);
   if (prev !== uid) {
     if (!prev) {
@@ -362,7 +421,7 @@ export async function onSignIn(uid: string): Promise<void> {
  * wipe the local copy and rotate to a fresh anonymous device key so the next
  * (anonymous) session is a clean, separate identity.
  */
-export async function onSignOut(): Promise<void> {
+async function applySignOut(): Promise<void> {
   await syncNow().catch(() => {});
   await db.clearAllData();
   // The issues these pushes referred to are gone by the user's own request, so
@@ -377,6 +436,32 @@ export async function onSignOut(): Promise<void> {
   await rotateDeviceKey();
   emitSynced();
 }
+
+/**
+ * Both transitions run in the tab that owns the database, whichever tab the
+ * user actually clicked in.
+ *
+ * They are not background work that a tab may skip — they are the one sync pass
+ * that is not optional, followed by a wipe. Gated instead of routed, signing out
+ * of a second tab returned from `syncNow()` immediately without pushing
+ * anything, then deleted every local row through the seam: an unpushed edit had
+ * no server copy and no local one either. Signing *in* had the mirror problem —
+ * the claim landed in the owner's database while the owner, still holding the
+ * anonymous bearer, pushed the newly-claimed library to the wrong identity and
+ * saved a cursor that hid the real account's history for good.
+ *
+ * Running them here also settles which Firebase session they use: the owner's
+ * own, the one whose token its requests will carry.
+ */
+export const onSignIn = runInDbOwner(
+  'sync:onSignIn',
+  (uid: string) => serializeAccountOp(() => applySignIn(uid)),
+  { timeoutMs: OWNER_CALL_TIMEOUT_MS },
+);
+
+export const onSignOut = runInDbOwner('sync:onSignOut', () => serializeAccountOp(applySignOut), {
+  timeoutMs: OWNER_CALL_TIMEOUT_MS,
+});
 
 // ---- Debounced trigger for the write path ----
 

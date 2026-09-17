@@ -40,6 +40,28 @@ vi.mock('@/lib/web-db-lock', () => ({
   ownsBackgroundWork: vi.fn(() => Promise.resolve(true)),
 }));
 
+/**
+ * The seam, standing in for "this tab owns the database" and "it doesn't".
+ *
+ * `routed` records what a non-owning tab handed to the owner, which is the
+ * whole distinction here: skipping the work and reporting success is not the
+ * same as having it done somewhere it can be.
+ */
+const routed: string[] = [];
+let ownsDb = true;
+
+vi.mock('@/lib/db-tabs', () => ({
+  runInDbOwner:
+    (name: string, fn: (...args: unknown[]) => Promise<unknown>) =>
+    async (...args: unknown[]) => {
+      if (ownsDb) return fn(...args);
+      routed.push(name);
+      // What the owner answered. Deliberately not a 'skipped' shape: the caller
+      // is entitled to treat this as a pass that really happened.
+      return { status: 'ok', cursor: 0, pushed: 0, pulled: 0 };
+    },
+}));
+
 vi.mock('@/lib/sentry', () => ({
   Sentry: { captureException: vi.fn(), addBreadcrumb: vi.fn() },
 }));
@@ -86,6 +108,8 @@ async function load() {
   // `vi.mock` factories run once, so the same `vi.fn()` instances are shared by
   // every test here; without this, one test's call counts leak into the next.
   vi.clearAllMocks();
+  routed.length = 0;
+  ownsDb = true;
   const lock = await import('@/lib/web-db-lock');
   const api = await import('@/lib/sync/api');
   const deviceKey = await import('@/lib/sync/device-key');
@@ -93,30 +117,66 @@ async function load() {
   return { engine, lock, api, deviceKey };
 }
 
-describe('syncNow — only the tab that owns the database', () => {
-  it('runs the pass in the tab that owns the database', async () => {
-    const { engine, lock, deviceKey } = await load();
-    vi.mocked(lock.ownsBackgroundWork).mockResolvedValue(true);
+describe('syncNow — the pass belongs to the tab that owns the database', () => {
+  it('runs the pass here when this tab owns it', async () => {
+    const { engine, deviceKey } = await load();
 
     const result = await engine.syncNow();
 
     expect(result.status).not.toBe('skipped');
     expect(deviceKey.getDeviceKey).toHaveBeenCalled();
+    expect(routed).toEqual([]);
   });
 
-  it('skips the pass entirely in a tab that does not', async () => {
-    const { engine, lock, api, deviceKey } = await load();
-    vi.mocked(lock.ownsBackgroundWork).mockResolvedValue(false);
+  it('hands the pass to the owner rather than skipping it', async () => {
+    const { engine, api, deviceKey } = await load(); // resets ownsDb, so set it after
+    ownsDb = false;
 
     const result = await engine.syncNow();
 
-    expect(result).toEqual({
-      status: 'skipped',
-      reason: 'sync runs in the tab that owns the database',
-    });
-    // Nothing reached the network, and nothing even got as far as the device
-    // key — the gate sits ahead of the whole pass, not inside it.
+    // Asked for, not silently dropped. A tab that reported "skipped" still
+    // looked to its caller like a tab that had synced — which is what let
+    // sign-out wipe the database behind a flush that never ran.
+    expect(routed).toContain('sync:now');
+    expect(result.status).toBe('ok');
+    // And none of it ran here: this tab has no business touching the network or
+    // the device key on behalf of a database it doesn't hold.
     expect(api.apiFetch).not.toHaveBeenCalled();
     expect(deviceKey.getDeviceKey).not.toHaveBeenCalled();
+  });
+
+  it('hands sign-out to the owner too, so its flush cannot be skipped', async () => {
+    const { engine } = await load(); // resets ownsDb, so set it after
+    ownsDb = false;
+    const { db } = await import('@/lib/db');
+
+    await engine.onSignOut();
+
+    expect(routed).toContain('sync:onSignOut');
+    // The wipe is the second half of that operation. Running it here while the
+    // flush was skipped is precisely how an unpushed edit was lost: deleted
+    // locally through the seam, never sent anywhere.
+    expect(db.clearAllData).not.toHaveBeenCalled();
+  });
+});
+
+describe('a pass whose account changes underneath it', () => {
+  it('pushes, then refuses to write bookkeeping belonging to the old identity', async () => {
+    const { engine, api } = await load();
+    const { db } = await import('@/lib/db');
+    vi.mocked(db.getDirty).mockResolvedValue({ notes: [{ id: 'n1' }] } as never);
+    // Anonymous when the pass starts; signed in by the time the push returns.
+    vi.mocked(db.getSetting).mockResolvedValueOnce('').mockResolvedValue('uid-1');
+
+    const result = await engine.syncNow();
+
+    expect(api.apiFetch).toHaveBeenCalled();
+    // Clearing `dirty` here would strip the flags the claim just set, so those
+    // rows would never be pushed to the account that now owns them; saving the
+    // cursor would store a watermark earned under the device key as the
+    // account's, hiding every older row of that account for good.
+    expect(db.markSynced).not.toHaveBeenCalled();
+    expect(db.setCursor).not.toHaveBeenCalled();
+    expect(result).toEqual({ status: 'skipped', reason: 'account changed mid-pass' });
   });
 });
