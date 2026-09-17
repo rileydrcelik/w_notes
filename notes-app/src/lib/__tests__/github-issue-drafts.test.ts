@@ -19,6 +19,9 @@ import { describe, expect, it, vi } from 'vitest';
 // Defaults live in the factory, not only in `load()`: `vi.fn(impl)` keeps that
 // impl through `resetAllMocks`, so the module under test can never observe a
 // bare mock returning undefined no matter when it first reaches one.
+/** The device's settings rows — one per draft. Wired up in `load()`. */
+const settings = new Map<string, string>();
+
 vi.mock('@/lib/db', () => ({
   db: {
     getSetting: vi.fn(async () => ''),
@@ -82,10 +85,23 @@ async function load() {
   ]);
 
   vi.resetAllMocks();
+  // A settings table that round trips, because a flush re-reads the stored
+  // drafts before filing them — a draft may have been composed in another tab,
+  // and only the device's copy knows about it. Writes that went nowhere would
+  // leave the flush with an empty map and nothing to send.
+  settings.clear();
   vi.mocked(db.getSetting).mockResolvedValue('');
-  vi.mocked(db.setSetting).mockResolvedValue(undefined);
-  vi.mocked(db.deleteSetting).mockResolvedValue(undefined);
-  vi.mocked(db.listSettings).mockResolvedValue([]);
+  vi.mocked(db.setSetting).mockImplementation(async (key: string, value: string) => {
+    settings.set(key, value);
+  });
+  vi.mocked(db.deleteSetting).mockImplementation(async (key: string) => {
+    settings.delete(key);
+  });
+  vi.mocked(db.listSettings).mockImplementation(async (prefix: string) =>
+    [...settings.entries()]
+      .filter(([key]) => key.startsWith(prefix))
+      .map(([key, value]) => ({ key, value })),
+  );
   vi.mocked(outbox.isRetryable).mockReturnValue(false);
   vi.mocked(issueGithub.createGithubIssue).mockResolvedValue(1);
   vi.mocked(issueGithub.findGithubIssueByMarker).mockResolvedValue(null);
@@ -350,5 +366,28 @@ describe('discardGithubDraft', () => {
     await drafts.discardGithubDraft('d1');
     expect(db.deleteSetting).toHaveBeenCalledWith('github_draft:d1');
     expect(drafts.githubDrafts()).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe('only the tab that owns the database files drafts', () => {
+  it('sends nothing and keeps the draft when another tab owns the database', async () => {
+    // `POST /github/issues` has no idempotency key, so two tabs filing the same
+    // draft open two issues for one. Today the only trigger is a completed sync
+    // pass, which already runs in the owner — this gate is what stops that
+    // implicit dependency from becoming a duplicate the day someone adds a
+    // second trigger.
+    const { drafts, db, issueGithub } = await load();
+    const { ownsBackgroundWork } = await import('@/lib/web-db-lock');
+    await drafts.saveGithubDraft('d1', input());
+    vi.mocked(ownsBackgroundWork).mockResolvedValue(false);
+
+    const result = await drafts.flushGithubDrafts();
+
+    expect(issueGithub.createGithubIssue).not.toHaveBeenCalled();
+    expect(db.deleteSetting).not.toHaveBeenCalled();
+    // Kept, not dropped: the owning tab still has to file it.
+    expect(result).toEqual({ sent: 0, held: 0, remaining: 1 });
   });
 });

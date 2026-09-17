@@ -41,6 +41,7 @@
  */
 import { AuthUnavailableError } from '@/lib/auth/token';
 import { db } from '@/lib/db';
+import { serializedPerProfile } from '@/lib/profile-lock';
 import type { DuplicateCandidate } from '@/lib/issue-duplicates';
 import { requestIssueTitle } from '@/lib/issue-title';
 import { Sentry } from '@/lib/sentry';
@@ -137,13 +138,75 @@ const listeners = new Set<() => void>();
  */
 const inFlight = new Map<string, Promise<AttemptResult>>();
 
-/** Serializes read-modify-write of the stored queue (see github-outbox). */
-let chain: Promise<unknown> = Promise.resolve();
+/**
+ * Serializes read-modify-write of the stored queue across every tab, and
+ * re-reads it before each one (see github-outbox, which explains both halves).
+ */
+const runSerialized = serializedPerProfile(STORAGE_KEY);
+
+/** Whether the stored queue could be read; `persist` stays quiet when not. */
+let storageKnown = true;
 
 function serialize<T>(op: () => Promise<T>): Promise<T> {
-  const run = chain.then(op, op);
-  chain = run.catch(() => {});
-  return run;
+  return runSerialized(async () => {
+    await reconcile();
+    return op();
+  });
+}
+
+/** The entries in a stored blob, ignoring anything malformed or long expired. */
+function parseStored(raw: string | null): PendingRetitle[] {
+  if (!raw) return [];
+  const parsed = JSON.parse(raw) as Partial<StoredQueue>;
+  if (!parsed || !Array.isArray(parsed.entries)) return [];
+  const now = Date.now();
+  const out: PendingRetitle[] = [];
+  for (const e of parsed.entries) {
+    if (!e || typeof e.issueId !== 'string' || typeof e.stub !== 'string') continue;
+    if (typeof e.queuedAt !== 'number' || now - e.queuedAt > MAX_AGE_MS) continue;
+    out.push({
+      issueId: e.issueId,
+      stub: e.stub,
+      identity: typeof e.identity === 'string' ? e.identity : '',
+      queuedAt: e.queuedAt,
+      attempts: typeof e.attempts === 'number' ? e.attempts : 0,
+    });
+  }
+  return out;
+}
+
+/** Bring this tab's map up to date with the stored queue. See github-outbox. */
+async function reconcile(): Promise<void> {
+  let stored: PendingRetitle[];
+  try {
+    stored = parseStored(await db.getSetting(STORAGE_KEY));
+    storageKnown = true;
+  } catch (e) {
+    storageKnown = false;
+    if (!isDbLockedError(e)) {
+      Sentry.captureException(e, { tags: { source: 'issue-retitle', op: 'load' } });
+    }
+    return;
+  }
+
+  const before = entries.size;
+  let changed = false;
+  const seen = new Set<string>();
+  for (const entry of stored) {
+    seen.add(entry.issueId);
+    const live = entries.get(entry.issueId);
+    if (live) Object.assign(live, entry);
+    else {
+      entries.set(entry.issueId, entry);
+      changed = true;
+    }
+  }
+  for (const id of [...entries.keys()]) {
+    // An attempt running here owns its entry until it settles; another tab's
+    // blob is simply older than this one's in-flight work.
+    if (!seen.has(id) && !inFlight.has(id)) entries.delete(id);
+  }
+  if (changed || entries.size !== before) refreshSnapshot();
 }
 
 function refreshSnapshot(): void {
@@ -175,6 +238,7 @@ export function isRetitlePending(issueId: string): boolean {
 // ---- Persistence ----
 
 async function persist(): Promise<void> {
+  if (!storageKnown) return;
   const payload: StoredQueue = { v: 1, entries: [...entries.values()] };
   try {
     await db.setSetting(STORAGE_KEY, JSON.stringify(payload));
@@ -186,35 +250,13 @@ async function persist(): Promise<void> {
 
 /** Hydrate the queue from the device. Safe to call more than once. */
 export function loadIssueRetitles(): Promise<void> {
-  loading ??= hydrate();
+  loading ??= reloadIssueRetitles();
   return loading;
 }
 
-async function hydrate(): Promise<void> {
-  await serialize(async () => {
-    try {
-      const raw = await db.getSetting(STORAGE_KEY);
-      if (!raw) return;
-      const parsed = JSON.parse(raw) as Partial<StoredQueue>;
-      if (!parsed || !Array.isArray(parsed.entries)) return;
-      const now = Date.now();
-      for (const e of parsed.entries) {
-        if (!e || typeof e.issueId !== 'string' || typeof e.stub !== 'string') continue;
-        if (typeof e.queuedAt !== 'number' || now - e.queuedAt > MAX_AGE_MS) continue;
-        entries.set(e.issueId, {
-          issueId: e.issueId,
-          stub: e.stub,
-          identity: typeof e.identity === 'string' ? e.identity : '',
-          queuedAt: e.queuedAt,
-          attempts: typeof e.attempts === 'number' ? e.attempts : 0,
-        });
-      }
-      refreshSnapshot();
-    } catch (e) {
-      if (isDbLockedError(e)) return;
-      Sentry.captureException(e, { tags: { source: 'issue-retitle', op: 'load' } });
-    }
-  });
+/** Re-read the durable queue now — another tab may have changed it. */
+export function reloadIssueRetitles(): Promise<void> {
+  return serialize(async () => {});
 }
 
 /** Drop everything — the local issues were wiped (sign-out, account switch). */
@@ -458,13 +500,16 @@ export function flushIssueRetitles(deps: RetitleDeps): Promise<RetitleFlushResul
 }
 
 async function runFlush(deps: RetitleDeps): Promise<RetitleFlushResult> {
+  // Read the durable queue first: titles queued in another tab are this tab's
+  // to retry, and `remaining` should describe the queue rather than this realm.
+  await reloadIssueRetitles();
+
   // Owner tab only, for the same reason as the GitHub outbox: `flushing` above
   // dedupes within one realm, and a retitle is a model call billed to the
   // user's own key. Two tabs replaying the queue would pay for every title
   // twice and then race to write the winner.
   if (!(await ownsBackgroundWork())) return { titled: 0, dropped: 0, remaining: entries.size };
 
-  await loadIssueRetitles();
   let titled = 0;
   let dropped = 0;
   if (entries.size === 0) return { titled, dropped, remaining: 0 };

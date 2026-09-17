@@ -27,6 +27,15 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { Issue } from '@/data/notes';
 
+/**
+ * The settings table the queue lives in. A Map rather than bare `vi.fn()`s
+ * because each operation re-reads the stored blob before rewriting it (another
+ * tab may have queued something), so a write that went nowhere would leave the
+ * next operation reading an empty queue and dropping what came before it.
+ * Wired up in `load()`; the factory below is hoisted above this declaration.
+ */
+const settings = new Map<string, string>();
+
 vi.mock('@/lib/db', () => ({
   db: {
     getSetting: vi.fn(),
@@ -97,7 +106,10 @@ function makeRow(overrides: Partial<IssueRow> = {}): IssueRow {
  * resolving anything that is genuinely still pending (e.g. a manually-held
  * `requestIssueTitle` promise). No timers are involved anywhere in the module
  * under test, so this is deterministic rather than a sleep. */
-async function drainMicrotasks(times = 30): Promise<void> {
+// 80 rather than 30: every queue operation now re-reads the stored queue before
+// changing it (another tab may have written it), so there are more awaits
+// between calling in and the request going out.
+async function drainMicrotasks(times = 80): Promise<void> {
   for (let i = 0; i < times; i += 1) {
     await Promise.resolve();
   }
@@ -116,8 +128,11 @@ async function load() {
   const retitle = await import('@/lib/issue-retitle');
 
   vi.resetAllMocks();
-  vi.mocked(db.getSetting).mockResolvedValue(null);
-  vi.mocked(db.setSetting).mockResolvedValue(undefined);
+  settings.clear();
+  vi.mocked(db.getSetting).mockImplementation(async (key: string) => settings.get(key) ?? null);
+  vi.mocked(db.setSetting).mockImplementation(async (key: string, value: string) => {
+    settings.set(key, value);
+  });
   vi.mocked(db.getIssueById).mockResolvedValue(null);
 
   return { db, issueTitle, Sentry, retitle };
@@ -305,10 +320,7 @@ describe('isRetitlePending — what the GitHub outbox holds a create on', () => 
 describe('the queue is per-identity', () => {
   it('skips an entry queued under a different account without asking for a title, and keeps it', async () => {
     const { retitle, db, issueTitle } = await load();
-    let identity = 'user-A';
-    vi.mocked(db.getSetting).mockImplementation(async (key: string) =>
-      key === 'synced_uid' ? identity : null,
-    );
+    settings.set('synced_uid', 'user-A');
     vi.mocked(issueTitle.requestIssueTitle).mockRejectedValueOnce(new TypeError('offline'));
 
     await retitle.retitleIssue(
@@ -317,7 +329,7 @@ describe('the queue is per-identity', () => {
     );
     expect(retitle.pendingRetitleIssueIds().has('i1')).toBe(true);
 
-    identity = 'user-B'; // a different account signed in before the flush ran
+    settings.set('synced_uid', 'user-B'); // a different account signed in before the flush ran
     // A resolvable row (title still matching the stub) and a title the model
     // would happily hand back — proof that the skip below is really the
     // identity guard, and not a coincidental hold or drop.
@@ -607,5 +619,39 @@ describe('only the tab that owns the database flushes', () => {
     // Kept, not dropped: the owning tab still has to title it.
     expect(flushResult).toEqual({ titled: 0, dropped: 0, remaining: 1 });
     expect(retitle.pendingRetitleIssueIds().has('i1')).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe('two tabs, one stored queue', () => {
+  /** The blob as another tab would have left it. */
+  const otherTabsQueue = (issueId: string) =>
+    JSON.stringify({
+      v: 1,
+      entries: [
+        { issueId, stub: 'Stub title', identity: '', queuedAt: Date.now(), attempts: 0 },
+      ],
+    });
+
+  it('keeps a title another tab queued when this tab writes its own', async () => {
+    // One blob, every tab. Each used to read it once at start-up, so the next
+    // write from any of them replaced the lot — and a title queued elsewhere
+    // was gone, with the stand-in left on the issue for good.
+    const { retitle, issueTitle } = await load();
+    await retitle.loadIssueRetitles();
+    settings.set('issue_retitle_queue', otherTabsQueue('from-other-tab'));
+    vi.mocked(issueTitle.requestIssueTitle).mockRejectedValue(new TypeError('offline'));
+
+    await retitle.retitleIssue(
+      { issueId: 'from-this-tab', stub: 'Stub title', text: 'full text' },
+      { applyTitle: vi.fn() },
+    );
+
+    const stored = JSON.parse(String(settings.get('issue_retitle_queue')));
+    expect(stored.entries.map((e: { issueId: string }) => e.issueId).sort()).toEqual([
+      'from-other-tab',
+      'from-this-tab',
+    ]);
   });
 });

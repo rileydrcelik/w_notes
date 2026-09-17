@@ -23,6 +23,7 @@
  */
 import type { Issue, IssueAttrValue } from '@/data/notes';
 import { db } from '@/lib/db';
+import { serializedPerProfile } from '@/lib/profile-lock';
 import { isDbLockedError, ownsBackgroundWork } from '@/lib/web-db-lock';
 import { AuthUnavailableError } from '@/lib/auth/token';
 import { ApiError } from '@/lib/sync/api';
@@ -161,20 +162,104 @@ let idSnapshot: ReadonlySet<string> = new Set();
 const listeners = new Set<() => void>();
 
 /**
- * Serializes every read-modify-write of the stored queue.
+ * Serializes every read-modify-write of the stored queue, across every tab.
  *
  * `db.setSetting` is write-serialized but `db.getSetting` is not, so two
  * enqueues racing would each read the same JSON and the second would write back
  * a copy missing the first. That is not hypothetical: turning on tracking for a
  * type backfills all of its issues at once, so an offline backfill fails — and
  * enqueues — N times simultaneously.
+ *
+ * Per browser profile rather than per tab, because the queue is one blob shared
+ * by all of them and every tab can write it now (see `profile-lock.ts`).
  */
-let chain: Promise<unknown> = Promise.resolve();
+const runSerialized = serializedPerProfile(STORAGE_KEY);
+
+/**
+ * Whether the durable queue could be read at the start of the current
+ * operation. When it couldn't, `persist` stays quiet rather than overwrite a
+ * blob it knows this tab's copy may be behind.
+ */
+let storageKnown = true;
 
 function serialize<T>(op: () => Promise<T>): Promise<T> {
-  const run = chain.then(op, op);
-  chain = run.catch(() => {});
-  return run;
+  return runSerialized(async () => {
+    await reconcile();
+    return op();
+  });
+}
+
+/** The entries in a stored blob, ignoring anything malformed or long expired. */
+function parseStored(raw: string | null): PendingMirror[] {
+  if (!raw) return [];
+  const parsed = JSON.parse(raw) as Partial<StoredQueue>;
+  if (!parsed || !Array.isArray(parsed.entries)) return [];
+  const now = Date.now();
+  const out: PendingMirror[] = [];
+  for (const e of parsed.entries) {
+    if (!e || typeof e.issueId !== 'string' || typeof e.repo !== 'string') continue;
+    if (typeof e.queuedAt !== 'number' || now - e.queuedAt > MAX_AGE_MS) continue;
+    out.push({
+      issueId: e.issueId,
+      repo: e.repo,
+      identity: typeof e.identity === 'string' ? e.identity : '',
+      queuedAt: e.queuedAt,
+      attempts: typeof e.attempts === 'number' ? e.attempts : 0,
+      seq: typeof e.seq === 'number' ? e.seq : 1,
+      ...(e.details ? { details: true as const } : {}),
+      ...(e.state ? { state: true as const } : {}),
+      ...(e.title ? { title: true as const } : {}),
+    });
+  }
+  return out;
+}
+
+/**
+ * Bring this tab's map up to date with the stored queue, inside the lock, right
+ * before the operation that is about to rewrite it.
+ *
+ * Each tab used to read the blob once at start-up, so an entry queued in
+ * another tab was invisible here — and the next write from this tab replaced
+ * the blob wholesale, dropping it. The flush never saw it either, for the same
+ * reason. A held-back GitHub push vanishing is precisely the loss this queue
+ * exists to prevent.
+ *
+ * Entries already in memory are updated in place rather than replaced, because
+ * a flush part-way through holds an entry object and relies on a newly merged
+ * intent appearing on it (see `enqueue`).
+ */
+async function reconcile(): Promise<void> {
+  let stored: PendingMirror[];
+  try {
+    stored = parseStored(await db.getSetting(STORAGE_KEY));
+    storageKnown = true;
+  } catch (e) {
+    storageKnown = false;
+    // A corrupt blob must not wedge the feature, and an unreachable database
+    // must not empty the queue: either way this tab keeps what it has.
+    if (!isDbLockedError(e)) {
+      Sentry.captureException(e, { tags: { source: 'github-outbox', op: 'load' } });
+    }
+    return;
+  }
+
+  const before = entries.size;
+  let changed = false;
+  const seen = new Set<string>();
+  for (const entry of stored) {
+    seen.add(entry.issueId);
+    const live = entries.get(entry.issueId);
+    if (live) Object.assign(live, entry);
+    else {
+      entries.set(entry.issueId, entry);
+      changed = true;
+    }
+  }
+  // Gone from the blob means another tab pushed or dropped it.
+  for (const id of [...entries.keys()]) {
+    if (!seen.has(id)) entries.delete(id);
+  }
+  if (changed || entries.size !== before) refreshSnapshot();
 }
 
 function refreshSnapshot(): void {
@@ -202,11 +287,14 @@ export function pendingGithubIssueIds(): ReadonlySet<string> {
 // ---- Persistence ----
 
 async function persist(): Promise<void> {
+  // Built from a copy this tab knows may be stale: writing it would drop
+  // whatever the tab that *can* see the database has queued.
+  if (!storageKnown) return;
   const payload: StoredQueue = { v: 1, entries: [...entries.values()] };
   try {
     await db.setSetting(STORAGE_KEY, JSON.stringify(payload));
   } catch (e) {
-    // A follower browser tab can't hold the database. The in-memory queue stays
+    // The tab holding the database isn't answering. The in-memory queue stays
     // authoritative for this session; the owning tab keeps the durable copy.
     if (isDbLockedError(e)) return;
     Sentry.captureException(e, { tags: { source: 'github-outbox', op: 'persist' } });
@@ -215,40 +303,17 @@ async function persist(): Promise<void> {
 
 /** Hydrate the queue from the device. Safe to call more than once. */
 export function loadGithubOutbox(): Promise<void> {
-  loading ??= hydrate();
+  loading ??= reloadGithubOutbox();
   return loading;
 }
 
-async function hydrate(): Promise<void> {
-  await serialize(async () => {
-    try {
-      const raw = await db.getSetting(STORAGE_KEY);
-      if (!raw) return;
-      const parsed = JSON.parse(raw) as Partial<StoredQueue>;
-      if (!parsed || !Array.isArray(parsed.entries)) return;
-      const now = Date.now();
-      for (const e of parsed.entries) {
-        if (!e || typeof e.issueId !== 'string' || typeof e.repo !== 'string') continue;
-        if (typeof e.queuedAt !== 'number' || now - e.queuedAt > MAX_AGE_MS) continue;
-        entries.set(e.issueId, {
-          issueId: e.issueId,
-          repo: e.repo,
-          identity: typeof e.identity === 'string' ? e.identity : '',
-          queuedAt: e.queuedAt,
-          attempts: typeof e.attempts === 'number' ? e.attempts : 0,
-          seq: typeof e.seq === 'number' ? e.seq : 1,
-          ...(e.details ? { details: true as const } : {}),
-          ...(e.state ? { state: true as const } : {}),
-          ...(e.title ? { title: true as const } : {}),
-        });
-      }
-      refreshSnapshot();
-    } catch (e) {
-      if (isDbLockedError(e)) return;
-      // A corrupt blob must not wedge the feature; start from empty.
-      Sentry.captureException(e, { tags: { source: 'github-outbox', op: 'load' } });
-    }
-  });
+/**
+ * Re-read the durable queue now. Every serialized operation does this anyway;
+ * this is for the callers that only want to look — a flush about to run, or a
+ * tab that heard the database changed underneath it.
+ */
+export function reloadGithubOutbox(): Promise<void> {
+  return serialize(async () => {});
 }
 
 /**
@@ -493,16 +558,18 @@ export async function flushGithubOutboxNow(
 type ResolvedContext = NonNullable<ReturnType<OutboxDeps['resolve']>>;
 
 async function runFlush(deps: OutboxDeps): Promise<FlushResult> {
+  // Read the durable queue first, so this tab replays what other tabs queued
+  // and reports a `remaining` that means something either way.
+  await reloadGithubOutbox();
+
   // Only the tab that owns the database flushes. `flushing` above dedupes
   // within one realm, which was enough while only one tab could reach the
   // queue; now that any tab can, two would replay the same intents. Opening a
   // GitHub issue is not idempotent — the queue exists precisely because these
   // are side effects that can't be re-run — so two tabs flushing means two
-  // issues filed for one. The queue is also persisted as a single blob, so
-  // concurrent writers would drop each other's entries outright.
+  // issues filed for one.
   if (!(await ownsBackgroundWork())) return { pushed: 0, dropped: 0, remaining: entries.size };
 
-  await loadGithubOutbox();
   let pushed = 0;
   let dropped = 0;
   if (entries.size === 0) return { pushed, dropped, remaining: 0 };

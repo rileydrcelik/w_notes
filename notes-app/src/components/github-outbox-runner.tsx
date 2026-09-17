@@ -18,20 +18,23 @@ import { useCallback, useEffect, useRef } from 'react';
 
 import { effectiveTypeIds, type Issue, type Note } from '@/data/notes';
 import { db } from '@/lib/db';
+import { subscribeDbChanged } from '@/lib/db-tabs';
 import {
   flushGithubOutbox,
   loadGithubOutbox,
   pushOrQueue,
+  reloadGithubOutbox,
   setGithubOutboxDeps,
   type OutboxDeps,
 } from '@/lib/github-outbox';
-import { flushGithubDrafts, loadGithubDrafts } from '@/lib/github-issue-drafts';
+import { flushGithubDrafts, loadGithubDrafts, reloadGithubDrafts } from '@/lib/github-issue-drafts';
 import { selectDuplicateCandidates } from '@/lib/issue-duplicates';
 import { updateGithubIssue } from '@/lib/issue-github';
 import {
   flushIssueRetitles,
   isRetitlePending,
   loadIssueRetitles,
+  reloadIssueRetitles,
   type RetitleDeps,
 } from '@/lib/issue-retitle';
 import { ISSUE_TYPE_PLUGIN, parseTypeConfig, projectConfig } from '@/lib/project';
@@ -169,6 +172,20 @@ export function GithubOutboxRunner() {
     void loadGithubDrafts();
     void loadIssueRetitles();
   }, []);
+
+  // All three queues live in the same database every tab now shares, so another
+  // tab's enqueue is this tab's news: without re-reading, a pending badge here
+  // describes a queue that has moved on, and the tab that files them works from
+  // a copy that predates whatever was just queued. No-op on native.
+  useEffect(
+    () =>
+      subscribeDbChanged(() => {
+        void reloadGithubOutbox();
+        void reloadGithubDrafts();
+        void reloadIssueRetitles();
+      }),
+    [],
+  );
 
   useEffect(
     () =>

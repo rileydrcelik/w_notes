@@ -36,7 +36,7 @@ import {
 } from '@/lib/issue-github';
 import { Sentry } from '@/lib/sentry';
 import { ApiError } from '@/lib/sync/api';
-import { isDbLockedError } from '@/lib/web-db-lock';
+import { isDbLockedError, ownsBackgroundWork } from '@/lib/web-db-lock';
 
 /** Every draft key starts with this; one `settings` row per draft. */
 const KEY_PREFIX = 'github_draft:';
@@ -173,23 +173,35 @@ async function persist(draft: GithubIssueDraft): Promise<void> {
 
 /** Hydrate from the device. Safe to call more than once. */
 export function loadGithubDrafts(): Promise<void> {
-  loading ??= hydrate();
+  loading ??= reloadGithubDrafts();
   return loading;
 }
 
-async function hydrate(): Promise<void> {
+/**
+ * Re-read the stored drafts now.
+ *
+ * Unlike the two queues, drafts never clobbered each other — each owns its own
+ * settings row — but the in-memory map is still per tab, so a draft composed in
+ * one tab was invisible to the tab that files them, and to the account-change
+ * sweeps that re-stamp or hold them. Reading again is the whole fix.
+ */
+export async function reloadGithubDrafts(): Promise<void> {
   try {
     const rows = await db.listSettings(KEY_PREFIX);
+    const next = new Map<string, GithubIssueDraft>();
     for (const row of rows) {
       // Per row, so one unreadable draft costs only itself. This is the whole
       // reason a draft isn't a member of one shared blob.
       try {
         const draft = parse(row.value);
-        if (draft) drafts.set(draft.id, draft);
+        if (draft) next.set(draft.id, draft);
       } catch (e) {
         Sentry.captureException(e, { tags: { source: 'github-drafts', op: 'parse' } });
       }
     }
+    // Replaces rather than merges: a draft missing from the device was sent or
+    // discarded, by this tab or another one.
+    drafts = next;
     refresh();
   } catch (e) {
     if (isDbLockedError(e)) return;
@@ -321,7 +333,17 @@ export function flushGithubDrafts(): Promise<DraftFlushResult> {
 }
 
 async function runFlush(): Promise<DraftFlushResult> {
-  await loadGithubDrafts();
+  // Re-read first: a draft composed in another tab is still this device's to
+  // file, and nothing else would ever notice it.
+  await reloadGithubDrafts();
+
+  // Owner tab only. `POST /github/issues` has no idempotency key, so two tabs
+  // filing the same draft open two issues. Today the only trigger is a
+  // completed sync pass, which already happens in the owner — but that is an
+  // implicit dependency on another module's gate, and it costs a duplicate
+  // issue the moment someone adds a second trigger.
+  if (!(await ownsBackgroundWork())) return { sent: 0, held: 0, remaining: drafts.size };
+
   let sent = 0;
   let held = 0;
   if (drafts.size === 0) return { sent, held, remaining: 0 };

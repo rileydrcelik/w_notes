@@ -36,6 +36,20 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { Issue } from '@/data/notes';
 
+/**
+ * The settings table the queue actually lives in, keyed the way the real one is.
+ *
+ * A Map rather than bare `vi.fn()`s, because the queue is a genuine
+ * read-modify-write now: every operation re-reads the stored blob before
+ * changing it, so writes that went nowhere would leave each operation reading
+ * an empty queue and discarding whatever the last one wrote. Losing entries
+ * that way is the cross-tab bug this behaviour exists to prevent, and a mock
+ * that cannot round trip would hide it.
+ *
+ * Wired up in `load()`, not in the factory below, which is hoisted above this.
+ */
+const settings = new Map<string, string>();
+
 vi.mock('@/lib/db', () => ({
   db: {
     getSetting: vi.fn(),
@@ -141,8 +155,11 @@ async function load() {
   ]);
 
   vi.resetAllMocks();
-  vi.mocked(db.getSetting).mockResolvedValue(null);
-  vi.mocked(db.setSetting).mockResolvedValue(undefined);
+  settings.clear();
+  vi.mocked(db.getSetting).mockImplementation(async (key: string) => settings.get(key) ?? null);
+  vi.mocked(db.setSetting).mockImplementation(async (key: string, value: string) => {
+    settings.set(key, value);
+  });
   vi.mocked(db.getIssueById).mockResolvedValue(null);
   vi.mocked(issueGithub.findGithubIssueByMarker).mockResolvedValue(null);
   vi.mocked(issueGithub.getGithubIssueDetail).mockResolvedValue({ labels: [], body: null });
@@ -649,9 +666,9 @@ describe('flushGithubOutbox — stops at the first retryable failure', () => {
 describe('flushGithubOutbox — identity guard', () => {
   it('drops an entry stamped with a different identity than the current synced_uid, rather than pushing it', async () => {
     const { outbox, db, issueGithub } = await load();
-    vi.mocked(db.getSetting).mockResolvedValueOnce('user-A'); // read at enqueue time
+    settings.set('synced_uid', 'user-A'); // the account that queued it
     await outbox.queueGithubPush('i1', 'acme/widgets', {});
-    vi.mocked(db.getSetting).mockResolvedValueOnce('user-B'); // read at flush time — different account
+    settings.set('synced_uid', 'user-B'); // a different account by the time it flushes
     // A row and a resolvable, connected context are both ready to push — proof
     // the drop below is really the identity guard, and not a coincidental drop
     // from a missing row or an unresolved project (which would produce the same
@@ -687,7 +704,7 @@ describe('reassignGithubOutbox', () => {
 
   it('re-stamps an entry that is only on disk — the claim can beat hydration', async () => {
     const { db, outbox } = await load();
-    vi.mocked(db.getSetting).mockResolvedValue(stored(''));
+    settings.set('github_outbox', stored(''));
 
     // Deliberately no loadGithubOutbox() first. onSignIn reaches the claim
     // straight from the auth callback, which can run before the runner has
@@ -701,7 +718,7 @@ describe('reassignGithubOutbox', () => {
 
   it('keeps the rest of the entry intact while re-stamping it', async () => {
     const { db, outbox } = await load();
-    vi.mocked(db.getSetting).mockResolvedValue(stored(''));
+    settings.set('github_outbox', stored(''));
 
     await outbox.reassignGithubOutbox('uid-1');
 
@@ -740,5 +757,59 @@ describe('flushGithubOutbox — only the tab that owns the database', () => {
     expect(issueGithub.updateGithubIssue).not.toHaveBeenCalled();
     // Kept, not dropped: the owning tab still has to push it.
     expect(result).toEqual({ pushed: 0, dropped: 0, remaining: 1 });
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe('two tabs, one stored queue', () => {
+  /** The blob as another tab would have left it. */
+  const otherTabsQueue = (issueId: string) =>
+    JSON.stringify({
+      v: 1,
+      entries: [
+        {
+          issueId,
+          repo: 'acme/widgets',
+          identity: '',
+          queuedAt: Date.now(),
+          attempts: 0,
+          seq: 1,
+          details: true,
+        },
+      ],
+    });
+
+  it('keeps an entry another tab queued when this tab writes its own', async () => {
+    // Every tab used to read this blob once at start-up, so the next write from
+    // any of them replaced the lot — dropping a push another tab was holding,
+    // which is the exact loss the outbox exists to prevent.
+    const { outbox } = await load();
+    await outbox.loadGithubOutbox();
+    settings.set('github_outbox', otherTabsQueue('from-other-tab'));
+
+    await outbox.queueGithubPush('from-this-tab', 'acme/widgets', { details: true });
+
+    const stored = JSON.parse(String(settings.get('github_outbox')));
+    expect(stored.entries.map((e: { issueId: string }) => e.issueId).sort()).toEqual([
+      'from-other-tab',
+      'from-this-tab',
+    ]);
+  });
+
+  it('replays an entry another tab queued after this tab had loaded', async () => {
+    const { outbox, db, issueGithub } = await load();
+    await outbox.loadGithubOutbox();
+    settings.set('github_outbox', otherTabsQueue('from-other-tab'));
+    vi.mocked(db.getIssueById).mockResolvedValue(makeRow({ id: 'from-other-tab' }));
+    vi.mocked(issueGithub.createGithubIssue).mockResolvedValue(7);
+
+    const result = await outbox.flushGithubOutbox({
+      resolve: vi.fn().mockReturnValue(makeCtx()),
+      setGhNumber: vi.fn(),
+    });
+
+    expect(issueGithub.createGithubIssue).toHaveBeenCalled();
+    expect(result.pushed).toBe(1);
   });
 });
