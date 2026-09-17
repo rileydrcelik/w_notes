@@ -22,3 +22,13 @@ export function pageSessionId(): string {
 export async function liveSessionIds(): Promise<Set<string> | null> {
   return null;
 }
+
+/**
+ * Identity on native: the database is right here, so a method already runs in
+ * the same process that made the call, and there is no session to bind. The
+ * column it would stamp is only ever read for `blob:` rows, which this platform
+ * never writes.
+ */
+export function withPageSession<T>(api: T): T {
+  return api;
+}

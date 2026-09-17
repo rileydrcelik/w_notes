@@ -129,3 +129,61 @@ describe('pageSessionId', () => {
     expect(second).not.toBe(first);
   });
 });
+
+// ---------------------------------------------------------------------------
+
+describe('holding the session lock', () => {
+  it('takes its lock as the module loads, in every tab', async () => {
+    // The lock used to be requested lazily, from `liveSessionIds` — which only
+    // the tab that opens the database ever calls. Every other tab therefore
+    // held no lock and looked dead to the tab doing the clearing, which nulled
+    // the `blob:` URL it was still using: for bytes not yet uploaded, that was
+    // the file's only copy.
+    const fake = fakeLocks([]);
+    setNavigator({ locks: fake.locks });
+
+    const { pageSessionId } = await import('@/lib/page-session');
+
+    // Nothing asked about liveness, and this page is already registered.
+    expect(fake.requested).toContain(`wnotes-session-${pageSessionId()}`);
+  });
+});
+
+describe('withPageSession', () => {
+  it('stamps the session of the tab that made the call', async () => {
+    setNavigator({ locks: fakeLocks([]).locks });
+    const { pageSessionId, withPageSession } = await import('@/lib/page-session');
+    const createCopa = vi.fn(async (_input: { id?: string; fileSession?: string }) => {});
+    const setCopaLocalFile = vi.fn(
+      async (_id: string, _uri: string, _thumb: string | null, _session?: string) => {},
+    );
+
+    const api = withPageSession({ createCopa, setCopaLocalFile });
+    await api.createCopa({ id: 'c1' });
+    await api.setCopaLocalFile('c1', 'blob:abc', null);
+
+    // Both methods run in whichever tab holds the database, so a session read
+    // inside their bodies names that tab rather than the one that minted the
+    // URL being stamped.
+    expect(createCopa).toHaveBeenCalledWith({ id: 'c1', fileSession: pageSessionId() });
+    expect(setCopaLocalFile).toHaveBeenCalledWith('c1', 'blob:abc', null, pageSessionId());
+  });
+
+  it('passes every other method through untouched', async () => {
+    setNavigator({ locks: fakeLocks([]).locks });
+    const { withPageSession } = await import('@/lib/page-session');
+
+    const api = withPageSession({
+      createCopa: async (_input: { fileSession?: string }) => {},
+      setCopaLocalFile: async (
+        _id: string,
+        _uri: string,
+        _thumb: string | null,
+        _session?: string,
+      ) => {},
+      getNote: async (id: string) => `note ${id}`,
+    });
+
+    await expect(api.getNote('n1')).resolves.toBe('note n1');
+  });
+});

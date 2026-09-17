@@ -27,7 +27,7 @@ import { emptyFacets } from '@/lib/latex/corpus';
 import { normalizeHex, storedFolderColor } from '@/lib/folder-color';
 import { foldersToRehome } from '@/lib/folder-tree';
 import { shareDbAcrossTabs } from '@/lib/db-tabs';
-import { liveSessionIds, pageSessionId } from '@/lib/page-session';
+import { liveSessionIds, withPageSession } from '@/lib/page-session';
 import { COPA_UPSERT_SQL } from '@/lib/sync/copa-upsert';
 import type { CopaItem } from '@/data/copa';
 
@@ -1585,6 +1585,7 @@ const localDb = {
     label = '',
     content = '',
     file,
+    fileSession,
   }: {
     id: string;
     label?: string;
@@ -1592,6 +1593,12 @@ const localDb = {
     content?: string;
     /** Local-only file attachment metadata; omitted for plain text blocks. */
     file?: Pick<CopaItem, 'fileUri' | 'fileName' | 'mimeType' | 'fileSize' | 'thumbUri'>;
+    /**
+     * The page session that minted `file.fileUri`. Bound by `withPageSession`
+     * in the tab that made the call — never read here, because this body runs
+     * in whichever tab holds the database, which need not be that one.
+     */
+    fileSession?: string;
   }): Promise<void> {
     dbCrumb('createCopa', { id, file: !!file });
     const database = await getDb();
@@ -1614,7 +1621,7 @@ const localDb = {
         file?.thumbUri ?? null,
         // Stamped only alongside a path, so a row with no file carries no
         // session to go stale.
-        file?.fileUri ? pageSessionId() : null,
+        file?.fileUri ? (fileSession ?? null) : null,
       ],
     );
   },
@@ -1719,12 +1726,19 @@ const localDb = {
    * Point a block at its freshly-downloaded local bytes. These paths are
    * device-specific, so this deliberately does NOT mark the row dirty.
    */
-  async setCopaLocalFile(id: string, fileUri: string, thumbUri: string | null): Promise<void> {
+  async setCopaLocalFile(
+    id: string,
+    fileUri: string,
+    thumbUri: string | null,
+    /** As in `createCopa`: the session that minted these paths, bound by the
+     *  calling tab. */
+    fileSession?: string,
+  ): Promise<void> {
     dbCrumb('setCopaLocalFile', { id });
     const database = await getDb();
     await database.runAsync(
       'UPDATE copa_items SET file_uri = ?, thumb_uri = ?, file_session = ? WHERE id = ?',
-      [fileUri, thumbUri, pageSessionId(), id],
+      [fileUri, thumbUri, fileSession ?? null, id],
     );
   },
 
@@ -2848,6 +2862,13 @@ for (const name of WRITE_METHODS) {
  * by leaving it out — the trash list filters expired entries as it reads, which
  * is the real mechanism; the sweep only reclaims the rows. `markSynced` and
  * `setCursor` are sync's own bookkeeping, invisible to every screen.
+ *
+ * The rule this list has to satisfy is narrower than "a refresh writes
+ * nothing", which isn't true: hydrating the create menu seeds a plugin toggle
+ * through `setSetting` (`store/create-options-store.tsx`), and `setSetting` is
+ * announced. That is fine because the seed is idempotent and self-terminating —
+ * once the row exists it stops writing, so the tabs settle after a round or
+ * two. A refresh-reachable write that kept writing would not, and belongs here.
  */
 const HOUSEKEEPING_WRITES: readonly string[] = ['purgeExpiredTrash', 'markSynced', 'setCursor'];
 
@@ -2857,7 +2878,13 @@ const HOUSEKEEPING_WRITES: readonly string[] = ['purgeExpiredTrash', 'markSynced
  * Wrapped *after* the write chain above is installed, so a call that arrives
  * through the seam lands on the serialized method rather than around it. On
  * native this is the same object, untouched.
+ *
+ * `withPageSession` sits *outside* the seam, so the two methods that stamp a
+ * page session read it in the tab that called them rather than the tab that
+ * ends up running them.
  */
-export const db = shareDbAcrossTabs(localDb, {
-  invalidates: WRITE_METHODS.filter((name) => !HOUSEKEEPING_WRITES.includes(name)),
-});
+export const db = withPageSession(
+  shareDbAcrossTabs(localDb, {
+    invalidates: WRITE_METHODS.filter((name) => !HOUSEKEEPING_WRITES.includes(name)),
+  }),
+);

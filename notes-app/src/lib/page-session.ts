@@ -43,17 +43,24 @@ let holding: Promise<boolean> | null = null;
 function holdSessionLock(): Promise<boolean> {
   if (holding) return holding;
   holding = new Promise<boolean>((resolve) => {
-    if (typeof navigator === 'undefined' || !navigator.locks) {
+    if (typeof navigator === 'undefined' || typeof navigator.locks?.request !== 'function') {
       resolve(false);
       return;
     }
-    navigator.locks
-      .request(`${SESSION_LOCK_PREFIX}${id}`, async () => {
-        resolve(true);
-        // Held for the page's lifetime; the browser releases it when we go.
-        await new Promise<void>(() => {});
-      })
-      .catch(() => resolve(false));
+    try {
+      navigator.locks
+        .request(`${SESSION_LOCK_PREFIX}${id}`, async () => {
+          resolve(true);
+          // Held for the page's lifetime; the browser releases it when we go.
+          await new Promise<void>(() => {});
+        })
+        .catch(() => resolve(false));
+    } catch {
+      // `request` threw rather than rejecting. This is taken eagerly at module
+      // load now, so nothing is waiting on the result: an exception escaping
+      // here would be an unhandled rejection with no one to answer it.
+      resolve(false);
+    }
   });
   return holding;
 }
@@ -61,6 +68,44 @@ function holdSessionLock(): Promise<boolean> {
 /** The session that owns local file paths written by this page. */
 export function pageSessionId(): string {
   return id;
+}
+
+/**
+ * Bind this page's session into the two database methods that stamp it.
+ *
+ * Both of them write `copa_items.file_session` alongside a `blob:` URL, and the
+ * pairing only means anything if the session named is the document that minted
+ * the URL. On web those methods run in whichever tab holds the database (see
+ * `db-tabs.ts`), so reading `pageSessionId()` inside the method body named the
+ * *serving* tab: a file dropped in a second tab was stamped with the first
+ * tab's session, and the next database open then cleared a live URL — losing an
+ * attachment whose bytes had not reached S3 yet — or kept a dead one forever.
+ *
+ * Binding it out here fixes that by construction: the value is read in the tab
+ * that made the call, before the arguments cross.
+ */
+type SessionStamped = {
+  // Method syntax on purpose: it makes these parameters bivariant, so a `db`
+  // whose `createCopa` takes a richer input than this still satisfies the shape.
+  createCopa(input: { fileSession?: string }): Promise<void>;
+  setCopaLocalFile(
+    id: string,
+    fileUri: string,
+    thumbUri: string | null,
+    fileSession?: string,
+  ): Promise<void>;
+};
+
+export function withPageSession<T extends SessionStamped>(api: T): T {
+  return {
+    ...api,
+    createCopa: (input: { fileSession?: string }) =>
+      api.createCopa({ ...input, fileSession: pageSessionId() }),
+    setCopaLocalFile: (id: string, fileUri: string, thumbUri: string | null) =>
+      api.setCopaLocalFile(id, fileUri, thumbUri, pageSessionId()),
+    // Cast because the wrappers accept the shape above while `T` may declare
+    // something narrower; every other member is passed through untouched.
+  } as T;
 }
 
 /**
@@ -94,3 +139,13 @@ export async function liveSessionIds(): Promise<Set<string> | null> {
   }
   return ids;
 }
+
+// Taken as soon as this module loads, in every tab.
+//
+// The lock used to be requested lazily, from `liveSessionIds` — which only
+// `clearEphemeralFilePaths` calls, and only from the database open, which only
+// the tab that owns the database performs. So every other tab held no lock and
+// could not appear in the live set: the tab that minted an attachment's URL
+// looked dead to the tab doing the clearing, and its file was nulled out from
+// under it. A page is alive from the moment it runs, so it says so from then.
+void holdSessionLock();
