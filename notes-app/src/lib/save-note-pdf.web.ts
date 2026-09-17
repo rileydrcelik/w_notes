@@ -44,6 +44,11 @@ export async function saveNotePdfToDevice(note: Note): Promise<void> {
       frame.remove();
       resolve();
     };
+    // Armed before the load is started rather than inside `onload`. A frame
+    // whose `load` never fires — a blocked srcdoc, a navigation mid-load —
+    // would otherwise leave this promise pending for the life of the page, with
+    // the iframe still in the DOM.
+    timer = setTimeout(cleanup, CLEANUP_TIMEOUT_MS);
 
     frame.onload = () => {
       const win = frame.contentWindow;
@@ -51,8 +56,13 @@ export async function saveNotePdfToDevice(note: Note): Promise<void> {
         cleanup();
         return;
       }
+      // A frame appended with no `src` also fires `load` for its initial
+      // about:blank document. Printing *that* is precisely the blank page this
+      // file is trying to avoid, so wait for the document carrying the note
+      // rather than settling on the empty one that preceded it.
+      if (!win.document?.body?.childElementCount) return;
+
       win.addEventListener('afterprint', cleanup);
-      timer = setTimeout(cleanup, CLEANUP_TIMEOUT_MS);
       try {
         win.focus();
         win.print();

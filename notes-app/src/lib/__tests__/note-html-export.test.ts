@@ -66,6 +66,35 @@ describe('sanitizeNoteHtml', () => {
     expect(out).toBe('<ul data-type="checkbox"><li checked>done</li><li>todo</li></ul>');
   });
 
+  it('neutralizes a tag carrying an unbalanced quote', () => {
+    // The gap a review caught: with a stray quote the tag matched *nothing*, so
+    // the allowlist never judged it and it reached the document verbatim —
+    // event handlers included, in a page rendered in the app's own origin.
+    expect(sanitizeNoteHtml('<img src=x onerror=alert(1) ">')).toBe('<img>');
+    expect(sanitizeNoteHtml('<div onmouseover="alert(1)>hover me')).toBe('hover me');
+    expect(sanitizeNoteHtml("<p onclick='alert(1)>x</p>")).toBe('<p>x</p>');
+  });
+
+  it('still keeps a > that lives inside a quoted attribute value', () => {
+    // The guard against over-correcting the case above: a quoted value is tried
+    // first, so a legitimate `>` inside one is part of the value, not the tag.
+    expect(sanitizeNoteHtml('<a href="https://e.com/?a=>b">x</a>')).toBe(
+      '<a href="https://e.com/?a=&gt;b">x</a>',
+    );
+  });
+
+  it('drops an unclosed script rather than spilling its source as text', () => {
+    // No closing tag means the paired rule never fires; removing just the tag
+    // would leave `alert(1)` sitting in the document as visible prose.
+    expect(sanitizeNoteHtml('<p>a</p><script>alert(1)')).toBe('<p>a</p>');
+  });
+
+  it('drops an unterminated comment rather than losing the rest of the note', () => {
+    // Left in, a browser reads everything after `<!--` as comment, so the
+    // export would silently end there.
+    expect(sanitizeNoteHtml('<p>before</p><!-- <p>after</p>')).toBe('<p>before</p>');
+  });
+
   it('is unbothered by an empty or missing body', () => {
     expect(sanitizeNoteHtml('')).toBe('');
   });
@@ -116,6 +145,15 @@ describe('noteHasExportableContent', () => {
   it('is true when there is a title or a body', () => {
     expect(noteHasExportableContent(note('T'))).toBe(true);
     expect(noteHasExportableContent(note('', '<p>Body</p>'))).toBe(true);
+  });
+
+  it('counts a body that is only an image, a rule or a list — as the store does', () => {
+    // `htmlToPlainText` drops all three, but `rich-html.web.ts` saves a body
+    // carrying one as real content. Refusing to export a note the app itself
+    // stored and renders would be the wrong half of that disagreement.
+    expect(noteHasExportableContent(note('', '<img src="https://e.com/a.png">'))).toBe(true);
+    expect(noteHasExportableContent(note('', '<hr>'))).toBe(true);
+    expect(noteHasExportableContent(note('', '<ul><li>a</li></ul>'))).toBe(true);
   });
 
   it('is false for a note that would export a blank page', () => {

@@ -65,8 +65,19 @@ const SAFE_HREF = /^(?:https?:|mailto:|#)/i;
  */
 const SAFE_SRC = /^(?:https:|data:image\/)/i;
 
-/** `<tag attrs>` where quoted attribute values may legally contain `>`. */
-const TAG = /<(\/?)([a-zA-Z][\w-]*)((?:"[^"]*"|'[^']*'|[^>"'])*)>/g;
+/**
+ * `<tag attrs>` where quoted attribute values may legally contain `>`.
+ *
+ * The final alternative is `[^>]`, **not** `[^>"']`. With the stricter class a
+ * quote could only be consumed as half of a balanced pair, so a tag carrying a
+ * stray quote — `<img src=x onerror=alert(1) ">` — matched nothing at all and
+ * sailed through the sanitizer *verbatim*, handlers and all, into a document
+ * this app renders in its own origin. Trying the quoted alternatives first
+ * keeps well-formed markup byte-identical (a `>` inside `title="a>b"` is still
+ * part of the value); the looser fallback only decides how far an unbalanced
+ * tag reaches, and reaching the `>` is what lets the allowlist judge it.
+ */
+const TAG = /<(\/?)([a-zA-Z][\w-]*)((?:"[^"]*"|'[^']*'|[^>])*)>/g;
 const ATTR = /([a-zA-Z_:][-\w:.]*)(?:\s*=\s*("[^"]*"|'[^']*'|[^\s"'>]+))?/g;
 
 function escapeText(value: string): string {
@@ -108,6 +119,14 @@ export function sanitizeNoteHtml(html: string): string {
     // Remove these *with* their contents; unwrapping a <script> would spill its
     // source into the page as visible text.
     .replace(/<(script|style|iframe|object|embed)\b[^>]*>[\s\S]*?<\/\1>/gi, '')
+    // The unterminated forms have no closing tag to pair with, so the rule above
+    // never fires and dropping the tag alone would spill exactly what it set out
+    // to contain. A dangling `<!--` is the same shape of problem from the other
+    // side: a browser treats the rest of the document as comment, silently
+    // losing the remainder of the note. Both take everything after them.
+    .replace(/<(script|style|iframe|object|embed)\b[\s\S]*$/i, '')
+    .replace(/<!--[\s\S]*$/, '')
+    // Whatever is left is a stray closing tag.
     .replace(/<\/?(script|style|iframe|object|embed)\b[^>]*>/gi, '')
     .replace(TAG, (_match, slash: string, rawName: string, rawAttrs: string) => {
       const name = rawName.toLowerCase();
@@ -166,7 +185,14 @@ blockquote, pre, li { break-inside: avoid; page-break-inside: avoid; }
  * one-page PDF containing nothing.
  */
 export function noteHasExportableContent(note: Note): boolean {
-  return note.title.trim().length > 0 || htmlToPlainText(note.body ?? '').length > 0;
+  if (note.title.trim().length > 0) return true;
+  const body = note.body ?? '';
+  // Mirror the store's own definition of a non-empty body (`rich-html.web.ts`):
+  // a note can be all image, or a horizontal rule, and still be real content.
+  // `htmlToPlainText` drops both on the floor, so asking it alone would refuse
+  // to export a note the app itself saved and renders.
+  if (/<(ul|ol|img|hr)\b/i.test(body)) return true;
+  return htmlToPlainText(body).length > 0;
 }
 
 /**
