@@ -1,6 +1,7 @@
+import { useState } from 'react';
 import { Pressable, StyleSheet, View } from 'react-native';
 
-import { Spacing } from '@/constants/theme';
+import { hexToRgba, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import { useDbUnreachable } from '@/lib/db-tabs';
 import { requestDbTakeover } from '@/lib/web-db-lock';
@@ -26,11 +27,28 @@ import { ThemedText } from '@/components/themed-text';
 export function DbTabGuard() {
   const unreachable = useDbUnreachable();
   const colors = useTheme();
+  // A takeover asks the other tab to let go, which a *frozen* tab can only do
+  // once the browser runs it again — so the button can look like it did
+  // nothing. Say what that means rather than leaving the user pressing it.
+  const [asked, setAsked] = useState(false);
+
+  // Forget that between episodes: the next time the notes go out of reach it is
+  // a fresh question, not one this tab has already asked. Adjusted during
+  // render rather than in an effect, which is React's own answer for state
+  // derived from a change — an effect here would render the stale line once and
+  // then immediately render again to correct it.
+  const [guarding, setGuarding] = useState(unreachable);
+  if (guarding !== unreachable) {
+    setGuarding(unreachable);
+    setAsked(false);
+  }
 
   if (!unreachable) return null;
 
   return (
-    <View style={[styles.overlay, { backgroundColor: colors.background }]}>
+    // Translucent, like every other overlay here: the screen underneath is
+    // paused, not gone, and painting over it flat says the opposite.
+    <View style={[styles.overlay, { backgroundColor: hexToRgba(colors.background, 0.72) }]}>
       <GlassSurface intensity={75} tintOpacity={0.9} style={styles.card}>
         <ThemedText style={styles.title}>Can&apos;t reach your notes</ThemedText>
         <ThemedText type="small" themeColor="textSecondary" style={styles.body}>
@@ -38,16 +56,25 @@ export function DbTabGuard() {
           may have paused it. Take over here to carry on.
         </ThemedText>
         <Pressable
-          onPress={requestDbTakeover}
+          onPress={() => {
+            setAsked(true);
+            requestDbTakeover();
+          }}
           accessibilityRole="button"
-          accessibilityLabel="Take over in this tab"
+          accessibilityLabel="Take over"
           style={({ pressed }) => [
             styles.button,
             { backgroundColor: colors.backgroundSelected },
             pressed && styles.pressed,
           ]}>
-          <ThemedText style={[styles.buttonText, { color: colors.text }]}>Use here</ThemedText>
+          <ThemedText style={[styles.buttonText, { color: colors.text }]}>Take over</ThemedText>
         </Pressable>
+        {asked ? (
+          <ThemedText type="small" themeColor="textSecondary" style={styles.body}>
+            Asked. If this stays put, the other tab is fully asleep — switch to
+            it once, or close it, and this tab will pick your notes up.
+          </ThemedText>
+        ) : null}
       </GlassSurface>
     </View>
   );
