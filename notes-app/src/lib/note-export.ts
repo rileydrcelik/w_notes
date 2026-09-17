@@ -13,8 +13,15 @@ export function noteFileTitle(note: Note): string {
   return note.title.trim() || 'Untitled note';
 }
 
-/** A filesystem-safe `.txt` filename derived from the note's title. */
-export function noteFileName(note: Note): string {
+/** The formats a note can be exported as; each is one menu row in the navbar. */
+export type NoteExportExtension = 'txt' | 'html' | 'pdf';
+
+/**
+ * A filesystem-safe filename for one export format. The stem is shared by all
+ * three on purpose — the same note downloaded twice should differ only in its
+ * extension, so the files sort together.
+ */
+export function noteExportName(note: Note, ext: NoteExportExtension): string {
   const base =
     noteFileTitle(note)
       // Drop characters that are illegal in file names across platforms.
@@ -22,7 +29,12 @@ export function noteFileName(note: Note): string {
       .replace(/\s+/g, ' ')
       .trim()
       .slice(0, 80) || 'note';
-  return `${base}.txt`;
+  return `${base}.${ext}`;
+}
+
+/** A filesystem-safe `.txt` filename derived from the note's title. */
+export function noteFileName(note: Note): string {
+  return noteExportName(note, 'txt');
 }
 
 /**

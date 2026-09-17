@@ -7,7 +7,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { Note } from '@/data/notes';
-import { buildNoteText, noteFileName, noteFileTitle } from '@/lib/note-export';
+import { buildNoteText, noteExportName, noteFileName, noteFileTitle } from '@/lib/note-export';
 
 /** A note with only the fields these functions read. */
 const note = (title: string, body = ''): Note => ({ title, body }) as Note;
@@ -51,6 +51,21 @@ describe('noteFileName', () => {
 
   it('falls back for an untitled note', () => {
     expect(noteFileName(note(''))).toBe('Untitled note.txt');
+  });
+});
+
+describe('noteExportName', () => {
+  it('gives the three formats one stem and three extensions', () => {
+    // Downloading the same note twice should produce files that sort together.
+    expect(noteExportName(note('Recipes'), 'txt')).toBe('Recipes.txt');
+    expect(noteExportName(note('Recipes'), 'html')).toBe('Recipes.html');
+    expect(noteExportName(note('Recipes'), 'pdf')).toBe('Recipes.pdf');
+  });
+
+  it('applies the same filename safety to every format', () => {
+    expect(noteExportName(note('a/b:c'), 'pdf')).toBe('abc.pdf');
+    expect(noteExportName(note('///'), 'html')).toBe('note.html');
+    expect(noteExportName(note('x'.repeat(200)), 'pdf')).toBe(`${'x'.repeat(80)}.pdf`);
   });
 });
 

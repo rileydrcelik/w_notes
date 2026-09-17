@@ -1,0 +1,125 @@
+/**
+ * The document a note exports as when the format has to keep its formatting.
+ *
+ * Two sharp edges here. The first is the allowlist: it is the only thing
+ * standing between a stored body and a document rendered inside the app's own
+ * origin, so "unknown tag survives" and "handler attribute survives" are the
+ * cases that matter. The second is the wrapper — bodies are stored as bare
+ * `<html>…</html>` markup, and nesting that inside a real document's body is
+ * malformed HTML, which is one of the documented ways iOS's printer returns a
+ * blank page.
+ */
+import { describe, expect, it } from 'vitest';
+
+import type { Note } from '@/data/notes';
+import {
+  buildNoteDocument,
+  noteHasExportableContent,
+  sanitizeNoteHtml,
+} from '@/lib/note-html-export';
+
+/** A note with only the fields these functions read. */
+const note = (title: string, body = ''): Note => ({ title, body }) as Note;
+
+describe('sanitizeNoteHtml', () => {
+  it('keeps the formatting the editors can produce', () => {
+    const body =
+      '<h2>Heading</h2><p><b>bold</b> and <i>italic</i></p><ul><li>one</li></ul><blockquote>q</blockquote>';
+    expect(sanitizeNoteHtml(body)).toBe(body);
+  });
+
+  it('strips the canonical <html> wrapper the editors write', () => {
+    // Left in, it would nest a second <html> inside the document's <body>.
+    expect(sanitizeNoteHtml('<html><p>Body</p></html>')).toBe('<p>Body</p>');
+  });
+
+  it('unwraps an unknown tag but keeps its text', () => {
+    expect(sanitizeNoteHtml('<p>a <span class="x">b</span> c</p>')).toBe('<p>a b c</p>');
+  });
+
+  it('removes a script element along with its contents', () => {
+    // Unwrapping rather than removing would spill the source in as visible text.
+    expect(sanitizeNoteHtml('<p>a</p><script>alert(1)</script>')).toBe('<p>a</p>');
+    expect(sanitizeNoteHtml('<p>a</p><script>alert(1)</script>')).not.toContain('alert');
+  });
+
+  it('drops event handlers and styling from a tag it keeps', () => {
+    const out = sanitizeNoteHtml('<p onclick="steal()" style="color:red" class="x">hi</p>');
+    expect(out).toBe('<p>hi</p>');
+  });
+
+  it('keeps a safe link but drops a javascript: one', () => {
+    expect(sanitizeNoteHtml('<a href="https://example.com">x</a>')).toBe(
+      '<a href="https://example.com">x</a>',
+    );
+    expect(sanitizeNoteHtml('<a href="javascript:steal()">x</a>')).toBe('<a>x</a>');
+  });
+
+  it('keeps an https image but drops a file:// one', () => {
+    // A file:// source renders as a blank box on iOS rather than failing loudly.
+    expect(sanitizeNoteHtml('<img src="https://e.com/a.png">')).toContain('src="https://e.com/a.png"');
+    expect(sanitizeNoteHtml('<img src="file:///tmp/a.png">')).toBe('<img>');
+  });
+
+  it('preserves the checkbox list markers the stylesheet keys off', () => {
+    const out = sanitizeNoteHtml('<ul data-type="checkbox"><li checked>done</li><li>todo</li></ul>');
+    expect(out).toBe('<ul data-type="checkbox"><li checked>done</li><li>todo</li></ul>');
+  });
+
+  it('is unbothered by an empty or missing body', () => {
+    expect(sanitizeNoteHtml('')).toBe('');
+  });
+});
+
+describe('buildNoteDocument', () => {
+  it('produces a complete document, not a fragment', () => {
+    const out = buildNoteDocument(note('Title', '<p>Body</p>'));
+    expect(out.startsWith('<!doctype html>')).toBe(true);
+    expect(out).toContain('<meta charset="utf-8">');
+    expect(out).toContain('</html>');
+  });
+
+  it('puts the title first, as a heading, then the formatted body', () => {
+    const out = buildNoteDocument(note('Shopping', '<p><b>eggs</b></p>'));
+    expect(out).toContain('<h1 class="note-title">Shopping</h1>');
+    expect(out).toContain('<p><b>eggs</b></p>');
+    expect(out.indexOf('note-title')).toBeLessThan(out.indexOf('<b>eggs</b>'));
+  });
+
+  it('omits the heading for an untitled note', () => {
+    // A visible "Untitled note" heading would be worse than no heading.
+    const out = buildNoteDocument(note('', '<p>Body</p>'));
+    // The element, not the string: the stylesheet always carries a
+    // `.note-title` rule, so a bare substring check could never fail.
+    expect(out).not.toContain('<h1 class="note-title">');
+    expect(out).toContain('<title>Untitled note</title>');
+  });
+
+  it('escapes a title containing markup', () => {
+    const out = buildNoteDocument(note('a <b>c', '<p>x</p>'));
+    expect(out).toContain('<h1 class="note-title">a &lt;b&gt;c</h1>');
+  });
+
+  it('keeps exactly one <html> element even though bodies carry their own', () => {
+    const out = buildNoteDocument(note('T', '<html><p>Body</p></html>'));
+    expect(out.match(/<html/g)).toHaveLength(1);
+  });
+
+  it('tolerates a null body', () => {
+    // Rows synced from older clients can carry a null body.
+    const out = buildNoteDocument({ title: 'T', body: null } as unknown as Note);
+    expect(out).toContain('<h1 class="note-title">T</h1>');
+  });
+});
+
+describe('noteHasExportableContent', () => {
+  it('is true when there is a title or a body', () => {
+    expect(noteHasExportableContent(note('T'))).toBe(true);
+    expect(noteHasExportableContent(note('', '<p>Body</p>'))).toBe(true);
+  });
+
+  it('is false for a note that would export a blank page', () => {
+    expect(noteHasExportableContent(note('', ''))).toBe(false);
+    expect(noteHasExportableContent(note('   ', '<p></p>'))).toBe(false);
+  });
+});

@@ -51,6 +51,8 @@ import { useContextMenu } from '@/hooks/use-context-menu';
 import { useTabBarBottom } from '@/hooks/use-tab-bar-inset';
 import { useTheme } from '@/hooks/use-theme';
 import { saveNoteToDevice } from '@/lib/save-note';
+import { saveNoteHtmlToDevice } from '@/lib/save-note-html';
+import { saveNotePdfToDevice } from '@/lib/save-note-pdf';
 import { saveSheetToDevice } from '@/lib/save-sheet';
 import { useCopa } from '@/store/copa-store';
 import { useCreateOptions } from '@/store/create-options-store';
@@ -170,6 +172,10 @@ export function FloatingTabBar({ blurTarget }: FloatingTabBarProps) {
   // above the + button (copa tab), while `null` anchor falls back to the bottom
   // sheet (note/folder picker from a long-press elsewhere).
   const [createMenu, setCreateMenu] = useState<{ anchor: Anchor | null } | null>(null);
+  // The export-format menu, opened by a long-press (or right-click) on the
+  // download button. It holds the note captured when the gesture happened, so a
+  // navigation mid-menu can't redirect the export at the note that replaced it.
+  const [exportMenu, setExportMenu] = useState<{ note: Note } | null>(null);
   // The menu tab opens a side drawer instead of navigating to a screen. Its
   // open state is shared (via context) so the home screen's left-swipe can open
   // the same drawer.
@@ -422,24 +428,39 @@ export function FloatingTabBar({ blurTarget }: FloatingTabBarProps) {
                 if (tab.path) router.navigate(tab.path);
               };
 
+              // The download button carries a second gesture, so it needs a ref
+              // and hooks of its own — hence a component rather than a branch.
+              if (tab.key === 'save') {
+                return (
+                  <SaveButton
+                    key={tab.key}
+                    label={screenSave?.label ?? 'Save note to device'}
+                    onPress={onPress}
+                    // Only a plain note has more than one format to choose from:
+                    // a finance sheet exports CSV, and a resume's export is
+                    // already a PDF. Elsewhere the gesture opens nothing rather
+                    // than an empty sheet.
+                    onOpenMenu={
+                      savesNote && !screenSave && currentNote
+                        ? () => setExportMenu({ note: currentNote })
+                        : undefined
+                    }
+                  />
+                );
+              }
+
               return (
                 <Pressable
                   key={tab.key}
                   accessibilityRole="button"
-                  accessibilityLabel={
-                    tab.key === 'save'
-                      ? (screenSave?.label ?? 'Save note to device')
-                      : undefined
-                  }
                   accessibilityState={focused ? { selected: true } : {}}
                   onPress={onPress}
                   style={styles.item}>
-                  <Animated.View
-                    entering={tab.key === 'save' ? FadeIn.duration(200) : undefined}>
+                  <Animated.View>
                     <Feather
                       name={tab.icon}
                       color={focused ? Accent : colors.textSecondary}
-                      size={tab.key === 'save' ? 24 : 28}
+                      size={28}
                     />
                   </Animated.View>
                 </Pressable>
@@ -569,6 +590,13 @@ export function FloatingTabBar({ blurTarget }: FloatingTabBarProps) {
         open={createMenu !== null}
         anchor={createMenu?.anchor ?? null}
         onClose={() => setCreateMenu(null)}
+      />
+      {/* Export formats for the note being read, opened by a long-press or
+          right-click on the download button. A plain tap stays plain text. */}
+      <ExportMenu
+        open={exportMenu !== null}
+        note={exportMenu?.note ?? null}
+        onClose={() => setExportMenu(null)}
       />
       {/* Actions for the selected Sentry issues, opened by the "⋯" button. */}
       <SelectionMenu
@@ -842,6 +870,146 @@ function CreateMenu({
               {card}
             </Animated.View>
           )}
+        </>
+      )}
+    </View>
+  );
+}
+
+/**
+ * The pill's download button. A tap exports the obvious thing — whatever the
+ * screen registered, a sheet's CSV, a note's `.txt` — exactly as it always did.
+ * A long-press, or a right-click on web, opens the format menu instead, which
+ * is where the formats that keep the note's *formatting* live; `.txt` throws all
+ * of it away.
+ *
+ * Its own component because the second gesture needs a ref and a hook, and hooks
+ * can't be called from inside the `items.map` branch this replaces.
+ */
+function SaveButton({
+  label,
+  onPress,
+  onOpenMenu,
+}: {
+  label: string;
+  onPress: () => void;
+  /** Long-press/right-click opens the export menu; absent where there's one format. */
+  onOpenMenu?: () => void;
+}) {
+  const colors = useTheme();
+
+  const openMenu = () => {
+    if (!onOpenMenu) return;
+    Keyboard.dismiss();
+    onOpenMenu();
+  };
+  // Right-click parity on web; a no-op ref on native, where long-press is the
+  // app-wide affordance already. Registered unconditionally (hooks rule) —
+  // `openMenu` self-guards when there's no menu to open.
+  const contextMenuRef = useContextMenu(openMenu);
+  const setButtonRef = useCallback(
+    (node: View | null) => {
+      contextMenuRef?.(node);
+    },
+    [contextMenuRef],
+  );
+
+  return (
+    <Pressable
+      // Only wire the ref when there's a menu, so the plain-tap screens keep
+      // their behaviour untouched.
+      ref={onOpenMenu ? setButtonRef : undefined}
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      onPress={onPress}
+      onLongPress={onOpenMenu ? openMenu : undefined}
+      style={styles.item}>
+      <Animated.View entering={FadeIn.duration(200)}>
+        <Feather name="download" color={colors.textSecondary} size={24} />
+      </Animated.View>
+    </Pressable>
+  );
+}
+
+/**
+ * Export formats for the note being read. PDF and the web page both render the
+ * note's rich text as written; plain text is here too so the menu describes what
+ * the tap already does rather than hiding it.
+ *
+ * A bottom sheet rather than a popover, unlike the create menu: the download
+ * icon sits *inside* the pill rather than at its end, so a popover anchored to
+ * it would float over the middle of the bar.
+ */
+function ExportMenu({
+  open,
+  note,
+  onClose,
+}: {
+  open: boolean;
+  note: Note | null;
+  onClose: () => void;
+}) {
+  const colors = useTheme();
+  const insets = useSafeAreaInsets();
+
+  const options: { key: string; label: string; icon: FeatherName; onPress: () => void }[] = note
+    ? [
+        {
+          key: 'pdf',
+          label: 'Download as PDF',
+          icon: 'file-text',
+          onPress: () => void saveNotePdfToDevice(note),
+        },
+        {
+          key: 'html',
+          label: 'Download as web page',
+          icon: 'globe',
+          onPress: () => void saveNoteHtmlToDevice(note),
+        },
+        {
+          key: 'txt',
+          label: 'Download as plain text',
+          icon: 'file',
+          onPress: () => void saveNoteToDevice(note),
+        },
+      ]
+    : [];
+
+  return (
+    <View style={styles.menuOverlay} pointerEvents={open ? 'box-none' : 'none'}>
+      {open && (
+        <>
+          <AnimatedPressable
+            entering={FadeIn.duration(180)}
+            exiting={FadeOut.duration(180)}
+            style={styles.menuBackdrop}
+            onPress={onClose}
+            accessibilityRole="button"
+            accessibilityLabel="Dismiss"
+          />
+          <Animated.View
+            entering={SlideInDown.duration(260)}
+            exiting={SlideOutDown.duration(220)}
+            style={[styles.menuHost, { paddingBottom: insets.bottom + Spacing.three }]}>
+            <GlassSurface intensity={75} tintOpacity={0.85} style={styles.menuSheet}>
+              {options.map((option) => (
+                <Pressable
+                  key={option.key}
+                  onPress={() => {
+                    option.onPress();
+                    onClose();
+                  }}
+                  accessibilityRole="button"
+                  accessibilityLabel={option.label}
+                  style={({ pressed }) => [styles.menuRow, pressed && styles.menuRowPressed]}>
+                  <Feather name={option.icon} size={20} color={colors.text} style={styles.menuIcon} />
+                  <ThemedText style={[styles.menuLabel, { color: colors.text }]}>
+                    {option.label}
+                  </ThemedText>
+                </Pressable>
+              ))}
+            </GlassSurface>
+          </Animated.View>
         </>
       )}
     </View>
