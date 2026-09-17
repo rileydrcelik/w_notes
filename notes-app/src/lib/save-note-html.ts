@@ -4,8 +4,8 @@
  * — differing only in the bytes (a full HTML document rather than flattened
  * text) and the `text/html` type.
  *
- * This is the export that keeps the note's formatting on a platform that can't
- * yet make a PDF; see `save-note-pdf.ts`.
+ * The same formatting the PDF export keeps, in a file that stays editable and
+ * weighs nothing; see `save-note-pdf.ts` for the printed half.
  */
 import { Alert } from 'react-native';
 import * as Sharing from 'expo-sharing';
