@@ -18,7 +18,7 @@
  * `TrashEntry` import is type-only, so there is no import cycle at runtime.
  */
 import type { TrashEntry } from '@/lib/db';
-import { htmlToPlainText } from '@/lib/html-text';
+import { hasNonTextContent, htmlToPlainText } from '@/lib/html-text';
 
 /**
  * Whether a trashed entry is worth listing.
@@ -33,5 +33,9 @@ export function worthKeepingInTrash(entry: TrashEntry): boolean {
     return entry.folder.name.trim().length > 0;
   }
   const { title, body } = entry.note;
-  return title.trim().length > 0 || htmlToPlainText(body).trim().length > 0;
+  // An image or an empty code block flattens to no text but is still something
+  // someone put there — hidden from the trash, it could never be restored.
+  return (
+    title.trim().length > 0 || htmlToPlainText(body).trim().length > 0 || hasNonTextContent(body)
+  );
 }

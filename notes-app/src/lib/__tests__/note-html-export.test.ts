@@ -82,6 +82,9 @@ describe('sanitizeNoteHtml', () => {
     // alone the allowlist unwraps it and the code prints as ordinary prose.
     expect(sanitizeNoteHtml('<html><codeblock>const a = 1;</codeblock></html>'))
       .toBe('<pre>const a = 1;</pre>');
+    // The shape the app actually stores: one <p> per line, a blank line as <br>.
+    expect(sanitizeNoteHtml('<codeblock><p>a</p><br><p>b</p></codeblock>'))
+      .toBe('<pre><p>a</p><br><p>b</p></pre>');
   });
 
   it('preserves the checkbox list markers the stylesheet keys off', () => {
@@ -145,6 +148,11 @@ describe('buildNoteDocument', () => {
     // `.note-title` rule, so a bare substring check could never fail.
     expect(out).not.toContain('<h1 class="note-title">');
     expect(out).toContain('<title>Untitled note</title>');
+  });
+
+  it('sets a code block\'s lines flush rather than paragraph-spaced', () => {
+    const out = buildNoteDocument(note('T', '<codeblock><p>a</p><p>b</p></codeblock>'));
+    expect(out).toMatch(/pre p\s*\{\s*margin:\s*0;?\s*\}/);
   });
 
   it('escapes a title containing markup', () => {

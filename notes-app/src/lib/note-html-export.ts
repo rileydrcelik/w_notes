@@ -179,6 +179,8 @@ li { margin: 0 0 4px; }
 blockquote { margin: 0 0 12px; padding-left: 16px; border-left: 3px solid #ddd; color: #444; }
 code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.92em; background: #f3f3f3; padding: 1px 4px; border-radius: 4px; }
 pre { background: #f3f3f3; padding: 12px; border-radius: 8px; white-space: pre-wrap; overflow-wrap: anywhere; }
+/* A stored code block holds one <p> per line; a paragraph's gap would double-space the code. */
+pre p { margin: 0; }
 pre code { background: none; padding: 0; }
 a { color: #1a4fd8; }
 /* height:auto matters once an image carries width/height attributes: without it

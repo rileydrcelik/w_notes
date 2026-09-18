@@ -15,6 +15,7 @@ import Link from '@tiptap/extension-link';
 import Image from '@tiptap/extension-image';
 import { BulletList, OrderedList, ListItem, TaskList, TaskItem } from '@tiptap/extension-list';
 import { Placeholder, UndoRedo } from '@tiptap/extensions';
+import { Plugin, TextSelection, type Transaction } from '@tiptap/pm/state';
 import type { EnrichedTextInputInstance, OnChangeStateEvent } from 'react-native-enriched';
 
 import { Accent, hexToRgba, Spacing, type Palette } from '@/constants/theme';
@@ -24,6 +25,13 @@ import {
   setActiveEditorDismiss,
   setActiveEditorInsertImage,
 } from '@/lib/active-editor';
+import {
+  backspaceInCode,
+  enterInCode,
+  exitOffset,
+  typeInCode,
+  type CodeEdit,
+} from '@/lib/code-typing';
 import { db } from '@/lib/db';
 import { pickNoteImage } from '@/lib/note-image-files';
 import { insertNoteImage } from '@/lib/note-image-insert';
@@ -95,6 +103,22 @@ const NoteImage = Image.extend({
  *  written in, and narrow enough that a couple of levels still fit a phone. */
 const TAB_SIZE = 2;
 
+/** Apply a `lib/code-typing.ts` edit to the code block starting at `start`. */
+function codeEditTransaction(tr: Transaction, start: number, edit: CodeEdit): Transaction {
+  if (edit.insert) tr.insertText(edit.insert, start + edit.from, start + edit.to);
+  else if (edit.to > edit.from) tr.delete(start + edit.from, start + edit.to);
+  return tr.setSelection(
+    TextSelection.create(tr.doc, start + (edit.anchor ?? edit.caret), start + edit.caret),
+  );
+}
+
+function applyCodeEdit(editor: Editor, start: number, edit: CodeEdit): boolean {
+  return editor.commands.command(({ tr }) => {
+    codeEditTransaction(tr, start, edit);
+    return true;
+  });
+}
+
 // The canonical body's code block is `<codeblock>`, not `<pre><code>` — that is
 // the tag the native `react-native-enriched` editor reads and writes, and the
 // body is one shared format. Without this node TipTap's schema simply drops a
@@ -113,6 +137,77 @@ const NativeCodeBlock = CodeBlock.extend({
     return [
       ...(this.parent?.() ?? []),
       textblockTypeInputRule({ find: /^```$/, type: this.type }),
+    ];
+  },
+  // Brackets close themselves and Enter follows the code's indentation — the
+  // rules live in `lib/code-typing.ts`; this only maps a block's text offsets
+  // onto document positions and back. Each edit is one transaction, so one undo
+  // takes back a whole auto-closed pair or auto-indented line.
+  addKeyboardShortcuts() {
+    const parent = this.parent?.() ?? {};
+    const inBlock = () => {
+      const { $from, $to } = this.editor.state.selection;
+      if ($from.parent.type !== this.type || !$from.sameParent($to)) return null;
+      const start = $from.start();
+      return { text: $from.parent.textContent, from: $from.pos - start, to: $to.pos - start, start };
+    };
+    // A selection hands Tab / Shift+Tab to `TabIndent`, which indents from each
+    // line's start. The stock handlers here indent from wherever the selection
+    // begins, and one reaching past the block rewrites the text after it into
+    // the block.
+    const unlessSelecting = (key: 'Tab' | 'Shift-Tab') => (props: Parameters<NonNullable<typeof parent.Tab>>[0]) =>
+      this.editor.state.selection.empty ? (parent[key]?.(props) ?? false) : false;
+    return {
+      ...parent,
+      Tab: unlessSelecting('Tab'),
+      'Shift-Tab': unlessSelecting('Shift-Tab'),
+      Enter: (props) => {
+        const at = inBlock();
+        if (!at) return parent.Enter?.(props) ?? false;
+        const exit = at.from === at.to ? exitOffset(at.text, at.from) : null;
+        if (exit !== null) {
+          return this.editor
+            .chain()
+            .command(({ tr }) => {
+              tr.delete(at.start + exit, at.start + at.text.length);
+              return true;
+            })
+            .exitCode()
+            .run();
+        }
+        return applyCodeEdit(this.editor, at.start, enterInCode(at.text, at.from, at.to, TAB_SIZE));
+      },
+      Backspace: (props) => {
+        const at = inBlock();
+        const edit = at && at.from === at.to ? backspaceInCode(at.text, at.from, TAB_SIZE) : null;
+        if (at && edit) return applyCodeEdit(this.editor, at.start, edit);
+        return parent.Backspace?.(props) ?? false;
+      },
+    };
+  },
+  addProseMirrorPlugins() {
+    const type = this.type;
+    return [
+      ...(this.parent?.() ?? []),
+      new Plugin({
+        props: {
+          // Typed characters, not key bindings: `{` is a different key on every
+          // layout, and this is what the browser reports as text.
+          handleTextInput: (view, from, to, typed) => {
+            // Mid-composition the IME owns the text; replacing it under the IME
+            // duplicates or drops characters (TipTap's input rules skip it too).
+            if (view.composing || typed.length !== 1) return false;
+            const $from = view.state.doc.resolve(from);
+            const $to = view.state.doc.resolve(to);
+            if ($from.parent.type !== type || !$from.sameParent($to)) return false;
+            const start = $from.start();
+            const edit = typeInCode($from.parent.textContent, from - start, to - start, typed, TAB_SIZE);
+            if (!edit) return false;
+            view.dispatch(codeEditTransaction(view.state.tr, start, edit));
+            return true;
+          },
+        },
+      }),
     ];
   },
 }).configure({
@@ -138,8 +233,53 @@ const TabIndent = Extension.create({
   name: 'tabIndent',
   priority: 50,
   addKeyboardShortcuts() {
+    // With a selection, Tab indents every line it touches (and Shift+Tab lifts
+    // them) rather than typing over it — replacing three selected paragraphs, or
+    // a selected image, with two spaces is deletion, not indentation.
+    //
+    // A line is a textblock, or one line of a code block. `text` is the run of
+    // text the line starts with — up to the first inline node, so an image at
+    // the start of a caption isn't counted as part of its indentation and then
+    // deleted by position.
+    const eachLine = (change: (tr: Transaction, lineStart: number, text: string) => void) =>
+      this.editor.commands.command(({ tr, state }) => {
+        const { from, to } = state.selection;
+        const starts: { pos: number; text: string }[] = [];
+        state.doc.nodesBetween(from, to, (node, pos) => {
+          if (!node.isTextblock) return true;
+          const contentStart = pos + 1;
+          if (node.type.spec.code) {
+            let offset = 0;
+            for (const line of node.textContent.split('\n')) {
+              const lineStart = contentStart + offset;
+              const lineEnd = lineStart + line.length;
+              if (lineEnd >= from && lineStart <= to) starts.push({ pos: lineStart, text: line });
+              offset += line.length + 1;
+            }
+          } else {
+            const first = node.firstChild;
+            starts.push({ pos: contentStart, text: first?.isText ? (first.text ?? '') : '' });
+          }
+          return false;
+        });
+        // Last first, so an edit never shifts a position still to be used.
+        for (const line of starts.reverse()) change(tr, line.pos, line.text);
+        return true;
+      });
     return {
-      Tab: () => this.editor.commands.insertContent(' '.repeat(TAB_SIZE)),
+      Tab: () =>
+        this.editor.state.selection.empty
+          ? this.editor.commands.insertContent(' '.repeat(TAB_SIZE))
+          : eachLine((tr, at) => tr.insertText(' '.repeat(TAB_SIZE), at)),
+      // Bound even where there is nothing to lift: left to the browser, Shift+Tab
+      // moves focus out of the body and ends editing. Leading whitespace may be
+      // stored as non-breaking spaces (html-space.ts), so both count.
+      'Shift-Tab': () =>
+        eachLine((tr, at, text) => {
+          const lead = /^[  ]*/.exec(text)![0].length;
+          const cut = Math.min(TAB_SIZE, lead);
+          if (cut > 0) tr.delete(at, at + cut);
+        }),
       Escape: () => this.editor.commands.blur(),
     };
   },

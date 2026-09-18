@@ -369,15 +369,19 @@ test('three backticks make a code block that survives a reload', async ({ page }
   await expect(page.locator('.wn-rich .ProseMirror codeblock')).toBeVisible();
 
   // An empty block to put things into — the caret is already inside it.
+  // `(` and `{` close themselves, and Enter between `{}` puts the `}` on its
+  // own line with the caret indented a level inside.
   await page.keyboard.type('if (x) {');
   await page.keyboard.press('Enter');
   // Tab indents rather than moving focus out of the editor.
   await page.keyboard.press('Tab');
   await page.keyboard.type('run();');
 
+  // Exact text, not toContainText: that normalises whitespace, and the
+  // indentation is the thing under test.
   const block = page.locator('.wn-rich .ProseMirror codeblock');
-  await expect(block).toContainText('if (x) {');
-  await expect(block).toContainText('run();');
+  const expected = 'if (x) {\n    run();\n}';
+  await expect.poll(() => block.evaluate((el) => el.textContent)).toBe(expected);
 
   await page.getByLabel('Go back').click();
   await writesSettled(page);
@@ -388,6 +392,5 @@ test('three backticks make a code block that survives a reload', async ({ page }
   await expect(reloaded).toBeVisible();
   // Both lines, still one block, indentation intact — the round trip through
   // the stored `<p>`-per-line dialect and back.
-  await expect(reloaded).toContainText('if (x) {');
-  await expect(reloaded).toContainText('  run();');
+  await expect.poll(() => reloaded.evaluate((el) => el.textContent)).toBe(expected);
 });

@@ -60,6 +60,15 @@ describe('worthKeepingInTrash — note entries', () => {
     expect(worthKeepingInTrash(note({ body: '<p><br></p>' }) as unknown as TrashEntry)).toBe(false);
   });
 
+  it('keeps an untitled note holding only an image or an empty code block', () => {
+    expect(
+      worthKeepingInTrash(note({ body: '<html><p><img src="wn-img:a1"></p></html>' }) as unknown as TrashEntry),
+    ).toBe(true);
+    expect(
+      worthKeepingInTrash(note({ body: '<html><codeblock><br></codeblock></html>' }) as unknown as TrashEntry),
+    ).toBe(true);
+  });
+
   it('treats whitespace-only title or body as blank', () => {
     expect(worthKeepingInTrash(note({ title: '   ', body: '\n\t ' }) as unknown as TrashEntry)).toBe(false);
     expect(worthKeepingInTrash(note({ title: '  Real  ' }) as unknown as TrashEntry)).toBe(true);

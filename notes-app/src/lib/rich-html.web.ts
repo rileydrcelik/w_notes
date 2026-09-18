@@ -97,9 +97,11 @@ export function tiptapHtmlToStored(html: string): string {
   // same rule as every other line — which is exactly how native stores it, and
   // what stops the indentation being eaten on the next parse.
   doc.querySelectorAll('codeblock').forEach((block) => {
+    // Every line is kept, a trailing empty one included: ProseMirror's own
+    // trailing-break placeholder lives only in the view and never reaches
+    // `getHTML()`, so a block ending in a newline ends in a line someone typed,
+    // and `<p>foo</p><br>` is exactly how native stores one.
     const lines = (block.textContent ?? '').split('\n');
-    // A trailing newline is the editor's own line-break placeholder, not a line.
-    if (lines.length > 1 && lines[lines.length - 1] === '') lines.pop();
     block.textContent = '';
     for (const line of lines) {
       const paragraph = doc.createElement('p');
