@@ -341,6 +341,11 @@ function CreateOptionsSection() {
     { key: 'taskManagerEnabled', label: 'Task managers', description: 'Show “New task manager” in the create menu' },
     { key: 'financeEnabled', label: 'Sheets', description: 'Show “New sheet” in the create menu' },
     { key: 'resumeEnabled', label: 'Resumes', description: 'Show “New resume” in the create menu' },
+    {
+      key: 'internshipEnabled',
+      label: 'Internship trackers',
+      description: 'Show “New internship tracker” in the create menu, and “Convert to internship tracker” on notes',
+    },
   ];
 
   return (

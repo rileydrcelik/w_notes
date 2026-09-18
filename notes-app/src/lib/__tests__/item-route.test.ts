@@ -37,6 +37,13 @@ describe('noteHref', () => {
     });
   });
 
+  it('routes an internship tracker to /internship/[id], not the text editor', () => {
+    expect(noteHref({ id: 'n9', pluginType: 'internship' })).toEqual({
+      pathname: '/internship/[id]',
+      params: { id: 'n9' },
+    });
+  });
+
   it('routes a resume note to /resume/[id]', () => {
     expect(noteHref({ id: 'n2', pluginType: 'resume' })).toEqual({
       pathname: '/resume/[id]',
@@ -109,6 +116,10 @@ describe('noteIcon', () => {
 
   it('uses github for github', () => {
     expect(noteIcon({ pluginType: 'github' })).toBe('github');
+  });
+
+  it('uses briefcase for an internship tracker', () => {
+    expect(noteIcon({ pluginType: 'internship' })).toBe('briefcase');
   });
 
   it('uses file-text for a plain note', () => {

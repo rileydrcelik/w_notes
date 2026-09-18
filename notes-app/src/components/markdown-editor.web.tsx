@@ -454,6 +454,9 @@ type Props = {
    * contenteditable by itself, and there is no keyboard covering the page.
    */
   onSelectionChange?: (selection: { start: number; end: number; atEnd: boolean }) => void;
+  /** Fires once the editor exists and holds its seed — see native. Here the
+   *  seed is the editor's initial content, so this is when it is built. */
+  onSeeded?: () => void;
 };
 
 /**
@@ -477,14 +480,15 @@ export function MarkdownEditor({
   editorRef,
   onFocusChange,
   onStateChange,
+  onSeeded,
 }: Props) {
   const theme = useTheme();
   const mountRef = useRef<HTMLDivElement | null>(null);
 
   // Latest callbacks without reinitializing the editor (which would drop caret
   // and undo history). Seed content is frozen for the life of the mount.
-  const cbRef = useRef({ onChangeText, onFocusChange, onStateChange });
-  cbRef.current = { onChangeText, onFocusChange, onStateChange };
+  const cbRef = useRef({ onChangeText, onFocusChange, onStateChange, onSeeded });
+  cbRef.current = { onChangeText, onFocusChange, onStateChange, onSeeded };
   const [storedSeed] = useState(value);
   const [placeholderText] = useState(placeholder ?? '');
   // What this device knows about the images the body references. Held in a ref
@@ -627,6 +631,7 @@ export function MarkdownEditor({
           toggleCheckboxList: () => instance.chain().focus().toggleTaskList().run(),
         } as unknown as EnrichedTextInputInstance;
       }
+      cbRef.current.onSeeded?.();
       if (focusWhenReady) instance.commands.focus();
     };
 

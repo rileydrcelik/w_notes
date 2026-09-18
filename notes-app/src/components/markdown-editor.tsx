@@ -76,6 +76,13 @@ type Props = {
    * one position that can be turned into a scroll target without guessing.
    */
   onSelectionChange?: (selection: { start: number; end: number; atEnd: boolean }) => void;
+  /**
+   * Fires once the field holds its seed, so a screen that focuses it in code —
+   * rather than on a tap, long after mount — can wait for it. A focus that lands
+   * first makes the seed stand down (see `touched`), leaving an empty field whose
+   * first keystroke would replace the whole body.
+   */
+  onSeeded?: () => void;
 };
 
 /**
@@ -94,6 +101,7 @@ export function MarkdownEditor({
   onFocusChange,
   onStateChange,
   onSelectionChange,
+  onSeeded,
 }: Props) {
   const theme = useTheme();
   // Stable across keystrokes — onChangeHtml re-renders this on every change, and
@@ -172,8 +180,15 @@ export function MarkdownEditor({
   // cannot be the user, and one arriving after can be treated as though it is.
   // That needs no timer and can never swallow a real keystroke.
   const touched = useRef(false);
+  const seededCb = useRef(onSeeded);
   useEffect(() => {
-    if (!initialValue) return;
+    seededCb.current = onSeeded;
+  });
+  useEffect(() => {
+    if (!initialValue) {
+      seededCb.current?.();
+      return;
+    }
     let cancelled = false;
     void (async () => {
       try {
@@ -194,12 +209,16 @@ export function MarkdownEditor({
       // The field is live while this is in flight, so the user may already have
       // typed or pasted. Seeding now would replace what they wrote — and report
       // it as their own edit, because `touched` is set.
-      if (touched.current) return;
+      if (touched.current) {
+        seededCb.current?.();
+        return;
+      }
       // References become this device's own paths on the way in, and are turned
       // back into references on the way out (`onChangeHtml` below). A body only
       // ever carries `wn-img:<id>`; a phone's file path would be meaningless on
       // every other device that syncs it.
       editor.current?.setValue(resolveNoteImages(initialValue, images.current, imageWidth));
+      seededCb.current?.();
     })();
     return () => {
       cancelled = true;

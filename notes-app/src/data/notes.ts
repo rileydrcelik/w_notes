@@ -45,8 +45,13 @@ export type Note = {
    * source rather than the app's canonical rich-text HTML, so anything that
    * parses a body as HTML must skip it (see `@/lib/resume-note`). Its version
    * history is a separate synced table, like the sheet above.
+   *
+   * `'internship'` also keeps its data in `body`, and there it's the ordinary
+   * rich-text HTML: an internship tracker is a list, one internship per line,
+   * with a status tag at the start of each (see `@/lib/internship`). A client
+   * that doesn't know the type opens it as the plain note it is.
    */
-  pluginType?: 'sentry' | 'github' | 'issuetype' | 'finance' | 'resume';
+  pluginType?: 'sentry' | 'github' | 'issuetype' | 'finance' | 'resume' | 'internship';
   /**
    * Opaque per-plugin JSON config. For Sentry: `{org, project, projectName?,
    * repo?}` (see `@/lib/sentry-note`). For GitHub: `{repo, repoName?}` (see

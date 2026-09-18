@@ -7,6 +7,8 @@ import { EnrichedText, type EnrichedTextHtmlStyle } from 'react-native-enriched'
 
 import { EmbeddedBadge } from '@/components/embedded-badge';
 import { FavoriteStar } from '@/components/favorite-star';
+import { INTERNSHIP_ACCENT } from '@/components/internship/status-style';
+import { TrackerSummary } from '@/components/internship/tracker-summary';
 import { FolderShape } from '@/components/notes/folder-shape';
 import { MatchSnippet } from '@/components/notes/match-snippet';
 import { SheetGlyph } from '@/components/notes/sheet-glyph';
@@ -173,6 +175,9 @@ export function NoteCard({ note, query }: { note: Note; query?: string }) {
   if (note.pluginType === 'sentry') return <SentryNoteCard note={note} />;
   if (note.pluginType === 'github') return <GithubNoteCard note={note} />;
   if (note.pluginType === 'finance') return <FinanceNoteCard note={note} />;
+  // Before the text card: its body is an ordinary list, so TextNoteCard would
+  // render it happily — and open it in the plain editor.
+  if (note.pluginType === 'internship') return <InternshipNoteCard note={note} />;
   // A resume's body is LaTeX source, so it must never reach TextNoteCard — that
   // would hand raw LaTeX to the rich-text renderer.
   if (isResumeNote(note)) return <ResumeNoteCard note={note} />;
@@ -212,6 +217,40 @@ function FinanceNoteCard({ note }: { note: Note }) {
           {note.favorite && <FavoriteStar size={13} />}
         </View>
         <SheetGlyph />
+      </Animated.View>
+    </Pressable>
+  );
+}
+
+/** An internship tracker: opens the tracker, and previews its counts. */
+function InternshipNoteCard({ note }: { note: Note }) {
+  const router = useRouter();
+  const { toggleNoteFavorite } = useNotes();
+  const { active, isSelected, toggle } = useItemSelection();
+  const selected = isSelected('note', note.id);
+  const surface = useSelectionSurface(selected, 'backgroundElementAlt');
+  const tileHeight = useTileHeight();
+
+  const openOrFavorite = useDoubleTap(
+    () => router.push({ pathname: '/internship/[id]', params: { id: note.id } }),
+    () => toggleNoteFavorite(note.id),
+  );
+  const onSelectToggle = () => toggle({ type: 'note', id: note.id });
+
+  return (
+    <Pressable
+      style={({ pressed }) => [styles.cardWrapper, { height: tileHeight }, pressed && styles.pressed]}
+      onPress={active ? onSelectToggle : openOrFavorite}
+      onLongPress={onSelectToggle}>
+      <Animated.View style={[styles.card, surface]}>
+        <View style={styles.titleRow}>
+          <Feather name="briefcase" size={15} color={INTERNSHIP_ACCENT} />
+          <ThemedText type="smallBold" numberOfLines={1} style={styles.titleText}>
+            {note.title.trim() || 'Internships'}
+          </ThemedText>
+          {note.favorite && <FavoriteStar size={13} />}
+        </View>
+        <TrackerSummary body={note.body} />
       </Animated.View>
     </Pressable>
   );

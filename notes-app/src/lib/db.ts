@@ -1323,6 +1323,30 @@ const localDb = {
     await database.runAsync(`UPDATE notes SET ${sets.join(', ')} WHERE id = ?`, args);
   },
 
+  /**
+   * Turn a plain note into a plugin note that reads its existing body — an
+   * internship tracker, today. Only a plain, live note converts; resolves
+   * whether it did.
+   *
+   * One way, on purpose. The server keeps a stored `plugin_type` whenever a push
+   * carries NULL (`_PRESERVE_IF_NULL` in sync.py), so a note set back to plain
+   * would stay converted on every other device — there is deliberately no
+   * method that writes NULL here. The `plugin_type IS NULL` guard is also what
+   * stops this ever re-typing a sheet or a resume, whose data isn't the body.
+   *
+   * One statement on the serialized chain, like `setIssueTitleIfStub`: a delete
+   * queued before it has committed by the time the WHERE clause runs.
+   */
+  async setNotePluginType(id: string, pluginType: NonNullable<Note['pluginType']>): Promise<boolean> {
+    dbCrumb('setNotePluginType', { id, pluginType });
+    const database = await getDb();
+    const result = await database.runAsync(
+      'UPDATE notes SET plugin_type = ?, updated_at = ?, dirty = 1 WHERE id = ? AND plugin_type IS NULL AND deleted_at IS NULL',
+      [pluginType, Date.now(), id],
+    );
+    return result.changes > 0;
+  },
+
   async deleteNote(id: string): Promise<void> {
     dbCrumb('deleteNote', { id });
     const database = await getDb();
@@ -3154,6 +3178,7 @@ function serializeWrite<A extends unknown[], R>(
 const WRITE_METHODS = [
   'createNote',
   'updateNote',
+  'setNotePluginType',
   'deleteNote',
   'createFolder',
   'updateFolder',

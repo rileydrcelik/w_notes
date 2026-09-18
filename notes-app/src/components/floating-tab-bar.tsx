@@ -689,13 +689,20 @@ function CreateMenu({
     createGithubNote,
     createFinanceNote,
     createResumeNote,
+    createInternshipNote,
     createProject,
     createFolder,
     getNote,
   } = useNotes();
   const { createFileCopa } = useCopa();
-  const { sentryEnabled, githubEnabled, taskManagerEnabled, financeEnabled, resumeEnabled } =
-    useCreateOptions();
+  const {
+    sentryEnabled,
+    githubEnabled,
+    taskManagerEnabled,
+    financeEnabled,
+    resumeEnabled,
+    internshipEnabled,
+  } = useCreateOptions();
   // Inside a task-manager project (its feed or a per-type screen), the menu leads
   // with "New issue" and everything else (note, Sentry/GitHub view…) is created
   // inside the project rather than at the root.
@@ -752,6 +759,14 @@ function CreateMenu({
     router.push({ pathname: '/resume/[id]', params: { id } });
   };
 
+  const onCreateInternship = () => {
+    onClose();
+    // Starts as an empty list — the tracker shows its empty state, and the
+    // pencil opens the list to type internships into.
+    const id = createInternshipNote(currentFolderId(pathname, getNote));
+    router.push({ pathname: '/internship/[id]', params: { id } });
+  };
+
   const onCreateProject = () => {
     onClose();
     // Create it unconfigured — the project screen collects name + repo and seeds
@@ -792,6 +807,7 @@ function CreateMenu({
     project: taskManagerEnabled,
     finance: financeEnabled,
     resume: resumeEnabled,
+    internship: internshipEnabled,
   };
   const allOptions: { key: string; label: string; icon: FeatherName; onPress: () => void }[] = onCopa
     ? [
@@ -810,6 +826,7 @@ function CreateMenu({
         { key: 'sentry', label: 'New Sentry view', icon: 'alert-triangle', onPress: onCreateSentry },
         { key: 'github', label: 'New GitHub view', icon: 'github', onPress: onCreateGithub },
         { key: 'resume', label: 'New resume', icon: 'file-text', onPress: onCreateResume },
+        { key: 'internship', label: 'New internship tracker', icon: 'briefcase', onPress: onCreateInternship },
         ...(inProject
           ? []
           : [{ key: 'project', label: 'New task manager', icon: 'columns' as FeatherName, onPress: onCreateProject }]),
@@ -1027,7 +1044,8 @@ function currentFolderId(pathname: string, getNote: (id: string) => Note | undef
   // A task-manager project is itself a folder — new items land inside it.
   const projectMatch = pathname.match(/^\/project\/([^/]+)/);
   if (projectMatch) return decodeURIComponent(projectMatch[1]);
-  const noteMatch = pathname.match(/^\/note\/([^/]+)/);
+  // A tracker is a note too: a sibling made from one lands beside it.
+  const noteMatch = pathname.match(/^\/(?:note|internship)\/([^/]+)/);
   if (noteMatch) return getNote(decodeURIComponent(noteMatch[1]))?.folderId ?? null;
   return null;
 }

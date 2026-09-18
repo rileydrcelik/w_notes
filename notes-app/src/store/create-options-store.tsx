@@ -46,6 +46,7 @@ const KEYS = {
   taskManagerEnabled: 'createOptions.taskManagerEnabled',
   financeEnabled: 'createOptions.financeEnabled',
   resumeEnabled: 'createOptions.resumeEnabled',
+  internshipEnabled: 'createOptions.internshipEnabled',
   githubRepo: 'createOptions.githubRepo',
 } as const;
 
@@ -68,7 +69,8 @@ export type CreateToggleKey =
   | 'githubEnabled'
   | 'taskManagerEnabled'
   | 'financeEnabled'
-  | 'resumeEnabled';
+  | 'resumeEnabled'
+  | 'internshipEnabled';
 /** Keys of the locally stored (non-secret) create-option strings. */
 export type CreateCredentialKey = 'githubRepo';
 
@@ -78,6 +80,7 @@ type CreateOptionsState = {
   taskManagerEnabled: boolean;
   financeEnabled: boolean;
   resumeEnabled: boolean;
+  internshipEnabled: boolean;
   githubRepo: string;
 };
 
@@ -101,6 +104,7 @@ const DEFAULTS: CreateOptionsState = {
   taskManagerEnabled: false,
   financeEnabled: false,
   resumeEnabled: false,
+  internshipEnabled: false,
   githubRepo: '',
 };
 
@@ -110,6 +114,7 @@ const TOGGLE_KEYS: CreateToggleKey[] = [
   'taskManagerEnabled',
   'financeEnabled',
   'resumeEnabled',
+  'internshipEnabled',
 ];
 
 /**
@@ -127,6 +132,7 @@ const TOGGLE_PLUGIN: Record<CreateToggleKey, string> = {
   taskManagerEnabled: 'project',
   financeEnabled: 'finance',
   resumeEnabled: 'resume',
+  internshipEnabled: 'internship',
 };
 const isToggle = (k: keyof CreateOptionsState): k is CreateToggleKey =>
   (TOGGLE_KEYS as string[]).includes(k);

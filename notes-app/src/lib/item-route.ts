@@ -47,6 +47,8 @@ export function noteHref(note: Pick<Note, 'id' | 'pluginType'>): Href {
       return { pathname: '/sentry/[id]', params };
     case 'github':
       return { pathname: '/github/[id]', params };
+    case 'internship':
+      return { pathname: '/internship/[id]', params };
     // An issuetype note has no screen of its own — it's reached through its
     // project. Callers should have filtered it out via `isListableNote`; sending
     // it to the text editor is the least-worst fallback if one slips through.
@@ -75,6 +77,8 @@ export function noteIcon(note: Pick<Note, 'pluginType'>): FeatherName {
       return 'alert-triangle';
     case 'github':
       return 'github';
+    case 'internship':
+      return 'briefcase';
     default:
       return 'file-text';
   }

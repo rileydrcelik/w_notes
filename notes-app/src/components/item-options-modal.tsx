@@ -13,6 +13,7 @@ import {
   View,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
+import { router } from 'expo-router';
 import Animated, { FadeIn, FadeOut, SlideInDown, SlideOutDown } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -30,10 +31,12 @@ import {
 } from '@/lib/issue-github';
 import { pushOrQueue, queueGithubPush } from '@/lib/github-outbox';
 import { parseTypeConfig, projectConfig, serializeTypeConfig, type AttrDef } from '@/lib/project';
+import { noteHref } from '@/lib/item-route';
 import { isResumeNote } from '@/lib/resume-note';
 import { folderConfigWithMaster, folderMasterResumeId } from '@/lib/resume-master';
 import { useIssues } from '@/store/issues-store';
 import { invalidMoveTargets } from '@/lib/folder-tree';
+import { useCreateOptions } from '@/store/create-options-store';
 import { useNotes } from '@/store/notes-store';
 import { noScrollbar } from '@/lib/scroll-style';
 
@@ -94,12 +97,13 @@ const COLOR_DIALOG_TINT_OPACITY = 0.9;
  * surface their own dialogs from the same host.
  */
 export function ItemOptionsProvider({ children }: { children: ReactNode }) {
-  const { getNote, getFolder, deleteNote, deleteFolder } = useNotes();
+  const { getNote, getFolder, deleteNote, deleteFolder, convertToInternshipTracker } = useNotes();
   const [targets, setTargets] = useState<OptionsTarget[]>([]);
   const [renameTarget, setRenameTarget] = useState<OptionsTarget | null>(null);
   const [moveTargets, setMoveTargets] = useState<OptionsTarget[] | null>(null);
   const [deleteTargets, setDeleteTargets] = useState<OptionsTarget[] | null>(null);
   const [colorTargets, setColorTargets] = useState<OptionsTarget[] | null>(null);
+  const [convertId, setConvertId] = useState<string | null>(null);
 
   const openOptions = useCallback((next: OptionsTarget[]) => {
     if (next.length > 0) setTargets(next);
@@ -121,6 +125,18 @@ export function ItemOptionsProvider({ children }: { children: ReactNode }) {
     setTargets([]);
     setColorTargets(next);
   }, []);
+  const openConvert = useCallback((id: string) => {
+    setTargets([]);
+    setConvertId(id);
+  }, []);
+  const confirmConvert = useCallback(() => {
+    if (!convertId) return;
+    convertToInternshipTracker(convertId);
+    setConvertId(null);
+    router.push(noteHref({ id: convertId, pluginType: 'internship' }));
+  }, [convertId, convertToInternshipTracker]);
+  const convertName = convertId ? getNote(convertId)?.title.trim() : undefined;
+
   const confirmDelete = useCallback(() => {
     deleteTargets?.forEach((t) => {
       if (t.type === 'folder') {
@@ -180,6 +196,7 @@ export function ItemOptionsProvider({ children }: { children: ReactNode }) {
         onMove={openMove}
         onColor={openColor}
         onDelete={openDelete}
+        onConvert={openConvert}
       />
       <RenameDialog target={renameTarget} onClose={() => setRenameTarget(null)} />
       <MoveSheet targets={moveTargets} onClose={() => setMoveTargets(null)} />
@@ -190,6 +207,19 @@ export function ItemOptionsProvider({ children }: { children: ReactNode }) {
         message={deleteMessage}
         onConfirm={confirmDelete}
         onCancel={() => setDeleteTargets(null)}
+      />
+      {/* One way: the type is kept server-side against a push that clears it,
+          so there is no converting back (see db.setNotePluginType). The text
+          itself is untouched — every line becomes an internship, marked
+          Applied until you mark it otherwise. */}
+      <ConfirmDialog
+        open={convertId !== null}
+        title="Convert to internship tracker?"
+        message={`${convertName ? `“${convertName}”` : 'This note'} becomes a tracker: each line is an internship, marked Applied to start. The text stays as it is. This can’t be turned back into a plain note.`}
+        confirmLabel="Convert"
+        destructive={false}
+        onConfirm={confirmConvert}
+        onCancel={() => setConvertId(null)}
       />
     </ItemOptionsContext.Provider>
   );
@@ -223,6 +253,7 @@ function OptionsSheet({
   onMove,
   onColor,
   onDelete,
+  onConvert,
 }: {
   targets: OptionsTarget[];
   onClose: () => void;
@@ -230,6 +261,7 @@ function OptionsSheet({
   onMove: (targets: OptionsTarget[]) => void;
   onColor: (targets: OptionsTarget[]) => void;
   onDelete: (targets: OptionsTarget[]) => void;
+  onConvert: (id: string) => void;
 }) {
   const colors = useTheme();
   const insets = useSafeAreaInsets();
@@ -244,6 +276,7 @@ function OptionsSheet({
     markNoteShared,
   } = useNotes();
   const { getIssuesForNote, updateIssue } = useIssues();
+  const { internshipEnabled } = useCreateOptions();
 
   const count = targets.length;
   const open = count > 0;
@@ -322,6 +355,12 @@ function OptionsSheet({
     if (failure) Alert.alert('Some issues weren’t opened on GitHub', failure);
   };
 
+  // A single plain note can become an internship tracker over the text it
+  // already has. Not a published one: the website drops plugin notes, so
+  // converting would quietly take it off the site.
+  const plainNote = single && targets[0].type === 'note' ? getNote(targets[0].id) : undefined;
+  const convertible = internshipEnabled && !!plainNote && !plainNote.pluginType && !plainNote.published;
+
   const options: Option[] = [
     // Favorite/share are note/folder concepts; issue types opt out of both.
     ...(!anyIssueType
@@ -340,6 +379,9 @@ function OptionsSheet({
             icon: 'award' as FeatherName,
           },
         ]
+      : []),
+    ...(convertible
+      ? [{ key: 'internship', label: 'Convert to internship tracker', icon: 'briefcase' as FeatherName }]
       : []),
     ...(allMovable ? [{ key: 'move', label: `Move${suffix} to folder`, icon: 'move' as FeatherName }] : []),
     ...(!anyIssueType ? [{ key: 'share', label: `Share${suffix}`, icon: 'share' as FeatherName }] : []),
@@ -425,6 +467,9 @@ function OptionsSheet({
       }
       case 'delete':
         onDelete(targets);
+        break;
+      case 'internship':
+        if (plainNote) onConvert(plainNote.id);
         break;
     }
   };
