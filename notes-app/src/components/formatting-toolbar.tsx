@@ -34,6 +34,7 @@ type InlineTool = { icon: IconName; key: StateKey; run: (e: Editor) => void };
 const INLINE_TOOLS: InlineTool[] = [
   { icon: 'format-bold', key: 'bold', run: (e) => e.toggleBold() },
   { icon: 'format-italic', key: 'italic', run: (e) => e.toggleItalic() },
+  { icon: 'format-underline', key: 'underline', run: (e) => e.toggleUnderline() },
   { icon: 'format-strikethrough-variant', key: 'strikeThrough', run: (e) => e.toggleStrikeThrough() },
 ];
 
