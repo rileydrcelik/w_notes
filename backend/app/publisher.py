@@ -47,7 +47,7 @@ from sqlalchemy import select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.db import SessionLocal, lock_user
+from app.db import SessionLocal, lock_user, try_lock_user
 from app.models import Folder, Note, User
 
 log = logging.getLogger(__name__)
@@ -217,6 +217,8 @@ async def record_embedded(user_id: str, answers: dict[str, bool]) -> None:
       Without it this can draw a sequence number, stall before committing, and
       have a concurrent push take a *later* number and commit first; a device
       that pulls in between stores the higher cursor and skips this row forever.
+      We use a non-blocking lock since this is best-effort: if contention is high,
+      a later edit will retry.
     * **``updated_at`` is left alone.** Sync is last-writer-wins on it in both
       directions, so bumping it would let this row beat a device's unpushed edit
       and overwrite a newer body with an older one — real data loss, from a write
@@ -233,7 +235,9 @@ async def record_embedded(user_id: str, answers: dict[str, bool]) -> None:
         return
     try:
         async with SessionLocal() as session:
-            await lock_user(session, user_id)
+            if not await try_lock_user(session, user_id):
+                log.debug("publish: could not acquire lock for %s, deferring", user_id)
+                return
             for note_id, embedded in answers.items():
                 await session.execute(
                     update(Note)
