@@ -199,6 +199,54 @@ class CopaItem(Base):
     __table_args__ = (Index("idx_copa_user_seq", "user_id", "server_seq"),)
 
 
+class NoteImage(Base):
+    """One image embedded in a note body.
+
+    The body carries a reference — ``<img src="wn-img:{id}">`` — and this row
+    says where the bytes are. Bodies are identical on every device, so they can
+    never hold a device path; the indirection is what makes that work.
+
+    Deliberately not scoped to a note. The same id can be referenced by two
+    bodies (copy a screenshot from one note into another) and by a copa block,
+    which shares the editor. Ownership by note would make trashing the first
+    note delete bytes the second one still shows. What decides an image is dead
+    is that nothing references it any more, and the client — which holds every
+    body locally — is the only place that question is cheap to ask; it tombstones
+    the row, and the purge job then drops the S3 object.
+    """
+
+    __tablename__ = "note_images"
+
+    user_id: Mapped[str] = mapped_column(
+        String, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+
+    # The bytes live in S3 under ``remote_key``; the client's device-local path
+    # is never synced. NULL until whichever device holds the bytes uploads them.
+    mime_type: Mapped[str | None] = mapped_column(String)
+    file_size: Mapped[int | None] = mapped_column(BigInteger)
+    # Intrinsic pixel size, so a device that has the row but not yet the bytes
+    # can still lay the page out.
+    width: Mapped[int | None] = mapped_column(BigInteger)
+    height: Mapped[int | None] = mapped_column(BigInteger)
+    remote_key: Mapped[str | None] = mapped_column(String)
+
+    created_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    updated_at: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    deleted_at: Mapped[int | None] = mapped_column(BigInteger)
+
+    server_seq: Mapped[int] = mapped_column(
+        BigInteger, server_default=SERVER_SEQ_DEFAULT, nullable=False
+    )
+
+    __table_args__ = (
+        Index("idx_note_images_user_seq", "user_id", "server_seq"),
+        # The purge job reads tombstoned rows across all users, oldest first.
+        Index("idx_note_images_deleted", "deleted_at"),
+    )
+
+
 class Issue(Base):
     """A single issue in a task-manager project. It belongs to an issue-type note
     (``note_id``) inside a ``kind='project'`` folder; the project's shared

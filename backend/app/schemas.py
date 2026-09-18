@@ -67,6 +67,22 @@ class CopaItemIn(_Syncable):
     remote_key: str | None = None
 
 
+class NoteImageIn(_Syncable):
+    """One image referenced by a note body. See ``NoteImage`` in models.py.
+
+    ``remote_key`` is set once, asynchronously, by whichever device finished the
+    upload — a peer that hasn't pulled that stamp yet genuinely holds NULL, so
+    it is in ``_PRESERVE_IF_NULL``; plain LWW would erase the only pointer to
+    the bytes. The same goes for the metadata beside it.
+    """
+
+    mime_type: str | None = None
+    file_size: int | None = None
+    width: int | None = None
+    height: int | None = None
+    remote_key: str | None = None
+
+
 class IssueIn(_Syncable):
     note_id: str = ""
     # JSON array of issue-type note ids (multi-type). None from clients that
@@ -165,6 +181,7 @@ class PushRequest(BaseModel):
     folders: list[FolderIn] = []
     notes: list[NoteIn] = []
     copa_items: list[CopaItemIn] = []
+    note_images: list[NoteImageIn] = []
     issues: list[IssueIn] = []
     finance_sheets: list[FinanceSheetIn] = []
     resume_versions: list[ResumeVersionIn] = []
@@ -183,6 +200,7 @@ class PullResponse(BaseModel):
     folders: list[FolderIn] = []
     notes: list[NoteIn] = []
     copa_items: list[CopaItemIn] = []
+    note_images: list[NoteImageIn] = []
     issues: list[IssueIn] = []
     finance_sheets: list[FinanceSheetIn] = []
     resume_versions: list[ResumeVersionIn] = []

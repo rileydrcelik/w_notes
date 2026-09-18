@@ -67,10 +67,21 @@ resource "aws_iam_role" "task" {
 
 # The app presigns S3 upload/download URLs as this role, so it must hold the
 # operations it signs. Scoped to the attachments bucket's objects only.
+#
+# DeleteObject is not signed into a URL — it is called directly, by the note-image
+# purge (backend/app/image_purge.py), which is the first thing in this app that
+# ever reclaims a stored object. Narrowed to the note-images prefix: copa
+# attachments are never deleted, and a role that cannot reach them cannot delete
+# them by mistake either.
 data "aws_iam_policy_document" "task_s3" {
   statement {
     actions   = ["s3:GetObject", "s3:PutObject"]
     resources = ["${aws_s3_bucket.attachments.arn}/*"]
+  }
+
+  statement {
+    actions   = ["s3:DeleteObject"]
+    resources = ["${aws_s3_bucket.attachments.arn}/note-images/*"]
   }
 }
 

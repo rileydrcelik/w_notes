@@ -49,6 +49,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_settings
 from app.db import SessionLocal, lock_user
 from app.models import Folder, Note, User
+from app.note_image_inline import inline_note_images
 
 log = logging.getLogger(__name__)
 
@@ -283,8 +284,20 @@ async def deliver(actions: list[PublishAction], user_id: str | None = None) -> N
         for action in actions:
             try:
                 if action.present:
+                    payload = action.payload
+                    # Images are references (`wn-img:<id>`) that mean nothing off
+                    # this device; resolve them to bytes the site can render.
+                    # Here rather than in `collect_publish_actions`, which runs
+                    # inside the push transaction holding the advisory lock.
+                    if user_id:
+                        payload = {
+                            **payload,
+                            "body_html": await inline_note_images(
+                                user_id, payload.get("body_html", "")
+                            ),
+                        }
                     response = await client.post(
-                        f"{base}/api/notes/ingest", json=action.payload
+                        f"{base}/api/notes/ingest", json=payload
                     )
                 else:
                     response = await client.delete(

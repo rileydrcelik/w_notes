@@ -1,14 +1,17 @@
-"""File-attachment endpoints — presigned S3 URLs for copa file blocks.
+"""File-attachment endpoints — presigned S3 URLs for copa blocks and note images.
 
 The client never sends bytes through this API; it asks for a short-lived
 presigned URL and transfers directly to/from S3.
 
 - ``POST /files/upload-url`` — mints a fresh object key and returns a presigned
   PUT. Any authenticated user may request one (the key is a fresh UUID, so there
-  is nothing to authorize against yet).
+  is nothing to authorize against yet). ``kind`` picks the prefix: copa
+  attachments and note images are stored apart so a lifecycle rule or a sweep
+  can address one without the other. A prefix cannot be introduced
+  retroactively — the objects are already named.
 - ``POST /files/download-url`` — returns a presigned GET, but only after
-  confirming the caller owns a ``copa_items`` row that references the key. This
-  is what prevents one user from reading another's objects.
+  confirming the caller owns a row that references the key. This is what
+  prevents one user from reading another's objects.
 """
 
 from __future__ import annotations
@@ -22,14 +25,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_session
 from app.deps import get_current_user
-from app.models import CopaItem, User
+from app.models import CopaItem, NoteImage, User
 from app.storage import StorageNotConfigured, is_configured, presign_get, presign_put
 
 router = APIRouter(prefix="/files", tags=["files"])
 
 
+# Object key prefixes, per kind of attachment. Clients that predate note images
+# send no kind at all, which is exactly the copa case.
+_PREFIXES = {"copa": "attachments", "note-image": "note-images"}
+
+
 class UploadUrlRequest(BaseModel):
     mime_type: str | None = None
+    kind: str = "copa"
 
 
 class UploadUrlResponse(BaseModel):
@@ -58,7 +67,10 @@ async def upload_url(
     user: User = Depends(get_current_user),
 ) -> UploadUrlResponse:
     _require_storage()
-    key = f"attachments/{uuid.uuid4()}"
+    prefix = _PREFIXES.get(payload.kind)
+    if prefix is None:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Unknown attachment kind")
+    key = f"{prefix}/{uuid.uuid4()}"
     try:
         url = presign_put(key, payload.mime_type)
     except StorageNotConfigured:
@@ -74,12 +86,16 @@ async def download_url(
     session: AsyncSession = Depends(get_session),
 ) -> DownloadUrlResponse:
     _require_storage()
-    # Authorize: the caller must own a copa row pointing at this key.
-    owned = await session.scalar(
-        select(CopaItem.id).where(
-            CopaItem.user_id == user.id, CopaItem.remote_key == payload.key
+    # Authorize: the caller must own a row pointing at this key — a copa block or
+    # a note image. Checked against the tombstone too: a soft-deleted row is
+    # still the caller's own, and refusing it here would break the device that is
+    # mid-download while a delete propagates.
+    for model in (CopaItem, NoteImage):
+        owned = await session.scalar(
+            select(model.id).where(
+                model.user_id == user.id, model.remote_key == payload.key
+            )
         )
-    )
-    if owned is None:
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "Not your file")
-    return DownloadUrlResponse(url=presign_get(payload.key))
+        if owned is not None:
+            return DownloadUrlResponse(url=presign_get(payload.key))
+    raise HTTPException(status.HTTP_403_FORBIDDEN, "Not your file")

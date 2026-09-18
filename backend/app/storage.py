@@ -53,6 +53,27 @@ def presign_put(key: str, content_type: str | None) -> str:
     )
 
 
+def get_object_bytes(key: str) -> bytes:
+    """Read an object's bytes directly.
+
+    The one place the backend handles file bytes at all: publishing inlines a
+    note's images into the fragment it sends the portfolio, which cannot resolve
+    a reference or read a private object. Blocking — call it off the event loop.
+    """
+    return _client().get_object(Bucket=_bucket(), Key=key)["Body"].read()
+
+
+def delete_object(key: str) -> None:
+    """Remove an object for good.
+
+    Used only by the note-image purge, once a tombstone has outlived its grace
+    period. The ECS task role has to hold ``s3:DeleteObject`` for this — it did
+    not until this shipped, which needs a hand-run ``terraform apply``, because
+    CI never runs terraform.
+    """
+    _client().delete_object(Bucket=_bucket(), Key=key)
+
+
 def presign_get(key: str) -> str:
     """A presigned URL the client GETs the bytes from."""
     return _client().generate_presigned_url(

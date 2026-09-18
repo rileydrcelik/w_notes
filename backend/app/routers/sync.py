@@ -28,6 +28,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, Query
 
 from app.db import get_session, lock_user
 from app.deps import get_current_user
+from app.image_purge import purge_deleted_images
 from app.publisher import collect_publish_actions, deliver
 from app.models import (
     CopaItem,
@@ -35,6 +36,7 @@ from app.models import (
     Folder,
     Issue,
     Note,
+    NoteImage,
     ResumeTarget,
     ResumeVersion,
     User,
@@ -45,6 +47,7 @@ from app.schemas import (
     FinanceSheetIn,
     FolderIn,
     IssueIn,
+    NoteImageIn,
     NoteIn,
     PullResponse,
     PushRequest,
@@ -89,6 +92,10 @@ _PRESERVE_IF_NULL = {
     # unpublish every note on the public site.
     Note: ("plugin_type", "plugin_config", "published"),
     CopaItem: ("file_name", "mime_type", "file_size", "remote_key"),
+    # Same reasoning as copa's: remote_key is stamped by whichever device
+    # finished the upload, so a NULL from a peer means "I have not heard yet",
+    # never "there are no bytes". Losing it strands the image on every device.
+    NoteImage: ("mime_type", "file_size", "width", "height", "remote_key"),
     # type_ids: an older client can't send it (multi-type came later); a NULL
     # push must not wipe the stored set. An issue always keeps ≥1 type, so it's
     # never legitimately cleared to NULL by the UI — COALESCE-preserve is safe.
@@ -241,6 +248,7 @@ async def push(
     await _upsert_batch(session, Folder, user.id, payload.folders)
     await _upsert_batch(session, Note, user.id, payload.notes)
     await _upsert_batch(session, CopaItem, user.id, payload.copa_items)
+    await _upsert_batch(session, NoteImage, user.id, payload.note_images)
     await _upsert_batch(session, Issue, user.id, payload.issues)
     await _upsert_batch(session, FinanceSheet, user.id, payload.finance_sheets)
     # Inside the same advisory lock and per-row savepoints as everything else, so
@@ -279,6 +287,13 @@ async def push(
         # The user id rides along so the portfolio's answers can be recorded back
         # onto the notes, from a session and transaction of their own.
         background.add_task(deliver, actions, user.id)
+
+    # Reclaim the S3 objects behind image tombstones that have aged out. Also
+    # after the commit and in a session of its own: the advisory lock is released
+    # by now, and S3 round trips inside that window are what wedged the pool in
+    # September. Only worth asking when the push carried images at all.
+    if payload.note_images:
+        background.add_task(purge_deleted_images, user.id)
 
     return PushResponse(server_seq=high)
 
@@ -320,6 +335,7 @@ async def pull(
     folders = await changed(Folder)
     notes = await changed(Note)
     copa = await changed(CopaItem)
+    images = await changed(NoteImage)
     issues = await changed(Issue)
     sheets = await changed(FinanceSheet)
     versions = await changed(ResumeVersion)
@@ -330,7 +346,7 @@ async def pull(
     # written, and a table left out of this tuple is invisible to both the
     # truncation check and the cutoff filter below — which is precisely how a
     # cursor gets handed back past rows that were never sent.
-    tables = (folders, notes, copa, issues, sheets, versions, targets, settings)
+    tables = (folders, notes, copa, images, issues, sheets, versions, targets, settings)
 
     # A table that came back full is truncated — it has rows above its window we
     # haven't sent. The cursor may only advance to a point below which *every*
@@ -346,7 +362,7 @@ async def pull(
         tables = tuple([r for r in rows if r.server_seq <= cutoff] for rows in tables)
     else:
         cutoff = since
-    folders, notes, copa, issues, sheets, versions, targets, settings = tables
+    folders, notes, copa, images, issues, sheets, versions, targets, settings = tables
 
     # New cursor = the highest server_seq in this page, or the caller's if empty.
     # Every table must feed this max: a table left out here can hand back a
@@ -363,6 +379,7 @@ async def pull(
         folders=[FolderIn.model_validate(r) for r in folders],
         notes=[NoteIn.model_validate(r) for r in notes],
         copa_items=[CopaItemIn.model_validate(r) for r in copa],
+        note_images=[NoteImageIn.model_validate(r) for r in images],
         issues=[IssueIn.model_validate(r) for r in issues],
         finance_sheets=[FinanceSheetIn.model_validate(r) for r in sheets],
         resume_versions=[ResumeVersionIn.model_validate(r) for r in versions],
@@ -380,6 +397,7 @@ async def _high_water(session: AsyncSession, user_id: str) -> int:
         Folder,
         Note,
         CopaItem,
+        NoteImage,
         Issue,
         FinanceSheet,
         ResumeVersion,
