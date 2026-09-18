@@ -27,6 +27,7 @@ import { useScrollToTop } from '@/hooks/use-scroll-to-top';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
 import { useTheme } from '@/hooks/use-theme';
 import { htmlToPlainText } from '@/lib/html-text';
+import { collectNoteImageIds } from '@/lib/note-images';
 import { noFocusOutline } from '@/lib/web-style';
 import { useNotes } from '@/store/notes-store';
 
@@ -216,8 +217,15 @@ export default function NoteScreen() {
       const { id: sid, title: st, body: sb, stored, updateNote: update, deleteNote: remove } =
         snapshot.current;
       if (!stored) return;
+      // A body holding only a picture flattens to '' through `htmlToPlainText`,
+      // which strips tags — so without the image clause the first thing anyone
+      // does with this feature (paste a screenshot, type nothing, go back)
+      // trashes the note they just made.
       const isEmpty =
-        !stored.pluginType && st.trim().length === 0 && htmlToPlainText(sb).length === 0;
+        !stored.pluginType &&
+        st.trim().length === 0 &&
+        htmlToPlainText(sb).length === 0 &&
+        collectNoteImageIds(sb).length === 0;
       if (isEmpty) {
         remove(sid);
         return;

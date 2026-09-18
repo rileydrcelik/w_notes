@@ -93,11 +93,6 @@ export function clearActiveEditorInsertImage(fn: () => void): void {
   setActiveEditorInsertImage(null);
 }
 
-/** Whether the focused editor can take an image right now. */
-export function canInsertImage(): boolean {
-  return activeInsertImage !== null;
-}
-
 /** Ask the focused editor to insert an image. Returns whether one handled it. */
 export function insertImageIntoActiveEditor(): boolean {
   if (!activeInsertImage) return false;

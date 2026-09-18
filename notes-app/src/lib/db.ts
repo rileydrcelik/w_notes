@@ -29,6 +29,8 @@ import { foldersToRehome } from '@/lib/folder-tree';
 import { shareDbAcrossTabs } from '@/lib/db-tabs';
 import { liveSessionIds, withPageSession } from '@/lib/page-session';
 import { COPA_UPSERT_SQL } from '@/lib/sync/copa-upsert';
+import { removeNoteImageBytes } from '@/lib/note-image-files';
+import { collectNoteImageIds } from '@/lib/note-images';
 import { NOTE_IMAGE_UPSERT_SQL } from '@/lib/sync/note-image-upsert';
 import type { CopaItem } from '@/data/copa';
 
@@ -543,7 +545,11 @@ async function open(): Promise<SQLite.SQLiteDatabase> {
       -- web. Neither is synced: a body is byte-identical on every device, so it
       -- carries a reference and this row resolves it locally.
       local_uri    TEXT,
-      file_session TEXT
+      file_session TEXT,
+      -- When this device last failed to fetch the bytes. Device-local, never
+      -- synced: it exists only to keep one unfetchable image from consuming the
+      -- download budget on every pass for ever.
+      download_failed_at INTEGER
     );
 
     CREATE TABLE IF NOT EXISTS issues (
@@ -1907,6 +1913,8 @@ const localDb = {
   /** Live images with bytes in S3 but no local copy yet (need download). */
   async getNoteImageDownloads(
     limit: number,
+    /** Skip anything that failed within this many ms. */
+    retryAfterMs: number,
   ): Promise<{ id: string; remoteKey: string; mimeType: string | null }[]> {
     const database = await getDb();
     const rows = await database.getAllAsync<{
@@ -1914,13 +1922,30 @@ const localDb = {
       remote_key: string;
       mime_type: string | null;
     }>(
+      // The retry window is what stops one unfetchable image starving the rest.
+      // An object can genuinely be gone — the purge deletes bytes 30 days after
+      // a tombstone, and this device may since have resurrected the row — and
+      // without a backoff those rows are re-selected every pass for ever, each
+      // costing a presign, a failed GET and a Sentry report. Eight of them would
+      // fill the budget permanently and no other image would ever arrive.
       `SELECT id, remote_key, mime_type FROM note_images
        WHERE remote_key IS NOT NULL AND local_uri IS NULL AND deleted_at IS NULL
+         AND (download_failed_at IS NULL OR download_failed_at < ?)
        ORDER BY created_at
        LIMIT ?`,
-      [limit],
+      [Date.now() - retryAfterMs, limit],
     );
     return rows.map((r) => ({ id: r.id, remoteKey: r.remote_key, mimeType: r.mime_type }));
+  },
+
+  /** Note a failed fetch, so this image steps aside for a while. Device-local,
+   *  so it deliberately doesn't mark the row dirty. */
+  async setNoteImageDownloadFailed(id: string): Promise<void> {
+    const database = await getDb();
+    await database.runAsync('UPDATE note_images SET download_failed_at = ? WHERE id = ?', [
+      Date.now(),
+      id,
+    ]);
   },
 
   /**
@@ -1936,7 +1961,7 @@ const localDb = {
     dbCrumb('setNoteImageLocalFile', { id });
     const database = await getDb();
     await database.runAsync(
-      'UPDATE note_images SET local_uri = ?, file_session = ? WHERE id = ?',
+      'UPDATE note_images SET local_uri = ?, file_session = ?, download_failed_at = NULL WHERE id = ?',
       [localUri, fileSession ?? null, id],
     );
   },
@@ -1965,24 +1990,59 @@ const localDb = {
    */
   async sweepNoteImages(graceMs: number): Promise<void> {
     const database = await getDb();
+    const rows = await database.getAllAsync<{
+      id: string;
+      deleted_at: number | null;
+      created_at: number;
+      local_uri: string | null;
+    }>('SELECT id, deleted_at, created_at, local_uri FROM note_images');
+    // Almost every account has no images at all. Leaving before reading a single
+    // body keeps this free for them — it runs on every sync pass.
+    if (rows.length === 0) return;
+
+    // The references are gathered in one scan of the bodies rather than asked
+    // for per image. The obvious phrasing — a correlated `EXISTS (… body LIKE
+    // '%' || id || '%')` — is one substring scan of the whole corpus per image
+    // per statement, which no index can serve, and it would run here inside the
+    // single write chain every user-facing mutation queues behind.
+    const referenced = new Set<string>();
+    const bodies = await database.getAllAsync<{ text: string | null }>(
+      'SELECT body AS text FROM notes UNION ALL SELECT content AS text FROM copa_items',
+    );
+    for (const row of bodies) {
+      if (!row.text) continue;
+      for (const id of collectNoteImageIds(row.text)) referenced.add(id);
+    }
+
     const now = Date.now();
-    const referenced = `EXISTS (
-        SELECT 1 FROM notes WHERE notes.body LIKE '%wn-img:' || note_images.id || '%'
-      ) OR EXISTS (
-        SELECT 1 FROM copa_items WHERE copa_items.content LIKE '%wn-img:' || note_images.id || '%'
-      )`;
+    const revive = rows.filter((r) => r.deleted_at !== null && referenced.has(r.id));
+    const bury = rows.filter(
+      (r) => r.deleted_at === null && r.created_at < now - graceMs && !referenced.has(r.id),
+    );
+    if (revive.length === 0 && bury.length === 0) return;
+
     await database.withTransactionAsync(async () => {
-      await database.runAsync(
-        `UPDATE note_images SET deleted_at = NULL, updated_at = ?, dirty = 1
-         WHERE deleted_at IS NOT NULL AND (${referenced})`,
-        [now],
-      );
-      await database.runAsync(
-        `UPDATE note_images SET deleted_at = ?, updated_at = ?, dirty = 1
-         WHERE deleted_at IS NULL AND created_at < ? AND NOT (${referenced})`,
-        [now, now, now - graceMs],
-      );
+      for (const row of revive) {
+        await database.runAsync(
+          'UPDATE note_images SET deleted_at = NULL, updated_at = ?, dirty = 1 WHERE id = ?',
+          [now, row.id],
+        );
+      }
+      for (const row of bury) {
+        await database.runAsync(
+          'UPDATE note_images SET deleted_at = ?, updated_at = ?, dirty = 1, local_uri = NULL WHERE id = ?',
+          [now, now, row.id],
+        );
+      }
     });
+
+    // The bytes go with the tombstone. Outside the transaction: a filesystem
+    // delete can't be rolled back, and holding the write chain across a dozen of
+    // them would stall every other write. The row keeps `remote_key`, so a
+    // device that resurrects this image downloads it again.
+    for (const row of bury) {
+      if (row.local_uri) removeNoteImageBytes(row.local_uri);
+    }
   },
 
   // ---- Issues (task-manager project rows) ----
@@ -2906,6 +2966,16 @@ const localDb = {
    */
   async clearAllData(): Promise<void> {
     const database = await getDb();
+    // The image bytes go too. Deleting the rows alone would leave every picture
+    // the previous account ever held sitting in this device's documents
+    // directory, unreferenced and unreachable, for good — and on web it would
+    // hold every object URL the session ever minted.
+    const images = await database.getAllAsync<{ local_uri: string | null }>(
+      'SELECT local_uri FROM note_images WHERE local_uri IS NOT NULL',
+    );
+    for (const image of images) {
+      if (image.local_uri) removeNoteImageBytes(image.local_uri);
+    }
     // As with `markAllDirty`, a table missing here is a silent leak: the
     // previous account's rows survive sign-out and show up under whoever signs
     // in next on this device.
@@ -3099,6 +3169,7 @@ const WRITE_METHODS = [
   'createNoteImage',
   'setNoteImageRemoteKey',
   'setNoteImageLocalFile',
+  'setNoteImageDownloadFailed',
   'sweepNoteImages',
   'createIssue',
   'updateIssue',
@@ -3158,6 +3229,8 @@ const HOUSEKEEPING_WRITES: readonly string[] = [
   // Announcing it would have every pass wake every other tab into a full
   // re-read for a row nobody is looking at.
   'sweepNoteImages',
+  // A failed fetch changes nothing anyone can see; it only paces the retry.
+  'setNoteImageDownloadFailed',
 ];
 
 /**

@@ -67,6 +67,23 @@ describe('canonicalizeNoteImages', () => {
       .toBe('<img alt="a shot" src="wn-img:a" width="10">');
   });
 
+  it('keeps a quoted attribute containing a > intact', () => {
+    // A review caught this: with a plain [^>]* the tag ended at the > inside the
+    // alt text, so half the value became a bogus bare attribute and the rest
+    // leaked out of the tag as literal text in the note — written back and
+    // synced to every device on the next keystroke, because every serialize
+    // passes through here.
+    const html = '<p><img src="wn-img:a" alt="a > b" width="10"></p>';
+    expect(canonicalizeNoteImages(html)).toBe(html);
+  });
+
+  it('canonicalizes an uppercase tag too', () => {
+    // The fast-path guard and the regex have to agree about case, or a body
+    // written elsewhere sails past the integer-rounding an Android parse needs.
+    expect(canonicalizeNoteImages('<IMG SRC="wn-img:a" WIDTH="300.000000">'))
+      .toBe('<img SRC="wn-img:a" WIDTH="300">');
+  });
+
   it('leaves a body with no images alone', () => {
     const html = '<html><p>just text</p></html>';
     expect(canonicalizeNoteImages(html)).toBe(html);
@@ -125,6 +142,18 @@ describe('resolve → unresolve', () => {
     const edited = `<p><img src="file:///docs/note-images/${ID}" width="200" height="109"></p>`;
     expect(unresolveNoteImages(edited, idFromPath, index))
       .toBe(`<p><img src="wn-img:${ID}" width="1170" height="640"></p>`);
+  });
+
+  it('never writes a zero dimension into the body', () => {
+    // An unknown dimension reads back as 0 from the database. Writing width="0"
+    // would turn every copy of that picture into a zero-sized one — the silent
+    // deletion this module exists to prevent.
+    const unknown: NoteImageIndex = new Map([[ID, { uri: 'file:///x', width: 0, height: 0 }]]);
+    const edited = `<p><img src="file:///x" width="200" height="109"></p>`;
+    const out = unresolveNoteImages(edited, () => ID, unknown);
+    expect(out).toContain(`src="wn-img:${ID}"`);
+    expect(out).not.toContain('width="0"');
+    expect(out).toContain('width="200"');
   });
 
   it('survives a second pass unchanged', () => {

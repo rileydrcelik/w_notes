@@ -39,7 +39,17 @@ export function parseNoteImageRef(src: string): string | null {
 
 type Attrs = { name: string; value: string | null }[];
 
-const IMG_TAG = /<img\b([^>]*?)\/?>/gi;
+/**
+ * `<img attrs>`, where a quoted attribute value may legally contain `>`.
+ *
+ * The alternation is the whole point, and `note-html-export.ts` carries the same
+ * one for the same reason: with a plain `[^>]*` the tag ends at the first `>`
+ * inside `alt="a > b"`, so the value is torn in half — part of it becomes a
+ * bogus bare attribute and the rest leaks out of the tag as literal text. Every
+ * serialize runs through here, so that damage would be written back and synced
+ * to every device on the next keystroke.
+ */
+const IMG_TAG = /<img\b((?:"[^"]*"|'[^']*'|[^>])*)>/gi;
 const ATTR = /([^\s=/>]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+)))?/g;
 
 function parseAttrs(raw: string): Attrs {
@@ -81,7 +91,11 @@ function set(attrs: Attrs, name: string, value: string): void {
  * callback doesn't touch survives untouched.
  */
 function rewriteImages(html: string, fn: (attrs: Attrs) => void): string {
-  if (!html || !html.includes('<img')) return html;
+  // Case-insensitively, because the regex is: a body written elsewhere can carry
+  // `<IMG>`, and a guard that disagreed with the regex would wave it past every
+  // transform here — the integer-dimension one an Android parse depends on
+  // included.
+  if (!html || !/<img\b/i.test(html)) return html;
   return html.replace(IMG_TAG, (_whole, raw: string) => {
     const attrs = parseAttrs(raw);
     fn(attrs);
@@ -208,7 +222,11 @@ export function unresolveNoteImages(
     set(attrs, 'src', noteImageRef(id));
 
     const info = index.get(id);
-    if (info) {
+    // Same guard as `resolveNoteImages`: a row whose dimensions are unknown
+    // reads back as 0 from the database, and writing `width="0"` into the body
+    // would turn every copy of that picture into a zero-sized one — the silent
+    // deletion this module exists to prevent.
+    if (info && info.width > 0 && info.height > 0) {
       set(attrs, 'width', String(Math.round(info.width)));
       set(attrs, 'height', String(Math.round(info.height)));
     } else {
@@ -262,6 +280,6 @@ export async function inlineNoteImages(
  * syncs everywhere.
  */
 export function stripNoteImages(html: string): string {
-  if (!html || !html.includes('<img')) return html;
+  if (!html || !/<img\b/i.test(html)) return html;
   return html.replace(IMG_TAG, '');
 }

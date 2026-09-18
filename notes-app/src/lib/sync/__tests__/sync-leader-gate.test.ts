@@ -29,6 +29,7 @@ vi.mock('@/lib/db', () => ({
     getCopaDownloads: vi.fn(() => Promise.resolve([])),
     getNoteImageUploads: vi.fn(() => Promise.resolve([])),
     getNoteImageDownloads: vi.fn(() => Promise.resolve([])),
+    setNoteImageDownloadFailed: vi.fn(() => Promise.resolve()),
     sweepNoteImages: vi.fn(() => Promise.resolve()),
     setCopaLocalFile: vi.fn(() => Promise.resolve()),
     setCopaRemoteKey: vi.fn(() => Promise.resolve()),

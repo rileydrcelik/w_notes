@@ -178,12 +178,23 @@ export function MarkdownEditor({
     void (async () => {
       try {
         const rows = await db.getNoteImageIndex();
-        images.current = new Map(rows.map((i) => [i.id, i]));
+        // Merged, not replaced: this query was issued before the user could
+        // type, and an image inserted while it was in flight is already in the
+        // map. Overwriting would drop that entry, and the next serialize would
+        // have no id to turn its path back into — the picture would be written
+        // out of the note.
+        for (const row of rows) {
+          if (!images.current.has(row.id)) images.current.set(row.id, row);
+        }
       } catch {
         // Without the index the references resolve to a placeholder that still
         // occupies the document — degraded, never destructive.
       }
       if (cancelled) return;
+      // The field is live while this is in flight, so the user may already have
+      // typed or pasted. Seeding now would replace what they wrote — and report
+      // it as their own edit, because `touched` is set.
+      if (touched.current) return;
       // References become this device's own paths on the way in, and are turned
       // back into references on the way out (`onChangeHtml` below). A body only
       // ever carries `wn-img:<id>`; a phone's file path would be meaningless on
@@ -336,7 +347,11 @@ export function MarkdownEditor({
       }}
       onBlur={() => {
         setActiveEditorDismiss(null);
-        clearActiveEditorInsertImage(chooseImage);
+        // By the identity that was registered, not this render's: `chooseImage`
+        // is rebuilt every render, and `onFocus` calls `setFocused` — so by the
+        // time a blur arrives the closure here holds a different function object
+        // and the ownership guard would make the release a silent no-op.
+        if (insertRef.current) clearActiveEditorInsertImage(insertRef.current);
         setFocused(false);
         onFocusChange?.(false);
       }}

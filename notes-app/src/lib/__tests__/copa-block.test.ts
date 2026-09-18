@@ -108,3 +108,25 @@ describe('DRAFT_COPA_ID', () => {
     expect(DRAFT_COPA_ID).toBe('new');
   });
 });
+
+describe('isEmptyCopaBlock and images', () => {
+  it('does not call a block holding only a picture empty', () => {
+    // htmlToPlainText strips tags, so an image-only body flattens to ''. Left to
+    // that, the first thing anyone does with image insertion — paste a
+    // screenshot, type nothing, leave the screen — deletes the block, and copa
+    // has no trash.
+    expect(
+      isEmptyCopaBlock(
+        { fileName: null, fileUri: null },
+        '',
+        '<html><p><img src="wn-img:img-abc" width="720" height="405"></p></html>',
+      ),
+    ).toBe(false);
+  });
+
+  it('still calls a block with no text and no picture empty', () => {
+    expect(isEmptyCopaBlock({ fileName: null, fileUri: null }, '', '<html><p></p></html>')).toBe(
+      true,
+    );
+  });
+});

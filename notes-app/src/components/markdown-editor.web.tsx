@@ -16,7 +16,7 @@ import { BulletList, OrderedList, ListItem, TaskList, TaskItem } from '@tiptap/e
 import { Placeholder, UndoRedo } from '@tiptap/extensions';
 import type { EnrichedTextInputInstance, OnChangeStateEvent } from 'react-native-enriched';
 
-import { type Palette } from '@/constants/theme';
+import { Accent, hexToRgba, Spacing, type Palette } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import {
   clearActiveEditorInsertImage,
@@ -200,13 +200,20 @@ function editorCss(theme: Palette): string {
 .wn-rich .ProseMirror img {
   max-width: 100%;
   height: auto;
-  border-radius: 8px;
+  border-radius: ${Spacing.two}px;
   vertical-align: bottom;
 }
-/* Selected reads as selected without a hard edge cutting through the content. */
+/* Selected reads as selected the way everything else in the app does: the
+   accent, faded in rather than snapped on. A box-shadow rather than an outline
+   so the ring follows the corner radius — outline's radius handling differs
+   between engines, and a squared ring around a squircle is exactly the seam
+   this design language avoids. */
+.wn-rich .ProseMirror img {
+  box-shadow: 0 0 0 0 ${hexToRgba(Accent, 0)};
+  transition: box-shadow 160ms ease;
+}
 .wn-rich .ProseMirror img.ProseMirror-selectednode {
-  outline: 2px solid ${LINK_COLOR};
-  outline-offset: 2px;
+  box-shadow: 0 0 0 ${Spacing.half}px ${Accent};
 }
 .wn-rich .ProseMirror p.is-editor-empty:first-child::before {
   content: attr(data-placeholder);
@@ -281,6 +288,11 @@ export function MarkdownEditor({
     // behind, nor build one nobody will ever see.
     let disposed = false;
     let editor: Editor | null = null;
+    // A focus asked for before the async init finishes — copa autofocuses a new
+    // draft a couple of frames after mount, and the edit pencil can be pressed
+    // at any time — is remembered and applied when the editor arrives, rather
+    // than landing on a null handle and doing nothing.
+    let focusWhenReady = false;
 
     const toStored = (html: string) =>
       tiptapHtmlToStored(
@@ -342,6 +354,18 @@ export function MarkdownEditor({
       })();
     };
 
+    // Installed before the await, so a caller that reaches for the handle early
+    // gets something that works rather than null.
+    if (editorRef) {
+      editorRef.current = {
+        focus: () => {
+          if (editor) editor.commands.focus();
+          else focusWhenReady = true;
+        },
+        blur: () => editor?.commands.blur(),
+      } as unknown as EnrichedTextInputInstance;
+    }
+
     const build = () => {
       const seed = storedHtmlToTiptap(
         // A fixed width, not the element's: a body has to serialize back
@@ -392,6 +416,7 @@ export function MarkdownEditor({
           toggleCheckboxList: () => instance.chain().focus().toggleTaskList().run(),
         } as unknown as EnrichedTextInputInstance;
       }
+      if (focusWhenReady) instance.commands.focus();
     };
 
     /**
@@ -404,7 +429,7 @@ export function MarkdownEditor({
      * editor's own node, so it can't fire anywhere else in the app.
      */
     const onKeyDown = (event: KeyboardEvent) => {
-      if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
+      if (!(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey) return;
       if (event.key !== 'i' && event.key !== 'I') return;
       event.preventDefault();
       chooseImage();

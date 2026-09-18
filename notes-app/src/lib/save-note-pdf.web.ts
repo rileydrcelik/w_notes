@@ -76,8 +76,15 @@ export async function saveNotePdfToDevice(note: Note): Promise<void> {
     // `srcdoc` keeps the document same-origin, which is what lets us reach into
     // `contentWindow` to print it at all.
     // Images travel as bytes: a reference means nothing to the print renderer.
-    void noteForExport(note).then((prepared) => {
-      frame.srcdoc = buildNoteDocument(prepared);
-    });
+    void noteForExport(note)
+      .then((prepared) => {
+        frame.srcdoc = buildNoteDocument(prepared);
+      })
+      .catch(() => {
+        // Resolving images is best-effort; print what we have rather than
+        // leaving the hidden frame mounted and the caller waiting on a promise
+        // that only the cleanup timer will ever settle.
+        frame.srcdoc = buildNoteDocument(note);
+      });
   });
 }

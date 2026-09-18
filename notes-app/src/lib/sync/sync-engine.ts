@@ -88,6 +88,12 @@ const MAX_PULL_PAGES = 50;
  */
 const IMAGE_DOWNLOADS_PER_PASS = 8;
 
+/** Images sent per pass, bounded for the same reason. */
+const IMAGE_UPLOADS_PER_PASS = 8;
+
+/** How long an image that failed to download steps aside before being retried. */
+const IMAGE_DOWNLOAD_RETRY_MS = 30 * 60 * 1000;
+
 /**
  * How long a newly captured image is safe from the sweep. It only has to cover
  * the gap between writing the row and the body that references it reaching the
@@ -297,6 +303,7 @@ async function runSync(): Promise<SyncResult> {
     //    single response or none of it counted.
     let cursor = await db.getCursor();
     let changed = 0;
+    let complete = false;
     for (let page = 0; page < MAX_PULL_PAGES; page += 1) {
       const pulled = await apiFetch<PullResponse>(`/sync/pull?since=${cursor}`);
       if ((await currentIdentity(identity)) !== identity) return ACCOUNT_CHANGED;
@@ -306,7 +313,10 @@ async function runSync(): Promise<SyncResult> {
       // advance would otherwise re-request the same page for ever.
       const advanced = pulled.server_seq > cursor;
       cursor = pulled.server_seq;
-      if (!pulled.has_more || !advanced) break;
+      if (!pulled.has_more || !advanced) {
+        complete = true;
+        break;
+      }
     }
 
     // 3) Download bytes for any file blocks we now know about but don't hold
@@ -318,7 +328,13 @@ async function runSync(): Promise<SyncResult> {
     //    here rather than when a picture is deleted from a note is deliberate:
     //    that edit can still lose last-writer-wins to a device that was offline
     //    holding the older body, and the image has to survive that.
-    await db.sweepNoteImages(IMAGE_SWEEP_GRACE_MS);
+    //
+    //    Only when the pull actually finished. A loop that stopped at the page
+    //    cap has seen some image rows but not necessarily the notes that
+    //    reference them, and the sweep would read that gap as "nothing points at
+    //    this" — writing a tombstone from a view it knows is partial, which is
+    //    the one thing "the body is the authority" is meant to rule out.
+    if (complete) await db.sweepNoteImages(IMAGE_SWEEP_GRACE_MS);
 
     if (changed > 0 || downloaded > 0) emitSynced();
     // Anything moving in either direction means this device is mid-conversation
@@ -378,7 +394,10 @@ async function uploadPendingFiles(): Promise<void> {
  * key (which re-queues it to push). Best-effort per image, like copa's.
  */
 async function uploadPendingImages(): Promise<void> {
-  const uploads = await db.getNoteImageUploads();
+  // Bounded for the reason the download loop below is: images arrive at the
+  // speed of pasting, and a backlog of them would spend the whole pass — which
+  // runs inside one owner-tab call with a 120s budget — on transfers.
+  const uploads = (await db.getNoteImageUploads()).slice(0, IMAGE_UPLOADS_PER_PASS);
   for (const u of uploads) {
     try {
       const key = await uploadNoteImage(u.fileUri, u.mimeType);
@@ -401,7 +420,10 @@ async function uploadPendingImages(): Promise<void> {
  * backlog drains.
  */
 async function downloadMissingImages(): Promise<number> {
-  const downloads = await db.getNoteImageDownloads(IMAGE_DOWNLOADS_PER_PASS);
+  const downloads = await db.getNoteImageDownloads(
+    IMAGE_DOWNLOADS_PER_PASS,
+    IMAGE_DOWNLOAD_RETRY_MS,
+  );
   let landed = 0;
   for (const d of downloads) {
     try {
@@ -409,6 +431,10 @@ async function downloadMissingImages(): Promise<number> {
       await db.setNoteImageLocalFile(d.id, localUri);
       landed += 1;
     } catch (e) {
+      // Stand this one down for a while so it can't hold the budget: the object
+      // may genuinely be gone, in which case retrying it every pass forever
+      // would keep every other image from ever arriving.
+      await db.setNoteImageDownloadFailed(d.id);
       console.warn('[sync] image download failed:', e);
       Sentry.captureException(e, { tags: { source: 'sync-engine', op: 'download-image' } });
     }

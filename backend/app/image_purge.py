@@ -29,6 +29,7 @@ window are how this backend wedged its connection pool in September.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 
@@ -69,7 +70,10 @@ async def purge_deleted_images(user_id: str) -> int:
                 if not key:
                     continue
                 try:
-                    delete_object(key)
+                    # boto3 blocks, and this runs on the event loop serving every
+                    # other request — twenty deletes in a row would stall all of
+                    # them. Same reason `note_image_inline` threads its reads.
+                    await asyncio.to_thread(delete_object, key)
                 except Exception:
                     # Leave the row as it is: still tombstoned, still carrying
                     # the key, so the next push tries again.
