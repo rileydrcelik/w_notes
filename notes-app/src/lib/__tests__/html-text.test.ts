@@ -6,7 +6,12 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { hasEscapedBlockMarkup, htmlToPlainText, plainTextToHtml } from '@/lib/html-text';
+import {
+  hasEscapedBlockMarkup,
+  hasNonTextContent,
+  htmlToPlainText,
+  plainTextToHtml,
+} from '@/lib/html-text';
 
 describe('htmlToPlainText', () => {
   it('returns an empty string for empty input', () => {
@@ -187,5 +192,38 @@ describe('plainTextToHtml', () => {
   it('round-trips back through htmlToPlainText', () => {
     const text = 'first line\nsecond & <third>';
     expect(htmlToPlainText(plainTextToHtml(text))).toBe(text);
+  });
+});
+
+describe('code blocks in plain text', () => {
+  it('gives a code block its own line', () => {
+    expect(
+      htmlToPlainText('<html><p>before</p><codeblock>run()</codeblock><p>after</p></html>'),
+    ).toBe(['before', 'run()', 'after'].join('\n'));
+  });
+});
+
+describe('hasNonTextContent', () => {
+  it('sees an empty code block, which flattening cannot', () => {
+    // A code block is made empty on purpose, to be typed into. Several places
+    // read an empty body as "nothing here" and delete the note on the way out.
+    const body = '<html><codeblock></codeblock></html>';
+    expect(htmlToPlainText(body)).toBe('');
+    expect(hasNonTextContent(body)).toBe(true);
+  });
+
+  it('sees a picture and a rule too', () => {
+    expect(hasNonTextContent('<html><p><img src="wn-img:a"></p></html>')).toBe(true);
+    expect(hasNonTextContent('<html><hr></html>')).toBe(true);
+  });
+
+  it('says no for a body that is only text, or empty', () => {
+    expect(hasNonTextContent('<html><p>just words</p></html>')).toBe(false);
+    expect(hasNonTextContent('')).toBe(false);
+  });
+
+  it('is not fooled by a word that merely starts the same way', () => {
+    expect(hasNonTextContent('<html><p>about images</p></html>')).toBe(false);
+    expect(hasNonTextContent('<html><imgur>x</imgur></html>')).toBe(false);
   });
 });

@@ -124,6 +124,18 @@ describe('isEmptyCopaBlock and images', () => {
     ).toBe(false);
   });
 
+  it('does not call a block holding only an empty code block empty', () => {
+    // A code block is created empty, to be typed into. Reading that as "nothing
+    // here" would delete the block the moment the screen closed.
+    expect(
+      isEmptyCopaBlock(
+        { fileName: null, fileUri: null },
+        '',
+        '<html><codeblock></codeblock></html>',
+      ),
+    ).toBe(false);
+  });
+
   it('still calls a block with no text and no picture empty', () => {
     expect(isEmptyCopaBlock({ fileName: null, fileUri: null }, '', '<html><p></p></html>')).toBe(
       true,

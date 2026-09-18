@@ -16,7 +16,7 @@ export function htmlToPlainText(html: string): string {
     )
     // Remaining (bulleted/ordered) list items get a bullet. Each starts a line.
     .replace(/<li\b[^>]*>/gi, '\n• ')
-    .replace(/<\/(p|div|h[1-6]|blockquote|pre)>/gi, '\n')
+    .replace(/<\/(p|div|h[1-6]|blockquote|pre|codeblock)>/gi, '\n')
     .replace(/<br\s*\/?>/gi, '\n')
     .replace(/<[^>]+>/g, '')
     .replace(/&nbsp;/g, ' ')
@@ -85,4 +85,17 @@ export function plainTextToHtml(text: string): string {
     // collapse it away and the pasted spacing is lost.
     .map((line) => `<p>${escape(line) || '<br>'}</p>`)
     .join('');
+}
+
+/**
+ * Whether a body holds something that flattening it to plain text cannot see.
+ *
+ * `htmlToPlainText` drops tags, so a note holding only a picture, only an empty
+ * code block, or only a rule comes back as ''. Several places treat an empty
+ * body as "nothing here" and delete the note or copy block on the way out — so
+ * without this, the first thing anyone does with either feature (make one, type
+ * nothing, leave) throws it away.
+ */
+export function hasNonTextContent(html: string): boolean {
+  return /<(img|codeblock|hr)\b/i.test(html);
 }

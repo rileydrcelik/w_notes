@@ -77,6 +77,13 @@ describe('sanitizeNoteHtml', () => {
       .toBe('<img width="10" height="10">');
   });
 
+  it('renders a code block as a pre, not as a run-together paragraph', () => {
+    // The canonical body carries <codeblock>, which no browser knows. Left
+    // alone the allowlist unwraps it and the code prints as ordinary prose.
+    expect(sanitizeNoteHtml('<html><codeblock>const a = 1;</codeblock></html>'))
+      .toBe('<pre>const a = 1;</pre>');
+  });
+
   it('preserves the checkbox list markers the stylesheet keys off', () => {
     const out = sanitizeNoteHtml('<ul data-type="checkbox"><li checked>done</li><li>todo</li></ul>');
     expect(out).toBe('<ul data-type="checkbox"><li checked>done</li><li>todo</li></ul>');

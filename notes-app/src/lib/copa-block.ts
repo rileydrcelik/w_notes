@@ -18,8 +18,7 @@
  * rule is worth testing directly, and the modules around it reach expo-sqlite
  * and React Native, which this vitest config can't load.
  */
-import { htmlToPlainText } from '@/lib/html-text';
-import { collectNoteImageIds } from '@/lib/note-images';
+import { hasNonTextContent, htmlToPlainText } from '@/lib/html-text';
 
 /**
  * The `[id]` a copy block screen carries before it holds anything.
@@ -65,12 +64,12 @@ export function isFileBlock(block: BlockShape): boolean {
  */
 export function isEmptyCopaBlock(block: BlockShape, label: string, content: string): boolean {
   if (block.fileName || block.fileUri) return false;
-  // A picture is content, and `htmlToPlainText` strips tags — so a block holding
-  // only a pasted screenshot flattens to '' and reads as empty. Left to that,
-  // the first thing anyone does with this feature (paste a picture, type
-  // nothing, leave) deletes what they just made. The stored-HTML serializer
-  // already draws this line the same way: `rich-html.web.ts` refuses to call a
-  // body empty when it holds an `<img>`.
-  if (collectNoteImageIds(content).length > 0) return false;
+  // A picture or a code block is content, and `htmlToPlainText` strips tags — so
+  // a block holding only a pasted screenshot, or only an empty code block
+  // waiting to be typed into, flattens to '' and reads as empty. Left to that,
+  // the first thing anyone does with either feature (make one, type nothing,
+  // leave) deletes what they just made. The stored-HTML serializer already draws
+  // this line the same way (`rich-html.web.ts`).
+  if (hasNonTextContent(content)) return false;
   return label.trim().length === 0 && htmlToPlainText(content).length === 0;
 }

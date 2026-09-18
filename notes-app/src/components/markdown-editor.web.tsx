@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type RefObject } from 'react';
-import { Editor, wrappingInputRule } from '@tiptap/core';
+import { Editor, Extension, textblockTypeInputRule, wrappingInputRule } from '@tiptap/core';
 import Document from '@tiptap/extension-document';
 import Paragraph from '@tiptap/extension-paragraph';
 import Text from '@tiptap/extension-text';
@@ -8,6 +8,7 @@ import Italic from '@tiptap/extension-italic';
 import Strike from '@tiptap/extension-strike';
 import Underline from '@tiptap/extension-underline';
 import Code from '@tiptap/extension-code';
+import CodeBlock from '@tiptap/extension-code-block';
 import Heading from '@tiptap/extension-heading';
 import Blockquote from '@tiptap/extension-blockquote';
 import Link from '@tiptap/extension-link';
@@ -90,6 +91,60 @@ const NoteImage = Image.extend({
   },
 }).configure({ allowBase64: true });
 
+/** Spaces one Tab press is worth. Two, matching the codebase this app is
+ *  written in, and narrow enough that a couple of levels still fit a phone. */
+const TAB_SIZE = 2;
+
+// The canonical body's code block is `<codeblock>`, not `<pre><code>` — that is
+// the tag the native `react-native-enriched` editor reads and writes, and the
+// body is one shared format. Without this node TipTap's schema simply drops a
+// code block written on a phone, and the next keystroke here would serialize the
+// note without it. `<pre>` is accepted on the way in so pasted code still lands
+// as a block.
+const NativeCodeBlock = CodeBlock.extend({
+  parseHTML: () => [{ tag: 'codeblock', preserveWhitespace: 'full' as const }, { tag: 'pre', preserveWhitespace: 'full' as const }],
+  renderHTML: ({ HTMLAttributes }) => ['codeblock', HTMLAttributes, 0],
+  // The stock rule only fires on ``` *followed by a space or a newline*, which
+  // is right for `- ` and `# ` — there the space is what separates a marker from
+  // an ordinary hyphen — but there is nothing ambiguous about a third backtick,
+  // and having to press space after it reads as the shortcut not working. Both
+  // rules are kept, so ```js still opens one too.
+  addInputRules() {
+    return [
+      ...(this.parent?.() ?? []),
+      textblockTypeInputRule({ find: /^```$/, type: this.type }),
+    ];
+  },
+}).configure({
+  // Tab inside a code block indents the line (and Shift+Tab lifts it), which is
+  // the extension's own handling of a selection spanning several lines.
+  enableTabIndentation: true,
+  tabSize: TAB_SIZE,
+  languageClassPrefix: null,
+});
+
+/**
+ * Tab indents, everywhere in the body.
+ *
+ * Lower priority than everything else, so the code block's own Tab handling
+ * (whole-line indent, Shift+Tab to outdent) wins where it applies and this is
+ * what is left for ordinary text.
+ *
+ * Tab no longer moves focus out of the editor, which is how a browser normally
+ * lets a keyboard user leave a field — so Escape is wired up to blur instead,
+ * and the navbar's done check still ends editing with a pointer.
+ */
+const TabIndent = Extension.create({
+  name: 'tabIndent',
+  priority: 50,
+  addKeyboardShortcuts() {
+    return {
+      Tab: () => this.editor.commands.insertContent(' '.repeat(TAB_SIZE)),
+      Escape: () => this.editor.commands.blur(),
+    };
+  },
+});
+
 // Match the native tag subset: list items and checkbox items hold a single
 // paragraph (no nesting), so bodies round-trip through the boundary normalizer.
 const ListItemP = ListItem.extend({ content: 'paragraph' });
@@ -113,6 +168,8 @@ function extensions(placeholder: string) {
     Strike,
     Underline,
     Code,
+    NativeCodeBlock,
+    TabIndent,
     Heading.configure({ levels: [1, 2, 3, 4, 5, 6] }),
     BulletList,
     OrderedList,
@@ -162,11 +219,25 @@ function editorCss(theme: Palette): string {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 90%;
 }
-.wn-rich .ProseMirror pre {
+.wn-rich .ProseMirror pre,
+.wn-rich .ProseMirror codeblock {
   background: ${theme.backgroundElementAlt};
-  border-radius: 8px;
+  border-radius: ${Spacing.two}px;
   padding: 10px 12px;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+/* codeblock is the canonical tag but not an element the browser knows, so it
+   arrives inline with no whitespace handling of its own. pre-wrap keeps the
+   indentation and the newlines that make it a code block, while still wrapping a
+   long line rather than running it off the side — there are no scrollbars here
+   (see global.css). An empty one keeps its height so there is something to put
+   the caret in. */
+.wn-rich .ProseMirror codeblock {
+  display: block;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  min-height: 24px;
+  margin: 0 0 4px;
 }
 .wn-rich .ProseMirror blockquote {
   border-left: 3px solid ${theme.backgroundSelected};

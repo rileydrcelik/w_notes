@@ -121,6 +121,13 @@ function keptAttributes(tag: string, raw: string): string {
 export function sanitizeNoteHtml(html: string): string {
   if (!html) return '';
   return html
+    // The canonical body's code block is `<codeblock>` — the tag the native
+    // editor reads and writes, and not an element a browser knows. Mapped to
+    // `<pre>` on the way out so an exported page and a printed PDF render it as
+    // the block it is; left alone it would be unwrapped by the allowlist below
+    // and the code would come out as an ordinary run-together paragraph.
+    .replace(/<codeblock\b[^>]*>/gi, '<pre>')
+    .replace(/<\/codeblock>/gi, '</pre>')
     .replace(/<!--[\s\S]*?-->/g, '')
     // Remove these *with* their contents; unwrapping a <script> would spill its
     // source into the page as visible text.

@@ -41,7 +41,32 @@ export function storedHtmlToTiptap(html: string): string {
     });
   });
 
+  // Native code block → TipTap code block. The dialect differs inside: native
+  // runs every line of a block through the same paragraph writer as the rest of
+  // the document, so a code block's lines arrive as `<p>` elements (and a blank
+  // one as `<br>`), while TipTap's code block holds plain text with newlines in
+  // it. Flattened here, and rebuilt on the way out.
+  //
+  // The indentation comes back as non-breaking spaces, because that is how a
+  // leading run is stored (see html-space.ts) — decoded to ordinary spaces so
+  // what is in the editor, and what gets copied out of it, is real whitespace.
+  doc.querySelectorAll('codeblock').forEach((block) => {
+    const lines: string[] = [];
+    block.childNodes.forEach((node) => {
+      if (node.nodeType === Node.TEXT_NODE) {
+        // Formatting whitespace between the line elements, not a line.
+        const text = node.nodeValue ?? '';
+        if (text.trim()) lines.push(text);
+        return;
+      }
+      if (!(node instanceof Element)) return;
+      lines.push(node.tagName === 'BR' ? '' : (node.textContent ?? ''));
+    });
+    block.textContent = lines.join('\n').replace(/ /g, ' ');
+  });
+
   // Native blank lines are <br>; TipTap represents them as empty paragraphs.
+  // After the code blocks above, so a blank line inside one stays inside it.
   return doc.body.innerHTML.replace(/<br\s*\/?>/gi, '<p></p>');
 }
 
@@ -60,6 +85,27 @@ export function tiptapHtmlToStored(html: string): string {
       const p = li.querySelector('div > p') ?? li.querySelector('p');
       li.innerHTML = p ? p.innerHTML : (li.textContent ?? '');
     });
+  });
+
+  // TipTap code block → the native dialect: one `<p>` per line, because native
+  // writes a block's lines through the same paragraph writer as the rest of the
+  // document. Built as elements rather than as a string so the code's own `<`
+  // and `&` are escaped by the DOM instead of by hand.
+  //
+  // Deliberately before the whitespace walker below: each line is a `<p>` by
+  // then, so a code block's indentation is pinned as non-breaking spaces by the
+  // same rule as every other line — which is exactly how native stores it, and
+  // what stops the indentation being eaten on the next parse.
+  doc.querySelectorAll('codeblock').forEach((block) => {
+    const lines = (block.textContent ?? '').split('\n');
+    // A trailing newline is the editor's own line-break placeholder, not a line.
+    if (lines.length > 1 && lines[lines.length - 1] === '') lines.pop();
+    block.textContent = '';
+    for (const line of lines) {
+      const paragraph = doc.createElement('p');
+      paragraph.textContent = line;
+      block.appendChild(paragraph);
+    }
   });
 
   // Bullet/ordered items: strip the <p> wrapper native doesn't use. Done on the
@@ -115,7 +161,10 @@ export function tiptapHtmlToStored(html: string): string {
     .replace(/<[^>]+>/g, '')
     .replace(/&nbsp;/g, '')
     .trim();
-  if (!text && !/<(ul|ol|img|hr)\b/i.test(out)) return '';
+  // A code block counts as content even with nothing typed in it yet: one is
+  // created empty, on purpose, to be typed into. Storing '' would make it
+  // disappear on the next load.
+  if (!text && !/<(ul|ol|img|hr|codeblock)\b/i.test(out)) return '';
 
   return `<html>${out}</html>`;
 }

@@ -339,3 +339,55 @@ test('back from a directly-opened note goes home, not to copa', async ({ page })
   await expect(page).toHaveURL(/\/$/);
   await expect(page.getByText(title)).toBeVisible();
 });
+
+/**
+ * Code blocks, which nothing cheaper can cover.
+ *
+ * The transform that carries one between the editor and storage needs a real
+ * DOM, and the vitest config here is deliberately Node-only (see its header), so
+ * this round trip is only observable in a browser. It is also the transform
+ * where being wrong is expensive: the stored dialect is `<codeblock>` with one
+ * `<p>` per line — what the native editor reads and writes — while TipTap holds
+ * plain text with newlines in it. Get the translation wrong and a code block
+ * written on a phone comes back as a run-together paragraph, or the indentation
+ * is eaten on every load.
+ */
+test('three backticks make a code block that survives a reload', async ({ page }) => {
+  await page.goto('/');
+  await ready(page);
+
+  const title = `e2e code ${Date.now()}`;
+
+  await page.getByLabel('Create').click();
+  await page.getByPlaceholder('Title').fill(title);
+
+  const body = page.locator('.wn-rich .ProseMirror');
+  await body.click();
+  // The shortcut, not a menu: ``` turns the line into a real block rather than
+  // leaving three backticks sitting in the text.
+  await page.keyboard.type('```');
+  await expect(page.locator('.wn-rich .ProseMirror codeblock')).toBeVisible();
+
+  // An empty block to put things into — the caret is already inside it.
+  await page.keyboard.type('if (x) {');
+  await page.keyboard.press('Enter');
+  // Tab indents rather than moving focus out of the editor.
+  await page.keyboard.press('Tab');
+  await page.keyboard.type('run();');
+
+  const block = page.locator('.wn-rich .ProseMirror codeblock');
+  await expect(block).toContainText('if (x) {');
+  await expect(block).toContainText('run();');
+
+  await page.getByLabel('Go back').click();
+  await writesSettled(page);
+  await page.reload();
+
+  await page.getByText(title).click();
+  const reloaded = page.locator('.wn-rich .ProseMirror codeblock');
+  await expect(reloaded).toBeVisible();
+  // Both lines, still one block, indentation intact — the round trip through
+  // the stored `<p>`-per-line dialect and back.
+  await expect(reloaded).toContainText('if (x) {');
+  await expect(reloaded).toContainText('  run();');
+});

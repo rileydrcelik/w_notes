@@ -26,8 +26,7 @@ import { useEditAction } from '@/hooks/use-edit-action';
 import { useScrollToTop } from '@/hooks/use-scroll-to-top';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
 import { useTheme } from '@/hooks/use-theme';
-import { htmlToPlainText } from '@/lib/html-text';
-import { collectNoteImageIds } from '@/lib/note-images';
+import { hasNonTextContent, htmlToPlainText } from '@/lib/html-text';
 import { noFocusOutline } from '@/lib/web-style';
 import { useNotes } from '@/store/notes-store';
 
@@ -217,15 +216,15 @@ export default function NoteScreen() {
       const { id: sid, title: st, body: sb, stored, updateNote: update, deleteNote: remove } =
         snapshot.current;
       if (!stored) return;
-      // A body holding only a picture flattens to '' through `htmlToPlainText`,
-      // which strips tags — so without the image clause the first thing anyone
-      // does with this feature (paste a screenshot, type nothing, go back)
-      // trashes the note they just made.
+      // A body holding only a picture, or only an empty code block, flattens to
+      // '' through `htmlToPlainText`, which strips tags — so without the second
+      // clause the first thing anyone does with either feature (make one, type
+      // nothing, go back) trashes the note they just made.
       const isEmpty =
         !stored.pluginType &&
         st.trim().length === 0 &&
         htmlToPlainText(sb).length === 0 &&
-        collectNoteImageIds(sb).length === 0;
+        !hasNonTextContent(sb);
       if (isEmpty) {
         remove(sid);
         return;
