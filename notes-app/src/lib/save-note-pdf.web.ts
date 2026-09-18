@@ -14,6 +14,7 @@
  */
 import type { Note } from '@/data/notes';
 import { buildNoteDocument, noteHasExportableContent } from '@/lib/note-html-export';
+import { noteForExport } from '@/lib/note-image-export';
 
 /**
  * Safety net for browsers that never fire `afterprint` for an iframe. Removing
@@ -74,6 +75,9 @@ export async function saveNotePdfToDevice(note: Note): Promise<void> {
 
     // `srcdoc` keeps the document same-origin, which is what lets us reach into
     // `contentWindow` to print it at all.
-    frame.srcdoc = buildNoteDocument(note);
+    // Images travel as bytes: a reference means nothing to the print renderer.
+    void noteForExport(note).then((prepared) => {
+      frame.srcdoc = buildNoteDocument(prepared);
+    });
   });
 }

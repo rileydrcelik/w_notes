@@ -24,7 +24,13 @@ import {
 } from '@/lib/github-issue-drafts';
 import { ApiError, apiFetch, syncConfigured } from './api';
 import { getDeviceKey, rotateDeviceKey } from './device-key';
-import { downloadCopaFile, prepareLocalFiles, uploadCopaFile } from './files';
+import {
+  downloadCopaFile,
+  downloadNoteImage,
+  prepareLocalFiles,
+  uploadCopaFile,
+  uploadNoteImage,
+} from './files';
 
 const SYNCED_UID = 'synced_uid';
 
@@ -74,6 +80,20 @@ const ACCOUNT_CHANGED: SyncResult = { status: 'skipped', reason: 'account change
 // keep what we applied, and let the next pass carry on from the saved cursor
 // rather than spinning here.
 const MAX_PULL_PAGES = 50;
+
+/**
+ * Images fetched per pass. Small on purpose: the whole pass runs inside one
+ * owner-tab call with a 120s budget, and an image-heavy account would otherwise
+ * try to drain its entire backlog in a single pass and be killed mid-way.
+ */
+const IMAGE_DOWNLOADS_PER_PASS = 8;
+
+/**
+ * How long a newly captured image is safe from the sweep. It only has to cover
+ * the gap between writing the row and the body that references it reaching the
+ * database — the two are written together, so this is slack, not a mechanism.
+ */
+const IMAGE_SWEEP_GRACE_MS = 60 * 60 * 1000;
 
 export type SyncResult =
   | { status: 'ok'; cursor: number; pushed: number; pulled: number }
@@ -249,6 +269,7 @@ async function runSync(): Promise<SyncResult> {
     // 0) Upload bytes for any file blocks not yet in S3, stamping each row with
     //    its remote_key so the push below carries it across to other devices.
     await uploadPendingFiles();
+    await uploadPendingImages();
 
     // 1) Push local changes. The server takes them last-writer-wins; on success
     //    we clear the dirty flags for exactly what we sent.
@@ -290,7 +311,14 @@ async function runSync(): Promise<SyncResult> {
 
     // 3) Download bytes for any file blocks we now know about but don't hold
     //    locally yet (e.g. created on another device).
-    const downloaded = await downloadMissingFiles();
+    const downloaded = (await downloadMissingFiles()) + (await downloadMissingImages());
+
+    // 4) Reconcile image rows against what the bodies now say — after the pull,
+    //    so a body that arrived this pass counts as a reference. Tombstoning
+    //    here rather than when a picture is deleted from a note is deliberate:
+    //    that edit can still lose last-writer-wins to a device that was offline
+    //    holding the older body, and the image has to survive that.
+    await db.sweepNoteImages(IMAGE_SWEEP_GRACE_MS);
 
     if (changed > 0 || downloaded > 0) emitSynced();
     // Anything moving in either direction means this device is mid-conversation
@@ -343,6 +371,49 @@ async function uploadPendingFiles(): Promise<void> {
       Sentry.captureException(e, { tags: { source: 'sync-engine', op: 'upload' } });
     }
   }
+}
+
+/**
+ * Uploads bytes for every note image not yet in S3, stamping the row with its
+ * key (which re-queues it to push). Best-effort per image, like copa's.
+ */
+async function uploadPendingImages(): Promise<void> {
+  const uploads = await db.getNoteImageUploads();
+  for (const u of uploads) {
+    try {
+      const key = await uploadNoteImage(u.fileUri, u.mimeType);
+      await db.setNoteImageRemoteKey(u.id, key);
+    } catch (e) {
+      console.warn('[sync] image upload failed:', e);
+      Sentry.captureException(e, { tags: { source: 'sync-engine', op: 'upload-image' } });
+    }
+  }
+}
+
+/**
+ * Downloads bytes for images this device knows about but doesn't hold.
+ *
+ * Bounded, unlike the copa loop it is modelled on. Copa attachments are added by
+ * hand one at a time; images arrive at the speed of pasting, so a first sync of
+ * an image-heavy account is hundreds of presign-and-fetch round trips — enough
+ * to blow the owner-tab timeout this whole pass runs inside. The remainder is
+ * picked up by the next pass, and activity keeps the poll tight until the
+ * backlog drains.
+ */
+async function downloadMissingImages(): Promise<number> {
+  const downloads = await db.getNoteImageDownloads(IMAGE_DOWNLOADS_PER_PASS);
+  let landed = 0;
+  for (const d of downloads) {
+    try {
+      const { localUri } = await downloadNoteImage(d);
+      await db.setNoteImageLocalFile(d.id, localUri);
+      landed += 1;
+    } catch (e) {
+      console.warn('[sync] image download failed:', e);
+      Sentry.captureException(e, { tags: { source: 'sync-engine', op: 'download-image' } });
+    }
+  }
+  return landed;
 }
 
 /**

@@ -15,6 +15,7 @@ import { ThemedText } from '@/components/themed-text';
 import { Fonts, Spacing, type Palette } from '@/constants/theme';
 import type { Folder, Note } from '@/data/notes';
 import { folderColor } from '@/lib/folder-color';
+import { stripNoteImages } from '@/lib/note-images';
 import { sentryTarget } from '@/lib/sentry-note';
 import { githubTarget } from '@/lib/github-note';
 import { isResumeNote, resumeSourceExcerpt, resumeTitle } from '@/lib/resume-note';
@@ -274,7 +275,7 @@ function TextNoteCard({ note, query }: { note: Note; query?: string }) {
               ellipsizeMode="tail"
               style={textStyle}
               htmlStyle={html}>
-              {note.body}
+              {stripNoteImages(note.body)}
             </EnrichedText>
           ) : null)}
       </Animated.View>

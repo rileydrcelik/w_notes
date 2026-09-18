@@ -16,6 +16,7 @@ import { GlassSurface } from '@/components/glass-surface';
 import { ThemedText } from '@/components/themed-text';
 import { hexToRgba, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
+import { insertImageIntoActiveEditor } from '@/lib/active-editor';
 
 /** Active/highlight tint, matching the focused tab in the floating navbar. */
 const ACCENT = '#7a89b8';
@@ -169,6 +170,20 @@ export function FormattingToolbar({ editorRef, state, visible }: Props) {
               </Pressable>
             );
           })}
+
+          <View style={[styles.divider, { backgroundColor: hexToRgba(theme.textSecondary, 0.3) }]} />
+
+          {/* Insert a picture. Not one of INLINE_TOOLS: those are toggles the
+              editor reports a state for, while this opens a picker and has no
+              on/off of its own. The editor that has focus performs it — see
+              `lib/active-editor.ts`. */}
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Insert image"
+            onPress={() => insertImageIntoActiveEditor()}
+            style={styles.button}>
+            <MaterialCommunityIcons name="image-plus-outline" size={22} color={theme.text} />
+          </Pressable>
 
           <View style={[styles.divider, { backgroundColor: hexToRgba(theme.textSecondary, 0.3) }]} />
 

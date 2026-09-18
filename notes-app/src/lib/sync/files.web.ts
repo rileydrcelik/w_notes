@@ -82,3 +82,40 @@ export async function downloadCopaFile(_row: {
     : null;
   return { fileUri, thumbUri };
 }
+
+/**
+ * Uploads an embedded note image's bytes and returns the object key. The `kind`
+ * puts the object under the note-image prefix, which is what the purge aims at.
+ */
+export async function uploadNoteImage(fileUri: string, mimeType: string | null): Promise<string> {
+  const blob = await (await fetch(fileUri)).blob();
+  const { key, url } = await apiFetch<{ key: string; url: string }>('/files/upload-url', {
+    method: 'POST',
+    body: { mime_type: mimeType, kind: 'note-image' },
+  });
+  const res = await fetch(url, {
+    method: 'PUT',
+    headers: mimeType ? { 'Content-Type': mimeType } : {},
+    body: blob,
+  });
+  if (!res.ok) throw new Error(`S3 upload failed: ${res.status} ${res.statusText}`);
+  return key;
+}
+
+/**
+ * Downloads an image's bytes and returns a session object URL to render from.
+ * As with copa attachments, the URL dies with the page and the next session
+ * fetches again; the dead ones are cleared at database open.
+ */
+export async function downloadNoteImage(row: {
+  id: string;
+  remoteKey: string;
+}): Promise<{ localUri: string }> {
+  const { url } = await apiFetch<{ url: string }>('/files/download-url', {
+    method: 'POST',
+    body: { key: row.remoteKey },
+  });
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`S3 download failed: ${res.status} ${res.statusText}`);
+  return { localUri: URL.createObjectURL(await res.blob()) };
+}

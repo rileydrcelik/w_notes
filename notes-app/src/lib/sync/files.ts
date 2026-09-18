@@ -10,6 +10,7 @@
 import { File, UploadType } from 'expo-file-system';
 
 import { copaDestination, extensionOf, generateVideoThumbnail, isVideo } from '@/lib/copa-files';
+import { noteImageDestination } from '@/lib/note-image-files';
 import { apiFetch } from './api';
 
 /**
@@ -56,4 +57,42 @@ export async function downloadCopaFile(row: {
     ? ((await generateVideoThumbnail(dest.uri)) ?? null)
     : null;
   return { fileUri: dest.uri, thumbUri };
+}
+
+/**
+ * Uploads an embedded note image's bytes and returns the object key.
+ *
+ * Separate from `uploadCopaFile` for one reason that matters: the `kind` asks
+ * the backend for a key under the note-image prefix, which is what lets the
+ * purge reclaim these objects without being able to touch a copa attachment.
+ */
+export async function uploadNoteImage(fileUri: string, mimeType: string | null): Promise<string> {
+  const { key, url } = await apiFetch<{ key: string; url: string }>('/files/upload-url', {
+    method: 'POST',
+    body: { mime_type: mimeType, kind: 'note-image' },
+  });
+  await new File(fileUri).upload(url, {
+    httpMethod: 'PUT',
+    uploadType: UploadType.BINARY_CONTENT,
+    headers: mimeType ? { 'Content-Type': mimeType } : {},
+  });
+  return key;
+}
+
+/**
+ * Downloads an image's bytes into the device's document dir, named after the
+ * image id so the path resolves a body's reference without a lookup. Throws on
+ * failure so the row stays queued for the next pass.
+ */
+export async function downloadNoteImage(row: {
+  id: string;
+  remoteKey: string;
+}): Promise<{ localUri: string }> {
+  const { url } = await apiFetch<{ url: string }>('/files/download-url', {
+    method: 'POST',
+    body: { key: row.remoteKey },
+  });
+  const dest = noteImageDestination(row.id);
+  await File.downloadFileAsync(url, dest, { idempotent: true });
+  return { localUri: dest.uri };
 }

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type RefObject } from 'react';
-import { Keyboard } from 'react-native';
+import { Keyboard, useWindowDimensions } from 'react-native';
 import {
   EnrichedTextInput,
   type EnrichedInputStyle,
@@ -10,9 +10,23 @@ import {
 
 import { hexToRgba, type Palette } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
-import { clearActiveEditorDismiss, setActiveEditorDismiss } from '@/lib/active-editor';
+import {
+  clearActiveEditorDismiss,
+  clearActiveEditorInsertImage,
+  setActiveEditorDismiss,
+  setActiveEditorInsertImage,
+} from '@/lib/active-editor';
+import { db } from '@/lib/db';
 import { hasEscapedBlockMarkup } from '@/lib/html-text';
-import { canonicalizeNoteImages } from '@/lib/note-images';
+import { pickNoteImage } from '@/lib/note-image-files';
+import { insertNoteImage } from '@/lib/note-image-insert';
+import {
+  canonicalizeNoteImages,
+  noteImageIdResolver,
+  resolveNoteImages,
+  unresolveNoteImages,
+  type NoteImageIndex,
+} from '@/lib/note-images';
 import { Sentry } from '@/lib/sentry';
 
 const LINK_COLOR = '#3c87f7';
@@ -117,6 +131,33 @@ export function MarkdownEditor({
   const fallbackRef = useRef<EnrichedTextInputInstance | null>(null);
   const editor = editorRef ?? fallbackRef;
 
+  // What this device knows about the images this body references. A ref because
+  // every serialize needs it synchronously, and an insert adds to it.
+  const images = useRef<NoteImageIndex>(new Map());
+  const { width } = useWindowDimensions();
+  // Screen width less the note screen's gutters; images are laid out from the
+  // width in the tag, so one wider than this would be clipped.
+  const imageWidth = Math.max(160, Math.round(width) - 48);
+
+  /** Store an image and drop it in at the caret. */
+  const placeImage = async (sourceUri: string) => {
+    const inserted = await insertNoteImage(sourceUri, images.current);
+    if (!inserted) return;
+    const scale = inserted.width > imageWidth ? imageWidth / inserted.width : 1;
+    editor.current?.setImage(
+      inserted.uri,
+      Math.round(inserted.width * scale),
+      Math.round(inserted.height * scale),
+    );
+  };
+
+  const chooseImage = () => {
+    void (async () => {
+      const source = await pickNoteImage();
+      if (source) await placeImage(source);
+    })();
+  };
+
   // The seed comes back as a change event; that is the editor echoing what the
   // store already holds, not the user typing, and reporting it would mark the
   // note edited (see `onChangeBody` in the note screen) and re-commit a body
@@ -133,9 +174,30 @@ export function MarkdownEditor({
   const touched = useRef(false);
   useEffect(() => {
     if (!initialValue) return;
-    editor.current?.setValue(initialValue);
+    let cancelled = false;
+    void (async () => {
+      try {
+        const rows = await db.getNoteImageIndex();
+        images.current = new Map(rows.map((i) => [i.id, i]));
+      } catch {
+        // Without the index the references resolve to a placeholder that still
+        // occupies the document — degraded, never destructive.
+      }
+      if (cancelled) return;
+      // References become this device's own paths on the way in, and are turned
+      // back into references on the way out (`onChangeHtml` below). A body only
+      // ever carries `wn-img:<id>`; a phone's file path would be meaningless on
+      // every other device that syncs it.
+      editor.current?.setValue(resolveNoteImages(initialValue, images.current, imageWidth));
+    })();
+    return () => {
+      cancelled = true;
+    };
     // `editor` is a ref object and never changes identity; listed to satisfy the
-    // exhaustive-deps rule without re-seeding.
+    // exhaustive-deps rule without re-seeding. `imageWidth` is deliberately not
+    // a dependency: a rotation must not reseed the editor mid-edit, and the
+    // stored body doesn't carry the display size anyway.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialValue, editor]);
 
   // Drop the navbar's blur hook if this editor is torn down while still focused.
@@ -147,9 +209,13 @@ export function MarkdownEditor({
   // By identity, so an editor going away can't release a slot that a different,
   // still-focused one has taken in the meantime.
   const dismissRef = useRef<(() => void) | null>(null);
+  const insertRef = useRef<(() => void) | null>(null);
   useEffect(
     () => () => {
       if (dismissRef.current) clearActiveEditorDismiss(dismissRef.current);
+      // Same reasoning, and the same ownership rule: an editor unmounted while
+      // focused has to release the slot, but only if it still holds it.
+      if (insertRef.current) clearActiveEditorInsertImage(insertRef.current);
     },
     [],
   );
@@ -224,9 +290,28 @@ export function MarkdownEditor({
         // with Integer.parseInt and drops the whole body onto the degraded path
         // where markup shows as literal text. Round them here, on the one line
         // every native edit passes through (see note-images.ts).
-        const value = canonicalizeNoteImages(e.nativeEvent.value);
+        // Device paths become references again, and the display size the editor
+        // was seeded with is restored to the image's intrinsic size — the body
+        // that syncs must be identical on every device.
+        const value = canonicalizeNoteImages(
+          unresolveNoteImages(
+            e.nativeEvent.value,
+            noteImageIdResolver(images.current),
+            images.current,
+          ),
+        );
         watchForEscapedMarkup(value);
         onChangeText(value);
+      }}
+      // Pasting a picture on a phone did nothing at all before this: the native
+      // view writes each image to a temp file and reports it here, deliberately
+      // inserting nothing so the app decides what happens.
+      onPasteImages={(e) => {
+        void (async () => {
+          for (const image of e.nativeEvent.images) {
+            await placeImage(image.uri);
+          }
+        })();
       }}
       onChangeState={(e) => onStateChange?.(e.nativeEvent)}
       onChangeSelection={(e) => {
@@ -241,11 +326,17 @@ export function MarkdownEditor({
         const dismiss = () => editor.current?.blur();
         dismissRef.current = dismiss;
         setActiveEditorDismiss(dismiss);
+        // The formatting bar is the screen's, not this component's, so the
+        // insert action is registered rather than passed down (see
+        // `lib/active-editor.ts`).
+        insertRef.current = chooseImage;
+        setActiveEditorInsertImage(chooseImage);
         setFocused(true);
         onFocusChange?.(true);
       }}
       onBlur={() => {
         setActiveEditorDismiss(null);
+        clearActiveEditorInsertImage(chooseImage);
         setFocused(false);
         onFocusChange?.(false);
       }}

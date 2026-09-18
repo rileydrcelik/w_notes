@@ -76,6 +76,13 @@ vi.mock('expo-sharing', () => ({
   shareAsync: vi.fn(),
 }));
 
+// Resolving a note's images to bytes reads the database, which is expo-sqlite
+// and unloadable here. These tests are about the printer's decision logic, so
+// the note passes through as it is.
+vi.mock('@/lib/note-image-export', () => ({
+  noteForExport: async (note: Note) => note,
+}));
+
 vi.mock('@/lib/save-file', () => ({
   canSaveToDevice: vi.fn(),
   saveFileToDevice: vi.fn(),
@@ -171,8 +178,14 @@ describe('single-flight', () => {
     const first = saveNotePdfToDevice(n);
     const second = saveNotePdfToDevice(n);
 
-    // The second call gets the first's own promise back, not a new one.
+    // The second call gets the first's own promise back, not a new one. The
+    // guard is taken synchronously, which is what makes that true even though
+    // the export now awaits the note's images before it reaches the printer.
     expect(second).toBe(first);
+    // Let those awaits settle, so "printed once" is about single-flight rather
+    // than about the printer not having been reached yet.
+    await Promise.resolve();
+    await Promise.resolve();
     expect(Print.printToFileAsync).toHaveBeenCalledTimes(1);
 
     resolvePrint({ uri: PRINTED_URI, numberOfPages: 1 });

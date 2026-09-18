@@ -173,6 +173,20 @@ export function resolveNoteImages(
 }
 
 /**
+ * The inverse of the index: a device path back to the id it belongs to.
+ *
+ * Built from the same map `resolveNoteImages` wrote the paths from, so it can't
+ * disagree with it. Native could read the id off the filename and web could keep
+ * a registry of object URLs, but both would be a second source of truth for
+ * something the index already knows.
+ */
+export function noteImageIdResolver(index: NoteImageIndex): (src: string) => string | null {
+  const byUri = new Map<string, string>();
+  for (const [id, info] of index) if (info.uri) byUri.set(info.uri, id);
+  return (src) => byUri.get(src) ?? null;
+}
+
+/**
  * Editor HTML → the stored body: this device's paths become references again,
  * and the display size the editor was seeded with is restored to the image's
  * intrinsic size.
@@ -204,4 +218,50 @@ export function unresolveNoteImages(
       }
     }
   });
+}
+
+/**
+ * Stored body → a body that stands on its own, with each image's bytes carried
+ * inline as a `data:` URI.
+ *
+ * What exports need. A `wn-img:` reference means nothing outside this app, and a
+ * `file://` one renders as a blank box in the printer iOS uses — so the bytes
+ * have to travel with the document. `load` reads them, and an image it can't
+ * produce is left as a reference, which the export sanitizer then drops: a
+ * missing picture beats a broken one.
+ */
+export async function inlineNoteImages(
+  html: string,
+  load: (id: string) => Promise<string | null>,
+): Promise<string> {
+  const ids = collectNoteImageIds(html);
+  if (ids.length === 0) return html;
+  const loaded = new Map<string, string>();
+  for (const id of ids) {
+    const uri = await load(id);
+    if (uri) loaded.set(id, uri);
+  }
+  if (loaded.size === 0) return html;
+  return rewriteImages(html, (attrs) => {
+    const src = get(attrs, 'src');
+    const id = src ? parseNoteImageRef(src) : null;
+    if (!id) return;
+    const data = loaded.get(id);
+    if (data) set(attrs, 'src', data);
+  });
+}
+
+/**
+ * Drop every image from a body, keeping the text.
+ *
+ * For the places that render a body but can't resolve one: a note card's
+ * two-line preview, where an unresolved reference would draw the platform's
+ * broken-image glyph, and where a picture in a 40px strip of text says nothing
+ * anyway. Removing the tag is safe *only* here, because a preview is read-only
+ * and never serializes back — in an editor the same removal is a deletion that
+ * syncs everywhere.
+ */
+export function stripNoteImages(html: string): string {
+  if (!html || !html.includes('<img')) return html;
+  return html.replace(IMG_TAG, '');
 }

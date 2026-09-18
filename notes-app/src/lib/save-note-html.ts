@@ -16,6 +16,7 @@ import { canSaveToDevice, saveFileToDevice } from '@/lib/save-file';
 import type { Note } from '@/data/notes';
 import { noteExportName, noteFileTitle } from '@/lib/note-export';
 import { buildNoteDocument, noteHasExportableContent } from '@/lib/note-html-export';
+import { noteForExport } from '@/lib/note-image-export';
 
 /** Subdirectory under the cache dir that holds exported note files. */
 const EXPORT_DIR = 'exports';
@@ -34,7 +35,8 @@ export async function saveNoteHtmlToDevice(note: Note): Promise<void> {
     const dest = new File(dir, fileName);
     if (dest.exists) dest.delete();
     dest.create();
-    dest.write(buildNoteDocument(note));
+    // Images travel as bytes: a reference means nothing outside the app.
+    dest.write(buildNoteDocument(await noteForExport(note)));
 
     if (canSaveToDevice()) {
       const outcome = await saveFileToDevice({ uri: dest.uri, fileName });

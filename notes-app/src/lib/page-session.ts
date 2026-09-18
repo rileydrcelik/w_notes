@@ -94,6 +94,8 @@ type SessionStamped = {
     thumbUri: string | null,
     fileSession?: string,
   ): Promise<void>;
+  createNoteImage(input: { fileSession?: string }): Promise<void>;
+  setNoteImageLocalFile(id: string, localUri: string, fileSession?: string): Promise<void>;
 };
 
 export function withPageSession<T extends SessionStamped>(api: T): T {
@@ -103,6 +105,14 @@ export function withPageSession<T extends SessionStamped>(api: T): T {
       api.createCopa({ ...input, fileSession: pageSessionId() }),
     setCopaLocalFile: (id: string, fileUri: string, thumbUri: string | null) =>
       api.setCopaLocalFile(id, fileUri, thumbUri, pageSessionId()),
+    // A note image's bytes are held by an object URL on web, exactly as a copa
+    // attachment's are, so it needs the same stamp: without it another tab's
+    // startup cleanup reads this tab's live URL as dead and nulls it — and for
+    // an image that hasn't uploaded yet those bytes exist nowhere else.
+    createNoteImage: (input: { fileSession?: string }) =>
+      api.createNoteImage({ ...input, fileSession: pageSessionId() }),
+    setNoteImageLocalFile: (id: string, localUri: string) =>
+      api.setNoteImageLocalFile(id, localUri, pageSessionId()),
     // Cast because the wrappers accept the shape above while `T` may declare
     // something narrower; every other member is passed through untouched.
   } as T;

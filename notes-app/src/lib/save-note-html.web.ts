@@ -9,11 +9,14 @@
 import type { Note } from '@/data/notes';
 import { noteExportName } from '@/lib/note-export';
 import { buildNoteDocument, noteHasExportableContent } from '@/lib/note-html-export';
+import { noteForExport } from '@/lib/note-image-export';
 
 export async function saveNoteHtmlToDevice(note: Note): Promise<void> {
   if (!noteHasExportableContent(note)) return;
 
-  const blob = new Blob([buildNoteDocument(note)], { type: 'text/html;charset=utf-8' });
+  // Images travel as bytes: a reference means nothing outside the app.
+  const document_ = buildNoteDocument(await noteForExport(note));
+  const blob = new Blob([document_], { type: 'text/html;charset=utf-8' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;

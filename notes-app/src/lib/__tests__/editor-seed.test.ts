@@ -29,7 +29,10 @@ const SOURCE = readFileSync(
 
 describe('the native editor body', () => {
   it('is seeded through setValue', () => {
-    expect(SOURCE).toMatch(/\.setValue\(initialValue\)/);
+    // The seed may be transformed on its way in — image references are resolved
+    // to this device's paths (`note-images.ts`) — but it must still travel
+    // through `setValue`, and it must still be `initialValue` that goes.
+    expect(SOURCE).toMatch(/\.setValue\([^;]*\binitialValue\b/);
   });
 
   it('does not hand the body to defaultValue', () => {

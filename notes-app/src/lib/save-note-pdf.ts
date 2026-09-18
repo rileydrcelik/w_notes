@@ -29,6 +29,7 @@ import { canSaveToDevice, saveFileToDevice } from '@/lib/save-file';
 import type { Note } from '@/data/notes';
 import { noteExportName, noteFileTitle } from '@/lib/note-export';
 import { buildNoteDocument, noteHasExportableContent } from '@/lib/note-html-export';
+import { noteForExport } from '@/lib/note-image-export';
 
 /** Subdirectory under the cache dir that holds exported note files. */
 const EXPORT_DIR = 'exports';
@@ -136,7 +137,9 @@ async function exportNotePdf(note: Note): Promise<void> {
       return;
     }
 
-    const html = buildNoteDocument(note);
+    // Images travel as bytes — a file:// source prints as a blank box on
+    // iOS, and this is also what makes the size check below meaningful.
+    const html = buildNoteDocument(await noteForExport(note));
     if (html.length > MAX_DOCUMENT_CHARS) {
       Alert.alert(
         'Too long for a PDF',

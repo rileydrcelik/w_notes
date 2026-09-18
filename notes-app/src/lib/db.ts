@@ -29,6 +29,7 @@ import { foldersToRehome } from '@/lib/folder-tree';
 import { shareDbAcrossTabs } from '@/lib/db-tabs';
 import { liveSessionIds, withPageSession } from '@/lib/page-session';
 import { COPA_UPSERT_SQL } from '@/lib/sync/copa-upsert';
+import { NOTE_IMAGE_UPSERT_SQL } from '@/lib/sync/note-image-upsert';
 import type { CopaItem } from '@/data/copa';
 
 /**
@@ -165,6 +166,21 @@ type ResumeTargetRow = {
   deleted_at: number | null;
 };
 
+type NoteImageRow = {
+  id: string;
+  created_at: number;
+  updated_at: number;
+  deleted_at: number | null;
+  mime_type: string | null;
+  file_size: number | null;
+  width: number | null;
+  height: number | null;
+  remote_key: string | null;
+  // Device-local path to the bytes; never synced, because a body is identical
+  // on every device and a path is not.
+  local_uri: string | null;
+};
+
 type CopaRow = {
   id: string;
   label: string;
@@ -282,6 +298,29 @@ export type CopaSync = {
 };
 
 /**
+ * One image referenced by a note body as `<img src="wn-img:{id}">`.
+ *
+ * The bytes live in S3 under `remote_key`, like a copa attachment; the local
+ * path stays on the device. Not scoped to a note: the same id can be referenced
+ * by two bodies (copying a screenshot between notes) and by a copa block, which
+ * shares the editor. What makes an image collectable is that no body mentions
+ * it any more — see `sweepNoteImages`.
+ */
+export type NoteImageSync = {
+  id: string;
+  created_at: number;
+  updated_at: number;
+  deleted_at: number | null;
+  // All nullable and all COALESCE-preserved on both sides: NULL means "this
+  // device hasn't heard yet", never "cleared". See `note-image-upsert.ts`.
+  mime_type: string | null;
+  file_size: number | null;
+  width: number | null;
+  height: number | null;
+  remote_key: string | null;
+};
+
+/**
  * A finance note's spreadsheet. `id` *is* the owning note's id — one sheet per
  * note, so there's no way to end up with two sheets for one note or an orphan
  * with no note. `data` is the whole document as JSON (see `lib/finance/sheet`),
@@ -345,6 +384,7 @@ export type SyncPayload = {
   folders: FolderSync[];
   notes: NoteSync[];
   copa_items: CopaSync[];
+  note_images: NoteImageSync[];
   issues: IssueSync[];
   finance_sheets: FinanceSheetSync[];
   resume_versions: ResumeVersionSync[];
@@ -403,12 +443,21 @@ async function clearEphemeralFilePaths(database: SQLite.SQLiteDatabase): Promise
     await database.runAsync(
       "UPDATE copa_items SET file_uri = NULL, thumb_uri = NULL WHERE file_uri LIKE 'blob:%'",
     );
+    await database.runAsync(
+      "UPDATE note_images SET local_uri = NULL WHERE local_uri LIKE 'blob:%'",
+    );
     return;
   }
   const holes = Array.from(live, () => '?').join(', ');
   await database.runAsync(
     `UPDATE copa_items SET file_uri = NULL, thumb_uri = NULL, file_session = NULL
      WHERE file_uri LIKE 'blob:%'
+       AND (file_session IS NULL OR file_session NOT IN (${holes}))`,
+    Array.from(live),
+  );
+  await database.runAsync(
+    `UPDATE note_images SET local_uri = NULL, file_session = NULL
+     WHERE local_uri LIKE 'blob:%'
        AND (file_session IS NULL OR file_session NOT IN (${holes}))`,
     Array.from(live),
   );
@@ -476,6 +525,24 @@ async function open(): Promise<SQLite.SQLiteDatabase> {
       thumb_uri   TEXT,
       remote_key  TEXT,
       -- The page session that minted file_uri; device-local, never synced.
+      file_session TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS note_images (
+      id           TEXT PRIMARY KEY NOT NULL,
+      created_at   INTEGER NOT NULL,
+      updated_at   INTEGER NOT NULL DEFAULT 0,
+      deleted_at   INTEGER,
+      dirty        INTEGER NOT NULL DEFAULT 1,
+      mime_type    TEXT,
+      file_size    INTEGER,
+      width        INTEGER,
+      height       INTEGER,
+      remote_key   TEXT,
+      -- Device-local path to the bytes, and the page session that minted it on
+      -- web. Neither is synced: a body is byte-identical on every device, so it
+      -- carries a reference and this row resolves it locally.
+      local_uri    TEXT,
       file_session TEXT
     );
 
@@ -583,6 +650,7 @@ async function open(): Promise<SQLite.SQLiteDatabase> {
     CREATE INDEX IF NOT EXISTS idx_notes_dirty ON notes (dirty);
     CREATE INDEX IF NOT EXISTS idx_folders_dirty ON folders (dirty);
     CREATE INDEX IF NOT EXISTS idx_copa_dirty ON copa_items (dirty);
+    CREATE INDEX IF NOT EXISTS idx_note_images_dirty ON note_images (dirty);
     CREATE INDEX IF NOT EXISTS idx_issues_note_id ON issues (note_id);
     CREATE INDEX IF NOT EXISTS idx_issues_dirty ON issues (dirty);
     CREATE INDEX IF NOT EXISTS idx_finance_dirty ON finance_sheets (dirty);
@@ -1742,6 +1810,181 @@ const localDb = {
     );
   },
 
+  // ---- Note images (bytes live in S3; see lib/sync/files.ts) ----
+
+  /**
+   * Every live image this device knows about, as the index the editors resolve
+   * a body against (`lib/note-images.ts`). Includes rows whose bytes haven't
+   * arrived (`local_uri` NULL) — an image the editor can't draw must still
+   * occupy the document, or the next keystroke serializes the note without it.
+   */
+  async getNoteImageIndex(): Promise<
+    { id: string; uri: string | null; width: number; height: number; mimeType: string | null }[]
+  > {
+    const database = await getDb();
+    const rows = await database.getAllAsync<{
+      id: string;
+      local_uri: string | null;
+      width: number | null;
+      height: number | null;
+      mime_type: string | null;
+    }>(
+      'SELECT id, local_uri, width, height, mime_type FROM note_images WHERE deleted_at IS NULL',
+    );
+    return rows.map((r) => ({
+      id: r.id,
+      uri: r.local_uri,
+      width: r.width ?? 0,
+      height: r.height ?? 0,
+      mimeType: r.mime_type,
+    }));
+  },
+
+  /** Record a freshly captured image. The bytes are already on disk (or held by
+   *  an object URL on web); the upload happens on the next sync pass. */
+  async createNoteImage(image: {
+    id: string;
+    localUri: string;
+    mimeType: string | null;
+    fileSize: number | null;
+    width: number;
+    height: number;
+    /** As in `createCopa`: the page session that minted `localUri`, bound by the
+     *  calling tab so another tab's cleanup can't null a live URL. */
+    fileSession?: string;
+  }): Promise<void> {
+    dbCrumb('createNoteImage', { id: image.id });
+    const database = await getDb();
+    const now = Date.now();
+    await database.runAsync(
+      `INSERT INTO note_images
+         (id, created_at, updated_at, deleted_at, dirty,
+          mime_type, file_size, width, height, remote_key, local_uri, file_session)
+       VALUES (?, ?, ?, NULL, 1, ?, ?, ?, ?, NULL, ?, ?)`,
+      [
+        image.id,
+        now,
+        now,
+        image.mimeType,
+        image.fileSize,
+        image.width,
+        image.height,
+        image.localUri,
+        image.fileSession ?? null,
+      ],
+    );
+  },
+
+  /** Live images whose bytes haven't been uploaded yet (no remote_key). */
+  async getNoteImageUploads(): Promise<
+    { id: string; fileUri: string; mimeType: string | null }[]
+  > {
+    const database = await getDb();
+    const rows = await database.getAllAsync<{
+      id: string;
+      local_uri: string;
+      mime_type: string | null;
+    }>(
+      `SELECT id, local_uri, mime_type FROM note_images
+       WHERE local_uri IS NOT NULL AND remote_key IS NULL AND deleted_at IS NULL
+         AND id NOT LIKE ?`,
+      [`${DEV_SEED_PREFIX}%`],
+    );
+    return rows.map((r) => ({ id: r.id, fileUri: r.local_uri, mimeType: r.mime_type }));
+  },
+
+  /** Record the S3 key after a successful upload, and queue it to push. */
+  async setNoteImageRemoteKey(id: string, remoteKey: string): Promise<void> {
+    dbCrumb('setNoteImageRemoteKey', { id });
+    const database = await getDb();
+    const now = Date.now();
+    await database.runAsync(
+      'UPDATE note_images SET remote_key = ?, updated_at = ?, dirty = 1 WHERE id = ?',
+      [remoteKey, now, id],
+    );
+  },
+
+  /** Live images with bytes in S3 but no local copy yet (need download). */
+  async getNoteImageDownloads(
+    limit: number,
+  ): Promise<{ id: string; remoteKey: string; mimeType: string | null }[]> {
+    const database = await getDb();
+    const rows = await database.getAllAsync<{
+      id: string;
+      remote_key: string;
+      mime_type: string | null;
+    }>(
+      `SELECT id, remote_key, mime_type FROM note_images
+       WHERE remote_key IS NOT NULL AND local_uri IS NULL AND deleted_at IS NULL
+       ORDER BY created_at
+       LIMIT ?`,
+      [limit],
+    );
+    return rows.map((r) => ({ id: r.id, remoteKey: r.remote_key, mimeType: r.mime_type }));
+  },
+
+  /**
+   * Point an image at its freshly-downloaded local bytes. Device-specific, so
+   * this deliberately does NOT mark the row dirty.
+   */
+  async setNoteImageLocalFile(
+    id: string,
+    localUri: string,
+    /** As in `setCopaLocalFile`: the session that minted the path. */
+    fileSession?: string,
+  ): Promise<void> {
+    dbCrumb('setNoteImageLocalFile', { id });
+    const database = await getDb();
+    await database.runAsync(
+      'UPDATE note_images SET local_uri = ?, file_session = ? WHERE id = ?',
+      [localUri, fileSession ?? null, id],
+    );
+  },
+
+  /**
+   * Reconcile image rows against what the bodies actually say.
+   *
+   * The body is the authority; a tombstone is only a hint. That asymmetry is
+   * what survives two devices disagreeing: one removes a picture and tombstones
+   * the row, the other edits the same note offline and its body — still holding
+   * the image — wins last-writer-wins. The tombstone is not undone by that
+   * merge, so the surviving body would reference a dead row and the picture
+   * would be gone with no way back. So:
+   *
+   * - an image any body still references is resurrected if it was tombstoned;
+   * - an image nothing references is tombstoned, and the backend's purge drops
+   *   the S3 object once that has stood for the trash window.
+   *
+   * References are counted across trashed notes too, because restoring a note
+   * has to restore its pictures with it; a note purged from the trash is gone
+   * from the table entirely, so its images fall out of the count by themselves.
+   * Copa blocks count for the same reason — they share the editor.
+   *
+   * The grace period is measured from creation, so an image inserted seconds
+   * ago can't be swept by a pass that runs before its body is persisted.
+   */
+  async sweepNoteImages(graceMs: number): Promise<void> {
+    const database = await getDb();
+    const now = Date.now();
+    const referenced = `EXISTS (
+        SELECT 1 FROM notes WHERE notes.body LIKE '%wn-img:' || note_images.id || '%'
+      ) OR EXISTS (
+        SELECT 1 FROM copa_items WHERE copa_items.content LIKE '%wn-img:' || note_images.id || '%'
+      )`;
+    await database.withTransactionAsync(async () => {
+      await database.runAsync(
+        `UPDATE note_images SET deleted_at = NULL, updated_at = ?, dirty = 1
+         WHERE deleted_at IS NOT NULL AND (${referenced})`,
+        [now],
+      );
+      await database.runAsync(
+        `UPDATE note_images SET deleted_at = ?, updated_at = ?, dirty = 1
+         WHERE deleted_at IS NULL AND created_at < ? AND NOT (${referenced})`,
+        [now, now, now - graceMs],
+      );
+    });
+  },
+
   // ---- Issues (task-manager project rows) ----
 
   /** Every live issue across all projects, ordered for stable rendering. */
@@ -2155,6 +2398,7 @@ const localDb = {
       folders,
       notes,
       copa_items,
+      note_images,
       issues,
       finance_sheets,
       resume_versions,
@@ -2177,6 +2421,12 @@ const localDb = {
         `SELECT id, label, content, favorite, created_at, updated_at, deleted_at,
                 file_name, mime_type, file_size, remote_key
          FROM copa_items WHERE dirty = 1 AND id NOT LIKE ?`,
+        [skipSeed],
+      ),
+      database.getAllAsync<NoteImageSync>(
+        `SELECT id, created_at, updated_at, deleted_at,
+                mime_type, file_size, width, height, remote_key
+         FROM note_images WHERE dirty = 1 AND id NOT LIKE ?`,
         [skipSeed],
       ),
       database.getAllAsync<IssueSync>(
@@ -2233,6 +2483,7 @@ const localDb = {
       folders,
       notes,
       copa_items,
+      note_images,
       issues,
       finance_sheets,
       resume_versions,
@@ -2265,6 +2516,12 @@ const localDb = {
         await database.runAsync('UPDATE copa_items SET dirty = 0 WHERE id = ? AND updated_at = ?', [
           c.id,
           c.updated_at,
+        ]);
+      }
+      for (const m of payload.note_images) {
+        await database.runAsync('UPDATE note_images SET dirty = 0 WHERE id = ? AND updated_at = ?', [
+          m.id,
+          m.updated_at,
         ]);
       }
       for (const i of payload.issues) {
@@ -2417,6 +2674,23 @@ const localDb = {
             n.plugin_config ?? null,
           ],
         );
+        changed += r.changes;
+      }
+      for (const m of payload.note_images ?? []) {
+        // Same shape and the same reasons as the copa upsert below: the key and
+        // the dimensions are COALESCE-preserved, and a row that kept a value the
+        // payload lacked stays dirty. See `note-image-upsert.ts`.
+        const r = await database.runAsync(NOTE_IMAGE_UPSERT_SQL, [
+          m.id,
+          m.created_at,
+          m.updated_at,
+          m.deleted_at,
+          m.mime_type,
+          m.file_size,
+          m.width,
+          m.height,
+          m.remote_key,
+        ]);
         changed += r.changes;
       }
       for (const c of payload.copa_items) {
@@ -2614,7 +2888,7 @@ const localDb = {
     // clean, so signing in never claims them into the account and they stay
     // local to this one device for ever, with nothing on screen to say so.
     await database.execAsync(
-      'UPDATE folders SET dirty = 1; UPDATE notes SET dirty = 1; UPDATE copa_items SET dirty = 1; UPDATE issues SET dirty = 1; UPDATE finance_sheets SET dirty = 1; UPDATE resume_versions SET dirty = 1; UPDATE resume_targets SET dirty = 1; UPDATE user_settings SET dirty = 1;',
+      'UPDATE folders SET dirty = 1; UPDATE notes SET dirty = 1; UPDATE copa_items SET dirty = 1; UPDATE note_images SET dirty = 1; UPDATE issues SET dirty = 1; UPDATE finance_sheets SET dirty = 1; UPDATE resume_versions SET dirty = 1; UPDATE resume_targets SET dirty = 1; UPDATE user_settings SET dirty = 1;',
     );
   },
 
@@ -2636,7 +2910,7 @@ const localDb = {
     // previous account's rows survive sign-out and show up under whoever signs
     // in next on this device.
     await database.execAsync(
-      'DELETE FROM folders; DELETE FROM notes; DELETE FROM copa_items; DELETE FROM issues; DELETE FROM finance_sheets; DELETE FROM resume_versions; DELETE FROM resume_targets; DELETE FROM user_settings;',
+      'DELETE FROM folders; DELETE FROM notes; DELETE FROM copa_items; DELETE FROM note_images; DELETE FROM issues; DELETE FROM finance_sheets; DELETE FROM resume_versions; DELETE FROM resume_targets; DELETE FROM user_settings;',
     );
   },
 
@@ -2822,6 +3096,10 @@ const WRITE_METHODS = [
   'deleteCopa',
   'setCopaRemoteKey',
   'setCopaLocalFile',
+  'createNoteImage',
+  'setNoteImageRemoteKey',
+  'setNoteImageLocalFile',
+  'sweepNoteImages',
   'createIssue',
   'updateIssue',
   'setIssueTitleIfStub',
@@ -2870,7 +3148,17 @@ for (const name of WRITE_METHODS) {
  * once the row exists it stops writing, so the tabs settle after a round or
  * two. A refresh-reachable write that kept writing would not, and belongs here.
  */
-const HOUSEKEEPING_WRITES: readonly string[] = ['purgeExpiredTrash', 'markSynced', 'setCursor'];
+const HOUSEKEEPING_WRITES: readonly string[] = [
+  'purgeExpiredTrash',
+  'markSynced',
+  'setCursor',
+  // Runs on every sync pass and almost always changes nothing. What it does
+  // change — an image row's tombstone — is not on any screen: images are read
+  // through `getNoteImageIndex` when an editor mounts, not through `bootstrap`.
+  // Announcing it would have every pass wake every other tab into a full
+  // re-read for a row nobody is looking at.
+  'sweepNoteImages',
+];
 
 /**
  * The database every caller sees.

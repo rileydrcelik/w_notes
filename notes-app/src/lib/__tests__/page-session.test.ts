@@ -157,16 +157,30 @@ describe('withPageSession', () => {
     const setCopaLocalFile = vi.fn(
       async (_id: string, _uri: string, _thumb: string | null, _session?: string) => {},
     );
+    const createNoteImage = vi.fn(async (_input: { id?: string; fileSession?: string }) => {});
+    const setNoteImageLocalFile = vi.fn(
+      async (_id: string, _uri: string, _session?: string) => {},
+    );
 
-    const api = withPageSession({ createCopa, setCopaLocalFile });
+    const api = withPageSession({
+      createCopa,
+      setCopaLocalFile,
+      createNoteImage,
+      setNoteImageLocalFile,
+    });
     await api.createCopa({ id: 'c1' });
     await api.setCopaLocalFile('c1', 'blob:abc', null);
+    await api.createNoteImage({ id: 'i1' });
+    await api.setNoteImageLocalFile('i1', 'blob:def');
 
     // Both methods run in whichever tab holds the database, so a session read
     // inside their bodies names that tab rather than the one that minted the
     // URL being stamped.
     expect(createCopa).toHaveBeenCalledWith({ id: 'c1', fileSession: pageSessionId() });
     expect(setCopaLocalFile).toHaveBeenCalledWith('c1', 'blob:abc', null, pageSessionId());
+    // A note image's bytes are held the same way and need the same stamp.
+    expect(createNoteImage).toHaveBeenCalledWith({ id: 'i1', fileSession: pageSessionId() });
+    expect(setNoteImageLocalFile).toHaveBeenCalledWith('i1', 'blob:def', pageSessionId());
   });
 
   it('passes every other method through untouched', async () => {
@@ -181,6 +195,8 @@ describe('withPageSession', () => {
         _thumb: string | null,
         _session?: string,
       ) => {},
+      createNoteImage: async (_input: { fileSession?: string }) => {},
+      setNoteImageLocalFile: async (_id: string, _uri: string, _session?: string) => {},
       getNote: async (id: string) => `note ${id}`,
     });
 

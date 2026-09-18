@@ -68,3 +68,39 @@ export function subscribeActiveEditor(listener: () => void): () => void {
     listeners.delete(listener);
   };
 }
+
+// ---- Insert image ----
+//
+// The formatting bar is rendered by the screen, while the editor that would
+// receive an image is a child of it — and on both platforms the insert has to
+// run *inside* the editor (it holds the caret, the image index and the
+// imperative handle). Rather than thread a callback down through every screen
+// that hosts an editor, the focused editor registers the action here, exactly as
+// it registers its dismiss above, and the bar calls it.
+
+let activeInsertImage: (() => void) | null = null;
+
+export function setActiveEditorInsertImage(fn: (() => void) | null): void {
+  activeInsertImage = fn;
+  listeners.forEach((l) => l());
+}
+
+/** Release the slot, but only if `fn` still holds it — same ownership rule as
+ *  `clearActiveEditorDismiss`: an editor going away must not clear a different
+ *  editor's registration. */
+export function clearActiveEditorInsertImage(fn: () => void): void {
+  if (activeInsertImage !== fn) return;
+  setActiveEditorInsertImage(null);
+}
+
+/** Whether the focused editor can take an image right now. */
+export function canInsertImage(): boolean {
+  return activeInsertImage !== null;
+}
+
+/** Ask the focused editor to insert an image. Returns whether one handled it. */
+export function insertImageIntoActiveEditor(): boolean {
+  if (!activeInsertImage) return false;
+  activeInsertImage();
+  return true;
+}
