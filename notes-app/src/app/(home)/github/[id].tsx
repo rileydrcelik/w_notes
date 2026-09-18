@@ -20,7 +20,7 @@ import { SwipeBackView } from '@/components/swipe-back-view';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { hexToRgba, Spacing } from '@/constants/theme';
-import { trailingSpacers, useGridColumns, useGridColumnWidth, useGridEdgePadding, useTileHeight } from '@/lib/grid';
+import { columnsOf, useGridColumns, useGridColumnWidth, useGridEdgePadding, useTileHeight } from '@/lib/grid';
 import { useContextMenu } from '@/hooks/use-context-menu';
 import { useScrollToTop } from '@/hooks/use-scroll-to-top';
 import { useGithubDrafts } from '@/hooks/use-github-outbox';
@@ -382,18 +382,19 @@ export default function GithubIssuesScreen() {
   );
 
   const [issues, setIssues] = useState<Issue[]>([]);
-  // Grid rows: issues plus transparent spacers padding the last row so its cards
-  // stay one column wide (same layout as the note/folder feed).
-  type GridRow = Issue | { spacer: true; key: string };
-  const gridData = useMemo<GridRow[]>(() => {
-    const rows: GridRow[] = [...issues];
-    for (let i = 0; i < trailingSpacers(issues.length, columns); i++) rows.push({ spacer: true, key: `spacer-${i}` });
-    return rows;
-    // `columns` belongs here: it changes when the window is resized across a
-    // breakpoint, and spacers computed for the old count leave the last row
-    // short or pad it into an empty extra row.
+  // Dealt into columns rather than laid out in rows: a card here expands under a
+  // tap to show its body and comments, and in a row layout a row is as tall as
+  // its tallest cell — so opening one issue pushed the issue beside it down for
+  // a tap that had nothing to do with it. Each column stacks on its own now
+  // (see `columnsOf`), so a card only moves what is under it. No spacers: a
+  // short column simply ends.
+  type GridColumn = { key: string; items: Issue[] };
+  const gridData = useMemo<GridColumn[]>(() => {
+    // Empty stays empty, so `ListEmptyComponent` still gets its chance.
+    if (issues.length === 0) return [];
+    return columnsOf(issues, columns).map((items, i) => ({ key: `col-${i}`, items }));
   }, [issues, columns]);
-  const { scrollProps, scrolled, scrollToTop } = useScrollToTop<FlatList<GridRow>>();
+  const { scrollProps, scrolled, scrollToTop } = useScrollToTop<FlatList<GridColumn>>();
   // Issues composed here that never got out. They can't join the list below —
   // every row, its key and the whole selection are a real GitHub issue number,
   // and these have none — so the header says how many are waiting instead.
@@ -585,7 +586,7 @@ export default function GithubIssuesScreen() {
           <FlatList
               {...scrollProps}
               data={gridData}
-              keyExtractor={(item) => ('spacer' in item ? item.key : String(item.number))}
+              keyExtractor={(column) => column.key}
               numColumns={columns}
               // The column count changes with the window on web, and React
               // Native refuses to change numColumns in place — the list must
@@ -645,20 +646,20 @@ export default function GithubIssuesScreen() {
                   </ThemedText>
                 )
               }
-              renderItem={({ item }) => {
-                if ('spacer' in item) return <View style={[styles.cardCell, { width: columnWidth }]} />;
-                return (
-                  <View style={[styles.cardCell, { width: columnWidth }]}>
+              renderItem={({ item: column }) => (
+                <View style={[styles.cardCell, { width: columnWidth }]}>
+                  {column.items.map((item) => (
                     <IssueCard
+                      key={item.number}
                       issue={item}
                       repo={target.repo}
                       selectionActive={selectionActive}
                       selected={isSelected(String(item.number))}
                       onToggleSelect={() => toggle(String(item.number))}
                     />
-                  </View>
-                );
-              }}
+                  ))}
+                </View>
+              )}
             />
         )}
         <BottomFade />
@@ -679,7 +680,9 @@ const styles = StyleSheet.create({
   // Grid row/cell — mirrors the note/folder feed: fixed one-column width (inline)
   // with flexGrow:0 so a card can't stretch into a partial row's empty space.
   row: { gap: Spacing.three, alignItems: 'flex-start' },
-  cardCell: { flexGrow: 0, flexShrink: 1, minWidth: 0, overflow: 'hidden' },
+  // One column's stack. The gap is what used to separate rows; it now runs down
+  // a column instead.
+  cardCell: { flexGrow: 0, flexShrink: 1, minWidth: 0, gap: Spacing.three },
   waitingRow: {
     flexDirection: 'row',
     alignItems: 'center',

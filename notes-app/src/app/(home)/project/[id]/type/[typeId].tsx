@@ -27,7 +27,7 @@ import { useScrollToTop } from '@/hooks/use-scroll-to-top';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
 import { useTheme } from '@/hooks/use-theme';
 import { effectiveTypeIds, normalizeTypeIds, type Issue, type IssueAttrValue } from '@/data/notes';
-import { trailingSpacers, useGridColumns, useGridColumnWidth, useGridEdgePadding, useTileHeight } from '@/lib/grid';
+import { columnsOf, useGridColumns, useGridColumnWidth, useGridEdgePadding, useTileHeight } from '@/lib/grid';
 import { parseTypeConfig, projectConfig, type AttrDef } from '@/lib/project';
 import {
   getGithubIssueDetail,
@@ -347,17 +347,20 @@ export default function IssueTypeScreen() {
   const attributes = useMemo(() => config?.attributes ?? [], [config]);
   const connected = parseTypeConfig(typeNote?.pluginConfig).githubConnected;
   const data = useMemo(() => getIssuesForNote(typeId), [getIssuesForNote, typeId]);
-  // Grid rows: the issues plus transparent spacers padding the last row so its
-  // cards stay one column wide (same layout as the note/folder feed).
-  type GridRow = Issue | { spacer: true; id: string };
-  const gridData = useMemo<GridRow[]>(() => {
-    const rows: GridRow[] = [...data];
-    for (let i = 0; i < trailingSpacers(data.length, columns); i++) rows.push({ spacer: true, id: `spacer-${i}` });
-    return rows;
-    // See the note in github/[id].tsx: spacers must be recomputed when the
-    // column count changes with the window.
+  // The grid is dealt into columns rather than laid out in rows. A card here
+  // grows under a tap to show its whole description, and in a row layout a row
+  // is as tall as its tallest cell — so opening one issue pushed the issue
+  // beside it down too, for a tap that had nothing to do with it. Each column
+  // now stacks on its own (see `columnsOf`), so a card only moves what is under
+  // it. No spacers: a short column simply ends.
+  type GridColumn = { id: string; items: Issue[] };
+  const gridData = useMemo<GridColumn[]>(() => {
+    // An empty list stays empty rather than becoming N empty columns, so
+    // `ListEmptyComponent` still has its chance to render.
+    if (data.length === 0) return [];
+    return columnsOf(data, columns).map((items, i) => ({ id: `col-${i}`, items }));
   }, [data, columns]);
-  const { scrollProps, scrolled, scrollToTop } = useScrollToTop<FlatList<GridRow>>();
+  const { scrollProps, scrolled, scrollToTop } = useScrollToTop<FlatList<GridColumn>>();
   // The project's issue-type notes (id + title), ordered — powers both the Types
   // picker in the edit sheet and the "other types" chips on each card.
   const typeNotesList = useMemo(
@@ -650,29 +653,33 @@ export default function IssueTypeScreen() {
               </ThemedText>
             </View>
           }
-          renderItem={({ item }) => {
-            if ('spacer' in item) return <View style={[styles.cardCell, { width: columnWidth }]} />;
-            const duplicate = duplicateTargetOf(item);
-            return (
-              <View style={[styles.cardCell, { width: columnWidth }]}>
-                <IssueCard
-                  issue={item}
-                  attributes={attributes}
-                  otherTypes={effectiveTypeIds(item)
-                    .filter((tid) => tid !== typeId)
-                    .map((tid) => typeTitleById.get(tid))
-                    .filter((t): t is string => !!t)}
-                  pendingPush={pendingGh.has(item.id)}
-                  duplicateOf={duplicate ? { title: duplicate.title, done: duplicate.done } : undefined}
-                  selectionActive={selectionActive}
-                  selected={isSelected(item.id)}
-                  onToggleSelect={() => toggle(item.id)}
-                  onToggleDone={() => syncDone(item, !item.done)}
-                  onCopy={() => void Clipboard.setStringAsync(issueToClipboardText(item))}
-                />
-              </View>
-            );
-          }}
+          renderItem={({ item: column }) => (
+            <View style={[styles.cardCell, { width: columnWidth }]}>
+              {column.items.map((item) => {
+                const duplicate = duplicateTargetOf(item);
+                return (
+                  <IssueCard
+                    key={item.id}
+                    issue={item}
+                    attributes={attributes}
+                    otherTypes={effectiveTypeIds(item)
+                      .filter((tid) => tid !== typeId)
+                      .map((tid) => typeTitleById.get(tid))
+                      .filter((t): t is string => !!t)}
+                    pendingPush={pendingGh.has(item.id)}
+                    duplicateOf={
+                      duplicate ? { title: duplicate.title, done: duplicate.done } : undefined
+                    }
+                    selectionActive={selectionActive}
+                    selected={isSelected(item.id)}
+                    onToggleSelect={() => toggle(item.id)}
+                    onToggleDone={() => syncDone(item, !item.done)}
+                    onCopy={() => void Clipboard.setStringAsync(issueToClipboardText(item))}
+                  />
+                );
+              })}
+            </View>
+          )}
           ListEmptyComponent={
             <ThemedText themeColor="textSecondary" style={styles.state}>
               No issues yet. Tap + to add one.
@@ -714,7 +721,9 @@ const styles = StyleSheet.create({
   // Grid row/cell — mirrors the note/folder feed: fixed one-column width (inline)
   // with flexGrow:0 so a card can't stretch into a partial row's empty space.
   row: { gap: Spacing.three, alignItems: 'flex-start' },
-  cardCell: { flexGrow: 0, flexShrink: 1, minWidth: 0, overflow: 'hidden' },
+  // One column's stack. The gap is what used to be the row gap in
+  // `contentContainerStyle` — it now runs down a column instead of between rows.
+  cardCell: { flexGrow: 0, flexShrink: 1, minWidth: 0, gap: Spacing.three },
   // Positioning context for the status/copy overlay buttons; wraps the card
   // Pressable so those buttons stay siblings (not nested <button>s on web).
   tile: { position: 'relative' },

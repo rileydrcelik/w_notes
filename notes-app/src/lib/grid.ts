@@ -123,6 +123,28 @@ export function trailingSpacers(count: number, columns: number): number {
 }
 
 /**
+ * Deal a list into independent columns, left to right.
+ *
+ * For a grid whose cards can change height — an issue card expands under a tap
+ * to show its whole description. Laid out as rows (`numColumns`), a row is as
+ * tall as its tallest cell, so opening one card pushes down everything beside
+ * it as well as everything under it: the other column jumps for a tap that had
+ * nothing to do with it. Dealt into columns, each column stacks on its own and
+ * a card only ever moves what is below it.
+ *
+ * Round-robin rather than shortest-column: item *i* is always in column
+ * *i % columns*, so the grid reads in the same order as a row layout, positions
+ * don't depend on how tall anything is, and a card that grows can't shuffle its
+ * neighbours into different columns under the reader.
+ */
+export function columnsOf<T>(items: readonly T[], columns: number): T[][] {
+  const count = Math.max(1, Math.floor(columns));
+  const out: T[][] = Array.from({ length: count }, () => []);
+  items.forEach((item, i) => out[i % count].push(item));
+  return out;
+}
+
+/**
  * Extra left/right breathing room around the card grids. Spread into a grid's
  * `contentContainerStyle` after the base content style, which it overrides.
  */

@@ -297,3 +297,33 @@ describe('cardPreviewLines', () => {
     }
   });
 });
+
+describe('columnsOf', () => {
+  it('deals left to right, so the grid reads in the same order rows did', async () => {
+    const { columnsOf } = await gridFor('web');
+    expect(columnsOf([1, 2, 3, 4, 5], 2)).toEqual([
+      [1, 3, 5],
+      [2, 4],
+    ]);
+  });
+
+  it('gives every column its own array, even an empty one', async () => {
+    // The empty column still holds the grid's shape; without it the remaining
+    // cards would stretch across the full width.
+    const { columnsOf } = await gridFor('web');
+    expect(columnsOf([1], 3)).toEqual([[1], [], []]);
+  });
+
+  it('keeps an item in its column however tall its neighbours get', async () => {
+    // Why round-robin rather than shortest-column: a card expanding must not
+    // shuffle other cards between columns under the reader.
+    const { columnsOf } = await gridFor('web');
+    expect(columnsOf([0, 1, 2, 3, 4, 5, 6], 3)[1]).toEqual([1, 4]);
+  });
+
+  it('survives an empty list and a nonsense column count', async () => {
+    const { columnsOf } = await gridFor('web');
+    expect(columnsOf([], 3)).toEqual([[], [], []]);
+    expect(columnsOf([1, 2], 0)).toEqual([[1, 2]]);
+  });
+});
