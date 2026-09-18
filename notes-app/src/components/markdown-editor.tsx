@@ -12,6 +12,7 @@ import { hexToRgba, type Palette } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import { clearActiveEditorDismiss, setActiveEditorDismiss } from '@/lib/active-editor';
 import { hasEscapedBlockMarkup } from '@/lib/html-text';
+import { canonicalizeNoteImages } from '@/lib/note-images';
 import { Sentry } from '@/lib/sentry';
 
 const LINK_COLOR = '#3c87f7';
@@ -219,8 +220,13 @@ export function MarkdownEditor({
         // Nothing typed here yet, so this is the seed echoing back rather than
         // a keystroke.
         if (!touched.current) return;
-        watchForEscapedMarkup(e.nativeEvent.value);
-        onChangeText(e.nativeEvent.value);
+        // iOS serializes an image's width/height as floats; Android parses them
+        // with Integer.parseInt and drops the whole body onto the degraded path
+        // where markup shows as literal text. Round them here, on the one line
+        // every native edit passes through (see note-images.ts).
+        const value = canonicalizeNoteImages(e.nativeEvent.value);
+        watchForEscapedMarkup(value);
+        onChangeText(value);
       }}
       onChangeState={(e) => onStateChange?.(e.nativeEvent)}
       onChangeSelection={(e) => {

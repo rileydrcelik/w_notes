@@ -15,6 +15,7 @@
  */
 
 import { encodeSignificantSpaces } from '@/lib/html-space';
+import { canonicalizeNoteImages } from '@/lib/note-images';
 
 /** Elements whose text runs as one line, for deciding where a space "opens" one. */
 const SPACE_BLOCKS = 'p,li,h1,h2,h3,h4,h5,h6,blockquote,td,th';
@@ -99,6 +100,10 @@ export function tiptapHtmlToStored(html: string): string {
   }
 
   let out = doc.body.innerHTML;
+  // Whole-number image dimensions. Android parses them with `Integer.parseInt`,
+  // so a float — which is what iOS writes — takes the body down the degraded
+  // path where its markup renders as literal text (see note-images.ts).
+  out = canonicalizeNoteImages(out);
   out = out.replace(/checked=""/g, 'checked');
   out = out.replace(/<p><\/p>/g, '<br>');
 

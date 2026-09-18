@@ -11,6 +11,7 @@ import Code from '@tiptap/extension-code';
 import Heading from '@tiptap/extension-heading';
 import Blockquote from '@tiptap/extension-blockquote';
 import Link from '@tiptap/extension-link';
+import Image from '@tiptap/extension-image';
 import { BulletList, OrderedList, ListItem, TaskList, TaskItem } from '@tiptap/extension-list';
 import { Placeholder, UndoRedo } from '@tiptap/extensions';
 import type { EnrichedTextInputInstance, OnChangeStateEvent } from 'react-native-enriched';
@@ -43,6 +44,28 @@ const ItalicI = Italic.extend({
   renderHTML: ({ HTMLAttributes }) => ['i', HTMLAttributes, 0],
 });
 
+// An image in a stored body is a reference, not bytes (`lib/note-images.ts`);
+// this node's job is to keep one alive through a round trip. Inline, because
+// both native serializers emit `<img>` inside the paragraph. `width`/`height`
+// are carried verbatim — native lays out from them, and dropping them here
+// would strip the size off every body a phone wrote. `allowBase64` keeps a
+// `data:` image someone pastes as HTML: the stored body shouldn't hold bytes,
+// but a node the schema rejects is content deleted on the next keystroke, and
+// the paste handler is the right place to convert one into an attachment.
+const NoteImage = Image.extend({
+  inline: true,
+  group: 'inline',
+  addAttributes() {
+    const dimension = (name: 'width' | 'height') => ({
+      default: null,
+      parseHTML: (element: HTMLElement) => element.getAttribute(name),
+      renderHTML: (attrs: Record<string, unknown>) =>
+        attrs[name] == null ? {} : { [name]: attrs[name] },
+    });
+    return { ...this.parent?.(), width: dimension('width'), height: dimension('height') };
+  },
+}).configure({ allowBase64: true });
+
 // Match the native tag subset: list items and checkbox items hold a single
 // paragraph (no nesting), so bodies round-trip through the boundary normalizer.
 const ListItemP = ListItem.extend({ content: 'paragraph' });
@@ -74,6 +97,7 @@ function extensions(placeholder: string) {
     TaskItemP,
     Blockquote,
     Link.configure({ openOnClick: false, autolink: true }),
+    NoteImage,
     UndoRedo,
     Placeholder.configure({ placeholder }),
   ];
@@ -148,6 +172,17 @@ function editorCss(theme: Palette): string {
   text-decoration: line-through;
   font-style: italic;
   opacity: ${CheckedOpacity};
+}
+.wn-rich .ProseMirror img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 8px;
+  vertical-align: bottom;
+}
+/* Selected reads as selected without a hard edge cutting through the content. */
+.wn-rich .ProseMirror img.ProseMirror-selectednode {
+  outline: 2px solid ${LINK_COLOR};
+  outline-offset: 2px;
 }
 .wn-rich .ProseMirror p.is-editor-empty:first-child::before {
   content: attr(data-placeholder);

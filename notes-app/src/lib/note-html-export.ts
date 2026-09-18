@@ -49,7 +49,7 @@ const ALLOWED_TAGS = new Set([
  */
 const ALLOWED_ATTRS: Record<string, Set<string>> = {
   a: new Set(['href']),
-  img: new Set(['src', 'alt']),
+  img: new Set(['src', 'alt', 'width', 'height']),
   // Checkbox lists are `<ul data-type="checkbox"><li checked>` in the canonical
   // body — there is no `<input>` in the dialect, so the markers are drawn in CSS
   // and these two attributes are what the stylesheet keys off.
@@ -60,8 +60,11 @@ const ALLOWED_ATTRS: Record<string, Set<string>> = {
 const SAFE_HREF = /^(?:https?:|mailto:|#)/i;
 /**
  * `data:` and `https:` only. A `file://` source renders as a blank box on iOS
- * (WKWebView refuses it), which is worse than dropping it. No editor inserts
- * images today, so this is defensive — but the format tolerates them.
+ * (WKWebView refuses it), which is worse than dropping it — and the same goes
+ * for the `wn-img:` reference a stored body actually carries. Callers resolve
+ * those to `data:` URIs before exporting (`inlineNoteImages`); one that arrives
+ * here unresolved has no bytes on this device, and is dropped rather than
+ * printed as a broken box.
  */
 const SAFE_SRC = /^(?:https:|data:image\/)/i;
 
@@ -101,6 +104,9 @@ function keptAttributes(tag: string, raw: string): string {
     const value = quoted ? quoted.replace(/^["']|["']$/g, '') : '';
     if (name === 'href' && !SAFE_HREF.test(value)) continue;
     if (name === 'src' && !SAFE_SRC.test(value)) continue;
+    // Dimensions are laid out by the print stylesheet, so a non-numeric one is
+    // just dropped rather than being allowed to carry a CSS-ish value through.
+    if ((name === 'width' || name === 'height') && !/^\d+$/.test(value)) continue;
     // A bare boolean (`checked`) keeps its bare form; CSS matches it either way.
     out += quoted ? ` ${name}="${escapeAttr(value)}"` : ` ${name}`;
   }
@@ -168,7 +174,10 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
 pre { background: #f3f3f3; padding: 12px; border-radius: 8px; white-space: pre-wrap; overflow-wrap: anywhere; }
 pre code { background: none; padding: 0; }
 a { color: #1a4fd8; }
-img { max-width: 100%; }
+/* height:auto matters once an image carries width/height attributes: without it
+   a picture wider than the page is squeezed horizontally and keeps its full
+   height. */
+img { max-width: 100%; height: auto; }
 hr { border: none; border-top: 1px solid #ddd; margin: 24px 0; }
 /* Checkbox lists carry no <input> in the canonical body — draw the box here. */
 ul[data-type="checkbox"] { list-style: none; padding-left: 4px; }

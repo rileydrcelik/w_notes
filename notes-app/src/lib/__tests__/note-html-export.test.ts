@@ -61,6 +61,22 @@ describe('sanitizeNoteHtml', () => {
     expect(sanitizeNoteHtml('<img src="file:///tmp/a.png">')).toBe('<img>');
   });
 
+  it('keeps whole-number image dimensions and drops anything else', () => {
+    // The print stylesheet lays images out from these; a CSS-ish value has no
+    // business reaching a document rendered in the app's own origin.
+    expect(sanitizeNoteHtml('<img src="https://e.com/a.png" width="800" height="450">'))
+      .toBe('<img src="https://e.com/a.png" width="800" height="450">');
+    expect(sanitizeNoteHtml('<img src="https://e.com/a.png" width="100%">'))
+      .toBe('<img src="https://e.com/a.png">');
+  });
+
+  it('drops an unresolved note-image reference rather than printing a broken box', () => {
+    // Exports resolve these to data: URIs first (inlineNoteImages). One that
+    // arrives unresolved has no bytes on this device.
+    expect(sanitizeNoteHtml('<img src="wn-img:abc" width="10" height="10">'))
+      .toBe('<img width="10" height="10">');
+  });
+
   it('preserves the checkbox list markers the stylesheet keys off', () => {
     const out = sanitizeNoteHtml('<ul data-type="checkbox"><li checked>done</li><li>todo</li></ul>');
     expect(out).toBe('<ul data-type="checkbox"><li checked>done</li><li>todo</li></ul>');
