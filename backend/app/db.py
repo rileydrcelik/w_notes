@@ -108,6 +108,19 @@ async def lock_user(session: AsyncSession, user_id: str) -> None:
     await session.execute(select(func.pg_advisory_xact_lock(func.hashtext(user_id))))
 
 
+async def try_lock_user(session: AsyncSession, user_id: str) -> bool:
+    """Try to take the per-user advisory lock without blocking.
+
+    Returns True if the lock was acquired, False if it's held by another
+    transaction. Used for best-effort background tasks where missing the lock
+    is acceptable — a later edit will retry the operation.
+    """
+    result = await session.scalar(
+        select(func.pg_try_advisory_xact_lock(func.hashtext(user_id)))
+    )
+    return bool(result)
+
+
 async def get_session() -> AsyncIterator[AsyncSession]:
     """FastAPI dependency yielding a session that commits on success.
 
