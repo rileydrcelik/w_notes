@@ -344,7 +344,7 @@ function CreateOptionsSection() {
     {
       key: 'internshipEnabled',
       label: 'Internship trackers',
-      description: 'Show “New internship tracker” in the create menu, and “Convert to internship tracker” on notes',
+      description: 'Show “New internship tracker” in the create menu',
     },
   ];
 

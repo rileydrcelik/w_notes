@@ -157,12 +157,6 @@ type NotesContextValue = {
    */
   createInternshipNote: (folderId: string | null) => string;
   /**
-   * Turns a plain note into an internship tracker over the body it already has.
-   * One way (see `db.setNotePluginType`); a note that is already a plugin note,
-   * or is in the trash, is left alone.
-   */
-  convertToInternshipTracker: (id: string) => void;
-  /**
    * Creates a task-manager "project" folder (null parent = root) and returns its
    * id. Created unconfigured — the project screen shows a name/repo setup UI,
    * which writes the folder's `config` in place via `updateFolder`.
@@ -395,24 +389,6 @@ export function NotesProvider({ children }: { children: ReactNode }) {
     return id;
   }, []);
 
-  const convertToInternshipTracker = useCallback<NotesContextValue['convertToInternshipTracker']>((id) => {
-    // Optimistic, and undone if the guarded write declines — an already-typed
-    // note must not read as a tracker in memory while storage disagrees.
-    let before: Note | undefined;
-    setNotes((prev) => {
-      before = prev.find((n) => n.id === id);
-      if (!before || before.pluginType) return prev;
-      return touch(prev, id, { pluginType: 'internship', updatedAt: today() });
-    });
-    const write = db.setNotePluginType(id, 'internship').then((converted) => {
-      if (!converted && before && !before.pluginType) {
-        const original = before;
-        setNotes((prev) => touch(prev, id, { pluginType: original.pluginType, updatedAt: original.updatedAt }));
-      }
-    });
-    persist(write);
-  }, []);
-
   const createProject = useCallback<NotesContextValue['createProject']>((parentId) => {
     const id = rid('folder');
     // Created unconfigured (kind marks it a project, but no config yet); the
@@ -626,7 +602,6 @@ export function NotesProvider({ children }: { children: ReactNode }) {
       createFinanceNote,
       createResumeNote,
       createInternshipNote,
-      convertToInternshipTracker,
       createProject,
       createIssueTypeNote,
       createFolder,
@@ -654,7 +629,6 @@ export function NotesProvider({ children }: { children: ReactNode }) {
       createFinanceNote,
       createResumeNote,
       createInternshipNote,
-      convertToInternshipTracker,
       createProject,
       createIssueTypeNote,
       createFolder,
