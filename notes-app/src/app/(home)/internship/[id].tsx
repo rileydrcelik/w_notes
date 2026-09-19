@@ -419,50 +419,60 @@ export default function InternshipTrackerScreen() {
                             {group.entries.length}
                           </ThemedText>
                         </View>
-                        {group.entries.map((entry) => (
-                          <Animated.View
-                            key={`${entry.index}:${entry.text}`}
-                            layout={LinearTransition.duration(220)}
-                            style={[styles.row, { borderColor: hairline }]}
-                          >
-                            <View style={styles.rowMain}>
-                              <Pressable onPress={openEditor} style={styles.rowText}>
-                                <ThemedText>{entry.text}</ThemedText>
-                                {entry.detail ? (
-                                  <ThemedText type="small" themeColor="textSecondary">
-                                    {entry.detail}
-                                  </ThemedText>
-                                ) : null}
-                              </Pressable>
-                              <StatusChip
-                                status={entry.status}
-                                selected
-                                opens
-                                onPress={() =>
-                                  setPicking(picking === entry.index ? null : entry.index)
-                                }
-                                accessibilityLabel={`Status: ${STATUS_LABEL[entry.status]}. Change`}
-                              />
-                            </View>
-                            {picking === entry.index && (
+                        <View style={styles.groupBody}>
+                          <View style={styles.groupRows}>
+                            {group.entries.map((entry) => (
                               <Animated.View
-                                entering={FadeIn.duration(150)}
-                                exiting={FadeOut.duration(120)}
-                                style={styles.picker}
+                                key={`${entry.index}:${entry.text}`}
+                                layout={LinearTransition.duration(220)}
+                                style={[styles.row, { borderColor: hairline }]}
                               >
-                                {INTERNSHIP_STATUSES.map((s) => (
+                                <View style={styles.rowMain}>
+                                  <Pressable onPress={openEditor} style={styles.rowText}>
+                                    <ThemedText>{entry.text}</ThemedText>
+                                    {entry.detail ? (
+                                      <ThemedText type="small" themeColor="textSecondary">
+                                        {entry.detail}
+                                      </ThemedText>
+                                    ) : null}
+                                  </Pressable>
                                   <StatusChip
-                                    key={s}
-                                    status={s}
-                                    selected={s === entry.status}
-                                    onPress={() => setStatus(entry, s)}
-                                    accessibilityLabel={`Mark ${entry.text} as ${STATUS_LABEL[s]}`}
+                                    status={entry.status}
+                                    selected
+                                    opens
+                                    onPress={() =>
+                                      setPicking(picking === entry.index ? null : entry.index)
+                                    }
+                                    accessibilityLabel={`Status: ${STATUS_LABEL[entry.status]}. Change`}
                                   />
-                                ))}
+                                </View>
+                                {picking === entry.index && (
+                                  <Animated.View
+                                    entering={FadeIn.duration(150)}
+                                    exiting={FadeOut.duration(120)}
+                                    style={styles.picker}
+                                  >
+                                    {INTERNSHIP_STATUSES.map((s) => (
+                                      <StatusChip
+                                        key={s}
+                                        status={s}
+                                        selected={s === entry.status}
+                                        onPress={() => setStatus(entry, s)}
+                                        accessibilityLabel={`Mark ${entry.text} as ${STATUS_LABEL[s]}`}
+                                      />
+                                    ))}
+                                  </Animated.View>
+                                )}
                               </Animated.View>
-                            )}
-                          </Animated.View>
-                        ))}
+                            ))}
+                          </View>
+                          {/* The group's colour, running the height of its
+                              rows — so what you're scrolled to says which
+                              status it is without re-reading the heading. */}
+                          <View
+                            style={[styles.rail, { backgroundColor: statusColors[group.status] }]}
+                          />
+                        </View>
                       </View>
                     ))
                   )}
@@ -566,6 +576,9 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   group: { gap: Spacing.two },
+  groupBody: { flexDirection: 'row', alignItems: 'stretch', gap: Spacing.three },
+  groupRows: { flex: 1, gap: Spacing.two },
+  rail: { width: 3, borderRadius: Spacing.half },
   groupHeader: { flexDirection: 'row', alignItems: 'center', gap: Spacing.two },
   dot: { width: 8, height: 8, borderRadius: Spacing.one },
   row: {
