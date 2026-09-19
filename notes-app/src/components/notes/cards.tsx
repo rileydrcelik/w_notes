@@ -222,7 +222,7 @@ function FinanceNoteCard({ note }: { note: Note }) {
   );
 }
 
-/** An internship tracker: opens the tracker, and previews its counts. */
+/** An application tracker: opens the tracker, and previews its counts. */
 function InternshipNoteCard({ note }: { note: Note }) {
   const router = useRouter();
   const { toggleNoteFavorite } = useNotes();
@@ -246,7 +246,7 @@ function InternshipNoteCard({ note }: { note: Note }) {
         <View style={styles.titleRow}>
           <Feather name="briefcase" size={15} color={INTERNSHIP_ACCENT} />
           <ThemedText type="smallBold" numberOfLines={1} style={styles.titleText}>
-            {note.title.trim() || 'Internships'}
+            {note.title.trim() || 'Applications'}
           </ThemedText>
           {note.favorite && <FavoriteStar size={13} />}
         </View>

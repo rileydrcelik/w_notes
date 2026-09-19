@@ -1,26 +1,28 @@
 /**
- * An internship tracker: a note whose body is a list, one internship per line,
- * read as a tracker — counts per status up top, then every internship grouped
- * by status (furthest along first) and alphabetical within a group.
+ * An application tracker: a note whose body is a list, one application per
+ * line, read as a tracker — counts per status up top, then every application
+ * grouped by status (furthest along first) and alphabetical within a group.
+ * (Code and storage still say "internship", the name it shipped under.)
  *
  * The read view is built from the stored body every render; it keeps no copy of
  * its own, so a change synced from another device just shows up. A status is
  * changed by tapping the row's chip, which rewrites that one line's tag and
  * nothing else (`setEntryStatus`).
  *
- * Adding, renaming, removing and reordering internships is editing the list,
- * and editing is the app-wide gesture: the navbar's pencil — or tapping a row —
- * opens the body in the ordinary editor, and the done check brings the tracker
- * back. That's also why this screen offers no (+): an internship is a line of
- * this document, not an object made somewhere else.
+ * The navbar's (+) adds an application — a tracker has children, so it offers
+ * create, not the pencil — through a small dialog that appends one line
+ * (`appendEntry`). Renaming, removing and reordering are editing the list:
+ * tapping a row opens the body in the ordinary editor, and the done check
+ * brings the tracker back. Tapping a count at the top jumps to its group.
  */
-import Feather from '@expo/vector-icons/Feather';
 import { Stack, useLocalSearchParams } from 'expo-router';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Keyboard,
   KeyboardAvoidingView,
   type LayoutChangeEvent,
+  type NativeScrollEvent,
+  type NativeSyntheticEvent,
   Platform,
   Pressable,
   ScrollView,
@@ -35,19 +37,23 @@ import type { EnrichedTextInputInstance, OnChangeStateEvent } from 'react-native
 
 import { FormattingToolbar } from '@/components/formatting-toolbar';
 import { TopFade } from '@/components/edge-fade';
-import { STATUS_COLOR } from '@/components/internship/status-style';
+import { StatusChip } from '@/components/internship/status-chip';
+import { useStatusColors } from '@/components/internship/status-style';
 import { MarkdownEditor } from '@/components/markdown-editor';
 import { ScrollToTopButton } from '@/components/scroll-to-top';
 import { SwipeBackView } from '@/components/swipe-back-view';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { hexToRgba, Spacing } from '@/constants/theme';
-import { useEditAction } from '@/hooks/use-edit-action';
+import { useCreateAction } from '@/hooks/use-create-action';
 import { useSaveAction } from '@/hooks/use-save-action';
 import { useScrollToTop } from '@/hooks/use-scroll-to-top';
+import { useScrolled } from '@/hooks/use-scrolled';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
 import { useTheme } from '@/hooks/use-theme';
+import { openApplicationDialog } from '@/lib/application-dialog';
 import {
+  appendEntry,
   countByStatus,
   groupEntries,
   INTERNSHIP_STATUSES,
@@ -63,6 +69,10 @@ import { useNotes } from '@/store/notes-store';
 
 /** Matches the note body's debounce. */
 const COMMIT_DEBOUNCE_MS = 350;
+
+/** How wide the tracker reads on a wide window. A list this narrow scans
+ *  faster than one stretched across a desktop screen. */
+const MAX_WIDTH = 640;
 
 export default function InternshipTrackerScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -104,8 +114,10 @@ export default function InternshipTrackerScreen() {
   const focusWhenReady = useRef(false);
 
   const snapshot = useRef({ id, draft, stored: note?.body, updateNote });
+  const editorOpenRef = useRef(editorOpen);
   useEffect(() => {
     snapshot.current = { id, draft, stored: note?.body, updateNote };
+    editorOpenRef.current = editorOpen;
   });
 
   const flush = () => {
@@ -150,8 +162,22 @@ export default function InternshipTrackerScreen() {
     requestAnimationFrame(focusEditor);
   };
 
-  // The pencil; it becomes the done check once the editor takes focus.
-  useEditAction(openEditor);
+  // The (+) adds an application — to the body as it is when the dialog answers,
+  // read from the snapshot (a `getNote` closure would be the render that
+  // opened it, and would write back over anything synced in meanwhile). An
+  // edit not yet committed is newer still, so it's the base when there is one,
+  // and the add commits it along with the new line.
+  const addApplication = () =>
+    openApplicationDialog({
+      onAdd: (name, status) => {
+        const { id: sid, draft: d, stored, updateNote: update } = snapshot.current;
+        const next = appendEntry(editedRef.current ? d : (stored ?? ''), name, status);
+        if (next === null) return;
+        editedRef.current = false;
+        update(sid, { body: next });
+      },
+    });
+  useCreateAction(note ? addApplication : null);
 
   const onChangeDraft = (html: string) => {
     editedRef.current = true;
@@ -165,6 +191,13 @@ export default function InternshipTrackerScreen() {
     const timer = setTimeout(() => {
       const { id: sid, stored, updateNote: update } = snapshot.current;
       if (stored !== draft) update(sid, { body: draft });
+      // Committed with the editor already put away (the image-picker case):
+      // nothing is pending any more, so stop holding back the reseed — or a
+      // later flush would write this draft over whatever lands after it.
+      if (!editorOpenRef.current) {
+        editedRef.current = false;
+        seededRef.current = draft;
+      }
     }, COMMIT_DEBOUNCE_MS);
     return () => clearTimeout(timer);
   }, [draft]);
@@ -221,6 +254,37 @@ export default function InternshipTrackerScreen() {
   const counts = useMemo(() => countByStatus(entries), [entries]);
   const [picking, setPicking] = useState<number | null>(null);
 
+  // The counts up top jump to their group. Measured at the tap, not cached from
+  // onLayout: on web that only fires when a group changes *size*, so one that
+  // merely moved (a line added above it) would keep a stale offset.
+  const groupRefs = useRef<Partial<Record<InternshipStatus, View | null>>>({});
+  const frameRef = useRef<View>(null);
+  const scrollY = useRef(0);
+  const jumpTo = (status: InternshipStatus | 'total') => {
+    const target = status === 'total' ? groups[0]?.status : status;
+    const group = target ? groupRefs.current[target] : null;
+    // The view around the ScrollView shares its top edge, and unlike the
+    // ScrollView it's typed as measurable.
+    const frame = frameRef.current;
+    if (!group || !frame) return;
+    group.measureInWindow((_gx, groupTop) => {
+      frame.measureInWindow((_fx, frameTop) => {
+        const y = scrollY.current + groupTop - frameTop - Spacing.three;
+        listRef.current?.scrollTo({ y: Math.max(0, y), animated: true });
+      });
+    });
+  };
+
+  // The fade under the title shows as soon as the content has moved at all —
+  // not at the back-to-top button's threshold, which is well down the list.
+  const top = useScrolled();
+  const onScroll = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
+    scrollProps.onScroll(e);
+    top.scrollProps.onScroll(e);
+    scrollY.current = e.nativeEvent.contentOffset.y;
+  };
+  const statusColors = useStatusColors();
+
   const setStatus = (entry: TrackerEntry, status: InternshipStatus) => {
     setPicking(null);
     if (status === entry.status && entry.tagged) return;
@@ -261,23 +325,26 @@ export default function InternshipTrackerScreen() {
           <TextInput
             value={title}
             onChangeText={onChangeTitle}
-            placeholder="Internships"
+            placeholder="Applications"
             placeholderTextColor={theme.textSecondary}
             style={[
               styles.title,
+              styles.column,
               noFocusOutline,
               { color: theme.text, paddingTop: insets.top + Spacing.two },
             ]}
             multiline
           />
-          <View style={styles.container}>
+          <View ref={frameRef} style={styles.container}>
             <ScrollView
               {...scrollProps}
+              onScroll={onScroll}
               onLayout={(e) => {
                 frameHeight.current = e.nativeEvent.layout.height;
               }}
               contentContainerStyle={[
                 styles.content,
+                styles.column,
                 { paddingBottom: editorOpen ? height : tabBarInset },
               ]}
               keyboardShouldPersistTaps="handled"
@@ -292,7 +359,7 @@ export default function InternshipTrackerScreen() {
                   key={`${id}:${editorRev}`}
                   value={draft}
                   onChangeText={onChangeDraft}
-                  placeholder="One internship per line…"
+                  placeholder="One application per line…"
                   editorRef={editorRef}
                   onFocusChange={onEditorFocus}
                   onStateChange={setFmtState}
@@ -310,25 +377,42 @@ export default function InternshipTrackerScreen() {
                         key={s}
                         label={STATUS_LABEL[s]}
                         value={counts[s]}
-                        color={STATUS_COLOR[s]}
+                        color={statusColors[s]}
+                        onPress={() => jumpTo(s)}
                       />
                     ))}
-                    <Stat label="Total" value={counts.total} color={theme.text} />
+                    <Stat
+                      label="Total"
+                      value={counts.total}
+                      color={theme.text}
+                      onPress={() => jumpTo('total')}
+                    />
                   </View>
 
                   {entries.length === 0 ? (
-                    <Pressable onPress={openEditor} style={styles.empty}>
-                      <ThemedText themeColor="textSecondary">No internships yet.</ThemedText>
+                    // A body with no lines to read (only a heading, say) still
+                    // has something to edit — and no pencil to get there.
+                    <Pressable
+                      onPress={body.trim() ? openEditor : addApplication}
+                      style={styles.empty}
+                    >
+                      <ThemedText themeColor="textSecondary">No applications yet.</ThemedText>
                       <ThemedText type="small" themeColor="textSecondary">
-                        Tap the pencil and add one per line.
+                        Tap + to add one.
                       </ThemedText>
                     </Pressable>
                   ) : (
                     groups.map((group) => (
-                      <View key={group.status} style={styles.group}>
+                      <View
+                        key={group.status}
+                        style={styles.group}
+                        ref={(node) => {
+                          groupRefs.current[group.status] = node;
+                        }}
+                      >
                         <View style={styles.groupHeader}>
                           <View
-                            style={[styles.dot, { backgroundColor: STATUS_COLOR[group.status] }]}
+                            style={[styles.dot, { backgroundColor: statusColors[group.status] }]}
                           />
                           <ThemedText type="smallBold">{STATUS_LABEL[group.status]}</ThemedText>
                           <ThemedText type="small" themeColor="textSecondary">
@@ -339,13 +423,7 @@ export default function InternshipTrackerScreen() {
                           <Animated.View
                             key={`${entry.index}:${entry.text}`}
                             layout={LinearTransition.duration(220)}
-                            style={[
-                              styles.row,
-                              {
-                                backgroundColor: theme.backgroundElement,
-                                borderColor: hairline,
-                              },
-                            ]}
+                            style={[styles.row, { borderColor: hairline }]}
                           >
                             <View style={styles.rowMain}>
                               <Pressable onPress={openEditor} style={styles.rowText}>
@@ -392,7 +470,7 @@ export default function InternshipTrackerScreen() {
               )}
             </ScrollView>
             {/* Rows dissolve into the title rather than cutting against it. */}
-            <TopFade visible={scrolled} />
+            <TopFade visible={top.scrolled} />
           </View>
         </KeyboardAvoidingView>
         <ScrollToTopButton visible={scrolled && !editorOpen} onPress={scrollToTop} />
@@ -402,63 +480,43 @@ export default function InternshipTrackerScreen() {
   );
 }
 
-function Stat({ label, value, color }: { label: string; value: number; color: string }) {
+function Stat({
+  label,
+  value,
+  color,
+  onPress,
+}: {
+  label: string;
+  value: number;
+  color: string;
+  /** Jumps to the group; a zero has no group to jump to. */
+  onPress: () => void;
+}) {
   const theme = useTheme();
   return (
-    <View style={[styles.stat, { borderColor: hexToRgba(theme.text, 0.12) }]}>
+    <Pressable
+      onPress={onPress}
+      disabled={value === 0}
+      accessibilityRole="button"
+      accessibilityLabel={`${label}: ${value}. Show in list`}
+      style={({ pressed }) => [
+        styles.stat,
+        { borderColor: hexToRgba(theme.text, 0.12) },
+        pressed && styles.pressed,
+      ]}
+    >
       <ThemedText style={[styles.statValue, { color }]}>{value}</ThemedText>
       <ThemedText type="small" themeColor="textSecondary" numberOfLines={1}>
         {label}
       </ThemedText>
-    </View>
-  );
-}
-
-/** A status as a bordered chip — the StateFilterBar control, per status colour. */
-function StatusChip({
-  status,
-  selected,
-  opens = false,
-  onPress,
-  accessibilityLabel,
-}: {
-  status: InternshipStatus;
-  selected: boolean;
-  /** The row's own chip, which opens the picker — marked with a chevron. */
-  opens?: boolean;
-  onPress: () => void;
-  accessibilityLabel: string;
-}) {
-  const theme = useTheme();
-  const color = STATUS_COLOR[status];
-  return (
-    <Pressable
-      onPress={onPress}
-      accessibilityRole="button"
-      accessibilityState={{ selected }}
-      accessibilityLabel={accessibilityLabel}
-      style={({ pressed }) => [
-        styles.chip,
-        {
-          backgroundColor: selected ? hexToRgba(color, 0.16) : 'transparent',
-          borderColor: selected ? color : hexToRgba(theme.text, 0.12),
-        },
-        pressed && styles.pressed,
-      ]}
-    >
-      <ThemedText
-        type="small"
-        style={[styles.chipText, { color: selected ? color : theme.textSecondary }]}
-      >
-        {STATUS_LABEL[status]}
-      </ThemedText>
-      {opens && <Feather name="chevron-down" size={12} color={color} style={styles.chevron} />}
     </Pressable>
   );
 }
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
+  // Capped and centred on a wide window; a phone is narrower than the cap.
+  column: { width: '100%', maxWidth: MAX_WIDTH, alignSelf: 'center' },
   // Out of sight but still a live native view: the editor has to take its seed
   // while hidden, and a `display: none` subtree may not be mounted at all on
   // native. Web has no such problem, and there `none` also keeps the hidden
@@ -520,15 +578,5 @@ const styles = StyleSheet.create({
   rowMain: { flexDirection: 'row', alignItems: 'center', gap: Spacing.two },
   rowText: { flex: 1, gap: Spacing.half },
   picker: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.two },
-  chip: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: Spacing.one,
-    paddingHorizontal: Spacing.two,
-    borderRadius: Spacing.two,
-    borderWidth: 1,
-  },
-  chipText: { fontWeight: '600' },
-  chevron: { marginLeft: Spacing.half },
   pressed: { opacity: 0.6 },
 });

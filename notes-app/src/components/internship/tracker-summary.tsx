@@ -5,7 +5,7 @@ import { ThemedText } from '@/components/themed-text';
 import { Spacing } from '@/constants/theme';
 import { countByStatus, INTERNSHIP_STATUSES, parseTracker, STATUS_LABEL } from '@/lib/internship';
 
-import { STATUS_COLOR } from './status-style';
+import { useStatusColors } from './status-style';
 
 /**
  * A tracker card's preview: how many internships sit in each status, the
@@ -14,10 +14,11 @@ import { STATUS_COLOR } from './status-style';
  */
 export function TrackerSummary({ body }: { body: string }) {
   const counts = useMemo(() => countByStatus(parseTracker(body)), [body]);
+  const colors = useStatusColors();
   if (counts.total === 0) {
     return (
       <ThemedText type="small" themeColor="textSecondary">
-        No internships yet
+        No applications yet
       </ThemedText>
     );
   }
@@ -25,7 +26,7 @@ export function TrackerSummary({ body }: { body: string }) {
     <View style={styles.list}>
       {INTERNSHIP_STATUSES.filter((s) => counts[s] > 0).map((s) => (
         <View key={s} style={styles.row}>
-          <View style={[styles.dot, { backgroundColor: STATUS_COLOR[s] }]} />
+          <View style={[styles.dot, { backgroundColor: colors[s] }]} />
           <ThemedText type="small" themeColor="textSecondary" numberOfLines={1} style={styles.label}>
             {STATUS_LABEL[s]}
           </ThemedText>

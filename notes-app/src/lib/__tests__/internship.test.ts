@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { countByStatus, groupEntries, parseTracker, setEntryStatus } from '../internship';
+import { appendEntry, countByStatus, groupEntries, parseTracker, setEntryStatus } from '../internship';
 
 const rows = (body: string) => parseTracker(body).map((e) => `${e.status}:${e.text}`);
 
@@ -112,5 +112,66 @@ describe('setEntryStatus', () => {
 
   it('edits a plain-text line in place', () => {
     expect(setEntryStatus('A\n[oa] B', { index: 1, text: 'B' }, 'offer')).toBe('A\n[offer] B');
+  });
+});
+
+describe('appendEntry', () => {
+  it('starts a list in an empty tracker', () => {
+    expect(appendEntry('', 'Google', 'applied')).toBe('<ul><li>[applied] Google</li></ul>');
+    expect(appendEntry('  ', 'Google', 'oa')).toBe('<ul><li>[oa] Google</li></ul>');
+  });
+
+  it('adds an item after the last one, leaving every other byte alone', () => {
+    const body = '<html><ul><li><b>Google</b></li><li>[oa] Meta</li></ul></html>';
+    expect(appendEntry(body, 'Stripe', 'applied')).toBe(
+      '<html><ul><li><b>Google</b></li><li>[oa] Meta</li><li>[applied] Stripe</li></ul></html>',
+    );
+  });
+
+  it('goes after an item with a nested list, not inside it', () => {
+    const body = '<ul><li>[oa] Google<ul><li>due friday</li></ul></li></ul>';
+    const next = appendEntry(body, 'Meta', 'applied')!;
+    expect(next).toBe('<ul><li>[oa] Google<ul><li>due friday</li></ul></li><li>[applied] Meta</li></ul>');
+    expect(rows(next)).toEqual(['oa:Google', 'applied:Meta']);
+  });
+
+  it('closes cleanly after an item left unclosed', () => {
+    const next = appendEntry('<ul><li>A</ul>', 'B', 'applied')!;
+    expect(rows(next)).toEqual(['applied:A', 'applied:B']);
+  });
+
+  it('prefers the list over a trailing paragraph', () => {
+    const next = appendEntry('<html><ul><li>A</li></ul><p></p></html>', 'B', 'offer')!;
+    expect(next).toBe('<html><ul><li>A</li><li>[offer] B</li></ul><p></p></html>');
+  });
+
+  it('adds a paragraph to a tracker written as paragraphs', () => {
+    expect(appendEntry('<html><p>A</p></html>', 'B', 'proc')).toBe('<html><p>A</p><p>[proc] B</p></html>');
+  });
+
+  it('starts a list inside the document wrapper when there are no lines', () => {
+    expect(appendEntry('<html><h1>Summer</h1></html>', 'B', 'applied')).toBe(
+      '<html><h1>Summer</h1><ul><li>[applied] B</li></ul></html>',
+    );
+  });
+
+  it('adds a line to plain text', () => {
+    expect(appendEntry('A', 'B', 'applied')).toBe('A\n[applied] B');
+    expect(appendEntry('A\n', 'B', 'applied')).toBe('A\n[applied] B');
+  });
+
+  it('escapes the name, and reads back as typed', () => {
+    const next = appendEntry('<ul><li>A</li></ul>', 'AT&T <SWE>', 'applied')!;
+    expect(next).toContain('AT&amp;T &lt;SWE&gt;');
+    expect(rows(next)).toEqual(['applied:A', 'applied:AT&T <SWE>']);
+  });
+
+  it('turns plain text into a list rather than let a markup-looking name hide every row', () => {
+    const next = appendEntry('A\n[oa] B', 'Foo <Bar>', 'applied')!;
+    expect(rows(next)).toEqual(['applied:A', 'oa:B', 'applied:Foo <Bar>']);
+  });
+
+  it('adds nothing for a blank name', () => {
+    expect(appendEntry('<ul><li>A</li></ul>', '   ', 'applied')).toBeNull();
   });
 });

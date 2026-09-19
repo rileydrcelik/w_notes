@@ -343,8 +343,8 @@ function CreateOptionsSection() {
     { key: 'resumeEnabled', label: 'Resumes', description: 'Show “New resume” in the create menu' },
     {
       key: 'internshipEnabled',
-      label: 'Internship trackers',
-      description: 'Show “New internship tracker” in the create menu',
+      label: 'Application trackers',
+      description: 'Show “New application tracker” in the create menu',
     },
   ];
 

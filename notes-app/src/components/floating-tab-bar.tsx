@@ -38,6 +38,7 @@ import {
   subscribeActiveEditor,
 } from '@/lib/active-editor';
 import { DRAFT_COPA_ID } from '@/lib/copa-block';
+import { runCreateAction } from '@/lib/create-action';
 import { getEditAction, runEditAction, subscribeEditAction } from '@/lib/edit-action';
 import {
   getVersionAction,
@@ -761,8 +762,8 @@ function CreateMenu({
 
   const onCreateInternship = () => {
     onClose();
-    // Starts as an empty list — the tracker shows its empty state, and the
-    // pencil opens the list to type internships into.
+    // Starts as an empty list — the tracker shows its empty state, and its (+)
+    // adds applications.
     const id = createInternshipNote(currentFolderId(pathname, getNote));
     router.push({ pathname: '/internship/[id]', params: { id } });
   };
@@ -826,7 +827,7 @@ function CreateMenu({
         { key: 'sentry', label: 'New Sentry view', icon: 'alert-triangle', onPress: onCreateSentry },
         { key: 'github', label: 'New GitHub view', icon: 'github', onPress: onCreateGithub },
         { key: 'resume', label: 'New resume', icon: 'file-text', onPress: onCreateResume },
-        { key: 'internship', label: 'New internship tracker', icon: 'briefcase', onPress: onCreateInternship },
+        { key: 'internship', label: 'New application tracker', icon: 'briefcase', onPress: onCreateInternship },
         ...(inProject
           ? []
           : [{ key: 'project', label: 'New task manager', icon: 'columns' as FeatherName, onPress: onCreateProject }]),
@@ -1121,6 +1122,9 @@ function CreateButton({
     // moment focus is lost would otherwise open a sheet instead of registering
     // as the end of an edit.
     if (leaf && leaf.run()) return;
+    // A screen whose children aren't notes says what (+) makes there — the
+    // application tracker adds an application (`lib/create-action.ts`).
+    if (runCreateAction()) return;
     // A tap creates this tab's primary thing and opens it, the same as
     // everywhere else: a note in the notes tab, a text block here. The menu
     // belongs to the long-press — answering the tap as well made adding a block

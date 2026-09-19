@@ -19,6 +19,7 @@ import { SelectionBackdrop } from '@/components/selection-backdrop';
 import { SelectionDismissView } from '@/components/selection-dismiss-view';
 import { CopaOptionsProvider, useCopaOptions } from '@/components/copa-options-modal';
 import { ItemOptionsProvider } from '@/components/item-options-modal';
+import { AddApplicationDialog } from '@/components/internship/add-application-dialog';
 import { LinkDialog } from '@/components/link-dialog';
 import { CopaProvider } from '@/store/copa-store';
 import { NotesProvider } from '@/store/notes-store';
@@ -171,6 +172,8 @@ function AppShell() {
           <FloatingTabBar blurTarget={blurTarget} />
           {/* Add/edit a link in the focused note editor; above the navbar. */}
           <LinkDialog />
+          {/* The application tracker's (+): add one application. */}
+          <AddApplicationDialog />
           {/* Web-only markdown cheatsheet button, docked bottom-left on the
               note/copa editor screens. Native renders nothing regardless. */}
           {formattingHints && <MarkdownHelp />}

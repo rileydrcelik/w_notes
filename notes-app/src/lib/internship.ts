@@ -86,7 +86,18 @@ function plainText(html: string): string {
     .trim();
 }
 
-type Raw = { contentStart: number; contentEnd: number; detail: string };
+type Raw = {
+  contentStart: number;
+  contentEnd: number;
+  detail: string;
+  /** What the entry is: a list item, a paragraph, or a line of plain text. */
+  kind: 'li' | 'p' | 'line';
+  /** Where the entry's block ends — just past its closing tag, or where an
+   *  ancestor closed over it — so a new entry can be put after it. */
+  blockEnd: number;
+  /** The block was never closed — an ancestor's close ended it. */
+  unclosed: boolean;
+};
 
 /** Entry windows in an HTML body, in document order. */
 function htmlEntries(body: string): Raw[] {
@@ -125,7 +136,17 @@ function htmlEntries(body: string): Raw[] {
     if (open && stack.length <= open.depth) {
       const contentEnd = open.contentEnd ?? m.index;
       const detail = open.nestedFrom !== null ? plainText(body.slice(open.nestedFrom, m.index)) : '';
-      out.push({ contentStart: open.contentStart, contentEnd, detail });
+      // Its own close ends the block; an ancestor closing over it ends it here,
+      // before that ancestor's tag.
+      const own = tag === open.tag && at === open.depth;
+      out.push({
+        contentStart: open.contentStart,
+        contentEnd,
+        detail,
+        kind: open.tag,
+        blockEnd: own ? end : m.index,
+        unclosed: !own,
+      });
       open = null;
     }
   }
@@ -137,7 +158,14 @@ function textEntries(body: string): Raw[] {
   const out: Raw[] = [];
   let start = 0;
   for (const line of body.split('\n')) {
-    out.push({ contentStart: start, contentEnd: start + line.length, detail: '' });
+    out.push({
+      contentStart: start,
+      contentEnd: start + line.length,
+      detail: '',
+      kind: 'line',
+      blockEnd: start + line.length,
+      unclosed: false,
+    });
     start += line.length + 1;
   }
   return out;
@@ -213,4 +241,52 @@ export function setEntryStatus(
   const replaced = tag ? tag[0].length : lead.length;
   const next = lead + `[${status}] ` + content.slice(replaced);
   return body.slice(0, entry.contentStart) + next + body.slice(entry.contentEnd);
+}
+
+function escapeHtml(text: string): string {
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+/**
+ * The body with one more entry at the end of the list, or null when there's
+ * nothing to add.
+ *
+ * Like a status change, it's an insertion and nothing else: every existing byte
+ * stays where it was. The new line takes the shape the list already has — an
+ * item after the last list item, a paragraph after the last paragraph, a line
+ * of plain text — so it reads as one more line of the same list in the editor.
+ */
+export function appendEntry(body: string, text: string, status: InternshipStatus): string | null {
+  const name = text.replace(/\s+/g, ' ').trim();
+  if (!name) return null;
+  const line = `[${status}] ${name}`;
+  const html = `[${status}] ${escapeHtml(name)}`;
+
+  if (!body.trim()) return `<ul><li>${html}</li></ul>`;
+  if (!/<[a-z!/]/i.test(body)) {
+    // A name that looks like markup would flip the whole body to being read as
+    // HTML — which has no lines, so every row would vanish. The one case where
+    // the existing text is rewritten: into a list, each line kept, escaped.
+    if (/<[a-z!/]/i.test(line)) {
+      const items = body.split('\n').map((l) => `<li>${escapeHtml(l)}</li>`).join('');
+      return `<ul>${items}<li>${html}</li></ul>`;
+    }
+    return body.endsWith('\n') ? body + line : `${body}\n${line}`;
+  }
+
+  const raws = htmlEntries(body);
+  const lastItem = raws.filter((r) => r.kind === 'li').pop();
+  const anchor = lastItem ?? raws.filter((r) => r.kind === 'p').pop();
+  if (anchor) {
+    const tag = anchor.kind === 'li' ? 'li' : 'p';
+    // After an item left open, the new one would nest inside it — so this is
+    // the one case that adds a byte beyond the entry: the missing close.
+    const block = `${anchor.unclosed ? `</${tag}>` : ''}<${tag}>${html}</${tag}>`;
+    return body.slice(0, anchor.blockEnd) + block + body.slice(anchor.blockEnd);
+  }
+  // Markup, but no list and no lines yet: start one, inside the document
+  // wrapper if there is one.
+  const list = `<ul><li>${html}</li></ul>`;
+  const close = body.toLowerCase().lastIndexOf('</html>');
+  return close === -1 ? body + list : body.slice(0, close) + list + body.slice(close);
 }
