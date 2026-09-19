@@ -1147,7 +1147,11 @@ const styles = StyleSheet.create({
   dialogButtonIdle: {
     opacity: 0.4,
   },
+  // Positioned, so the glass tint (absolute, and so painted above static
+  // in-flow content) doesn't wash out the field and everything typed into it.
+  // See `components/glass-surface.tsx`.
   input: {
+    position: 'relative',
     borderRadius: Spacing.three,
     paddingHorizontal: Spacing.three,
     paddingVertical: Spacing.two + Spacing.half,

@@ -397,7 +397,11 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: '700',
   },
+  // Positioned, so the glass tint (absolute, and so painted above static
+  // in-flow content) doesn't wash out the field and everything typed into it.
+  // See `components/glass-surface.tsx`.
   input: {
+    position: 'relative',
     borderRadius: Spacing.three,
     paddingHorizontal: Spacing.three,
     paddingVertical: Spacing.two + Spacing.half,

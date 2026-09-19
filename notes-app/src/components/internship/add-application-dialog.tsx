@@ -5,7 +5,7 @@ import Animated, { FadeIn, FadeOut } from 'react-native-reanimated';
 import { GlassSurface } from '@/components/glass-surface';
 import { StatusChip } from '@/components/internship/status-chip';
 import { ThemedText } from '@/components/themed-text';
-import { Spacing } from '@/constants/theme';
+import { hexToRgba, Spacing } from '@/constants/theme';
 import { useKeyboardPadding } from '@/hooks/use-keyboard-inset';
 import { useTheme } from '@/hooks/use-theme';
 import {
@@ -50,6 +50,14 @@ function Form({
   const [name, setName] = useState('');
   const [status, setStatus] = useState<InternshipStatus>(DEFAULT_STATUS);
   const ready = name.trim().length > 0;
+  // `autoFocus` alone doesn't take on web — the press that opened the dialog
+  // leaves the focus on the navbar button, so the first thing typed goes
+  // nowhere. Ask for it once the field is actually on screen.
+  const nameRef = useRef<TextInput>(null);
+  useEffect(() => {
+    const t = setTimeout(() => nameRef.current?.focus(), 60);
+    return () => clearTimeout(t);
+  }, []);
 
   const onCancel = () => {
     Keyboard.dismiss();
@@ -95,6 +103,7 @@ function Form({
             <GlassSurface intensity={75} tintOpacity={0.9} style={styles.dialog}>
               <ThemedText style={styles.dialogTitle}>Add application</ThemedText>
               <TextInput
+                ref={nameRef}
                 value={name}
                 onChangeText={setName}
                 placeholder="Company or role"
@@ -108,7 +117,7 @@ function Form({
                 style={[
                   styles.input,
                   noFocusOutline,
-                  { color: colors.text, backgroundColor: colors.backgroundElement },
+                  { color: colors.text, backgroundColor: colors.background, borderColor: hexToRgba(colors.text, 0.15) },
                 ]}
               />
               <View style={styles.statuses}>
@@ -183,8 +192,17 @@ const styles = StyleSheet.create({
     elevation: 24,
   },
   dialogTitle: { fontSize: 18, fontWeight: '700' },
+  // `position: relative` is load-bearing. GlassSurface tints itself with an
+  // absolutely-positioned overlay, and an absolute box paints above static
+  // in-flow content — so the tint washed over the field and everything typed
+  // into it. Its sibling Views are positioned and so paint above the tint; a
+  // TextInput renders static, and was the one thing under it. (It ignores
+  // pointer events, so the field still focused and typed normally — it just
+  // looked greyed out.) Opaque and outlined so it reads as a field on glass.
   input: {
+    position: 'relative',
     borderRadius: Spacing.three,
+    borderWidth: StyleSheet.hairlineWidth,
     paddingHorizontal: Spacing.three,
     paddingVertical: Spacing.two + Spacing.half,
     fontSize: 16,

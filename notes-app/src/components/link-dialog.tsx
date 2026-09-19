@@ -5,7 +5,7 @@ import Animated, { FadeIn, FadeOut } from 'react-native-reanimated';
 
 import { GlassSurface } from '@/components/glass-surface';
 import { ThemedText } from '@/components/themed-text';
-import { Spacing } from '@/constants/theme';
+import { hexToRgba, Spacing } from '@/constants/theme';
 import { useKeyboardPadding } from '@/hooks/use-keyboard-inset';
 import { useTheme } from '@/hooks/use-theme';
 import {
@@ -52,7 +52,16 @@ function LinkForm({
   const [url, setUrl] = useState(request.url);
   const [text, setText] = useState(request.text ?? '');
   const urlRef = useRef<TextInput>(null);
+  const textRef = useRef<TextInput>(null);
   const asksText = request.text !== null;
+  // See the add-application dialog: `autoFocus` doesn't take on web, where the
+  // click that opened this leaves focus on what was clicked. The form is keyed
+  // per opening, so this runs once, on the field it opens on.
+  useEffect(() => {
+    const t = setTimeout(() => (asksText ? textRef.current : urlRef.current)?.focus(), 60);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- once, on mount
+  }, []);
   const href = normalizeLinkUrl(url);
   const existing = request.url !== '';
 
@@ -89,7 +98,7 @@ function LinkForm({
   const inputStyle = [
     styles.input,
     noFocusOutline,
-    { color: colors.text, backgroundColor: colors.backgroundElement },
+    { color: colors.text, backgroundColor: colors.background, borderColor: hexToRgba(colors.text, 0.15) },
   ];
 
   return (
@@ -126,6 +135,7 @@ function LinkForm({
             </View>
             {asksText && (
               <TextInput
+                ref={textRef}
                 value={text}
                 onChangeText={setText}
                 placeholder="Text"
@@ -247,8 +257,17 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  // `position: relative` is load-bearing. GlassSurface tints itself with an
+  // absolutely-positioned overlay, and an absolute box paints above static
+  // in-flow content — so the tint washed over the field and everything typed
+  // into it. Its sibling Views are positioned and so paint above the tint; a
+  // TextInput renders static, and was the one thing under it. (It ignores
+  // pointer events, so the field still focused and typed normally — it just
+  // looked greyed out.) Opaque and outlined so it reads as a field on glass.
   input: {
+    position: 'relative',
     borderRadius: Spacing.three,
+    borderWidth: StyleSheet.hairlineWidth,
     paddingHorizontal: Spacing.three,
     paddingVertical: Spacing.two + Spacing.half,
     fontSize: 16,

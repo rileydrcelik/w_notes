@@ -63,6 +63,13 @@ export function GlassSurface({
 
   return (
     <BlurView intensity={intensity} tint={scheme} {...androidBlur} style={[style, styles.blurClip]}>
+      {/* The tint is absolutely positioned, and on web an absolute box paints
+          above *static* in-flow content — so anything here that isn't
+          positioned ends up under it, greyed out. Views render positioned and
+          are fine; a `TextInput` renders static, and a washed-out field is how
+          this was found. A field placed directly on the glass needs
+          `position: 'relative'`. It ignores pointer events, so a field under
+          it still focuses and types — it just looks disabled. */}
       <View pointerEvents="none" style={[StyleSheet.absoluteFill, { backgroundColor: tint }]} />
       {children}
     </BlurView>
