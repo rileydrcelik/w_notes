@@ -6,18 +6,22 @@ import {
   type EnrichedTextInputInstance,
   type HtmlStyle,
   type OnChangeStateEvent,
+  type OnLinkDetected,
 } from 'react-native-enriched';
 
 import { hexToRgba, type Palette } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import {
   clearActiveEditorDismiss,
+  clearActiveEditorEditLink,
   clearActiveEditorInsertImage,
   setActiveEditorDismiss,
+  setActiveEditorEditLink,
   setActiveEditorInsertImage,
 } from '@/lib/active-editor';
 import { db } from '@/lib/db';
 import { hasEscapedBlockMarkup } from '@/lib/html-text';
+import { closeLinkDialogFor, isLinkDialogOpenFor, openLinkDialog } from '@/lib/link-dialog';
 import { pickNoteImage } from '@/lib/note-image-files';
 import { insertNoteImage } from '@/lib/note-image-insert';
 import {
@@ -166,6 +170,55 @@ export function MarkdownEditor({
     })();
   };
 
+  // Where the caret is and which link (if any) it sits in, kept for the link
+  // dialog: by the time it's open the dialog's own field has the focus, so the
+  // range has to be taken now. Refs, not state — nothing renders from them.
+  const selection = useRef({ start: 0, end: 0, text: '' });
+  const detectedLink = useRef<OnLinkDetected | null>(null);
+  const linkActive = useRef(false);
+  // Identifies this editor's dialog; see `closeLinkDialogFor`.
+  const linkOwner = useRef({}).current;
+
+  const editLink = () => {
+    const sel = selection.current;
+    // Android's setLink re-inserts the range as plain text, so a selection
+    // holding a line break or a picture (U+FFFC) would lose them.
+    if (sel.text.includes(String.fromCharCode(10)) || sel.text.includes(String.fromCharCode(0xfffc))) return;
+    const found = detectedLink.current;
+    // `onLinkDetected` only fires on a change, and not every platform reports
+    // leaving a link — so the last one seen counts only while the editor still
+    // says a link is under the caret *and* the caret is inside its range.
+    const link =
+      linkActive.current && found?.url && sel.start >= found.start && sel.end <= found.end
+        ? found
+        : null;
+    const start = link ? link.start : sel.start;
+    const end = link ? link.end : sel.end;
+    const wrapped = link ? link.text : sel.text;
+    const empty = start === end;
+    // The offsets belong to this instance's text. If the ref now points at a
+    // different one (a remount), they'd overwrite whatever sits there instead.
+    const instance = editor.current;
+    const same = () => (editor.current === instance ? instance : null);
+    const refocus = () => same()?.focus();
+    openLinkDialog({
+      owner: linkOwner,
+      url: link?.url ?? '',
+      text: empty ? '' : null,
+      onApply: (url, text) => {
+        refocus();
+        same()?.setLink(start, end, empty ? text || url : wrapped, url);
+      },
+      onRemove: link
+        ? () => {
+            refocus();
+            same()?.removeLink(start, end);
+          }
+        : undefined,
+      onCancel: refocus,
+    });
+  };
+
   // The seed comes back as a change event; that is the editor echoing what the
   // store already holds, not the user typing, and reporting it would mark the
   // note edited (see `onChangeBody` in the note screen) and re-commit a body
@@ -240,13 +293,17 @@ export function MarkdownEditor({
   // still-focused one has taken in the meantime.
   const dismissRef = useRef<(() => void) | null>(null);
   const insertRef = useRef<(() => void) | null>(null);
+  const linkRef = useRef<(() => void) | null>(null);
   useEffect(
     () => () => {
       if (dismissRef.current) clearActiveEditorDismiss(dismissRef.current);
       // Same reasoning, and the same ownership rule: an editor unmounted while
       // focused has to release the slot, but only if it still holds it.
       if (insertRef.current) clearActiveEditorInsertImage(insertRef.current);
+      if (linkRef.current) clearActiveEditorEditLink(linkRef.current);
+      closeLinkDialogFor(linkOwner);
     },
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- a stable ref value
     [],
   );
 
@@ -343,9 +400,17 @@ export function MarkdownEditor({
           }
         })();
       }}
-      onChangeState={(e) => onStateChange?.(e.nativeEvent)}
+      onChangeState={(e) => {
+        linkActive.current = e.nativeEvent.link.isActive;
+        onStateChange?.(e.nativeEvent);
+      }}
+      onLinkDetected={(e) => {
+        detectedLink.current = e;
+      }}
       onChangeSelection={(e) => {
         const { start, end, text } = e.nativeEvent;
+        // `text` is the selected text on both platforms.
+        selection.current = { start, end, text };
         onSelectionChange?.({ start, end, atEnd: end >= text.length });
       }}
       onFocus={() => {
@@ -361,16 +426,23 @@ export function MarkdownEditor({
         // `lib/active-editor.ts`).
         insertRef.current = chooseImage;
         setActiveEditorInsertImage(chooseImage);
+        linkRef.current = editLink;
+        setActiveEditorEditLink(editLink);
         setFocused(true);
         onFocusChange?.(true);
       }}
       onBlur={() => {
+        // The link dialog took the focus, not the user leaving: stay editing,
+        // so the screen doesn't drop to its read view (or adopt a remote edit
+        // and remount this editor) under the open dialog.
+        if (isLinkDialogOpenFor(linkOwner)) return;
         setActiveEditorDismiss(null);
         // By the identity that was registered, not this render's: `chooseImage`
         // is rebuilt every render, and `onFocus` calls `setFocused` — so by the
         // time a blur arrives the closure here holds a different function object
         // and the ownership guard would make the release a silent no-op.
         if (insertRef.current) clearActiveEditorInsertImage(insertRef.current);
+        if (linkRef.current) clearActiveEditorEditLink(linkRef.current);
         setFocused(false);
         onFocusChange?.(false);
       }}

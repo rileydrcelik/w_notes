@@ -21,8 +21,10 @@ import type { EnrichedTextInputInstance, OnChangeStateEvent } from 'react-native
 import { Accent, hexToRgba, Spacing, type Palette } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import {
+  clearActiveEditorEditLink,
   clearActiveEditorInsertImage,
   setActiveEditorDismiss,
+  setActiveEditorEditLink,
   setActiveEditorInsertImage,
 } from '@/lib/active-editor';
 import {
@@ -33,6 +35,8 @@ import {
   type CodeEdit,
 } from '@/lib/code-typing';
 import { db } from '@/lib/db';
+import { closeLinkDialogFor, isLinkDialogOpenFor, openLinkDialog } from '@/lib/link-dialog';
+import { isOpenableLinkUrl } from '@/lib/link-url';
 import { pickNoteImage } from '@/lib/note-image-files';
 import { insertNoteImage } from '@/lib/note-image-insert';
 import {
@@ -44,6 +48,8 @@ import {
 import { storedHtmlToTiptap, tiptapHtmlToStored } from '@/lib/rich-html.web';
 
 const LINK_COLOR = '#3c87f7';
+
+const IS_MAC = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform);
 
 /**
  * Width an image is scaled to fit inside the editor, in CSS pixels.
@@ -569,6 +575,46 @@ export function MarkdownEditor({
       })();
     };
 
+    /**
+     * Add a link at the selection, or edit / remove the one under the caret.
+     *
+     * The range is fixed when the dialog opens: its field takes the focus, and
+     * nothing typed there moves this editor's selection, but the range is what
+     * the answer applies to either way. A caret inside a link means that whole
+     * link, so editing one never needs it selected first.
+     */
+    const linkOwner = {};
+    const editLink = () => {
+      const instance = editor;
+      if (!instance) return;
+      const inLink = instance.isActive('link');
+      if (inLink) instance.commands.extendMarkRange('link');
+      const { from, to, empty } = instance.state.selection;
+      const href = inLink ? String(instance.getAttributes('link').href ?? '') : '';
+      const at = () => instance.chain().focus().setTextSelection({ from, to });
+      openLinkDialog({
+        owner: linkOwner,
+        url: href,
+        text: empty ? '' : null,
+        onApply: (url, text) => {
+          if (empty) {
+            // Inserted already linked, then the link mark is dropped from the
+            // caret so what's typed next isn't part of it.
+            at()
+              .insertContent({ type: 'text', text: text || url, marks: [{ type: 'link', attrs: { href: url } }] })
+              .unsetMark('link')
+              .run();
+          } else {
+            // The link mark is inclusive (autolink), so without the unset the
+            // next thing typed at its end would join it.
+            at().setLink({ href: url }).setTextSelection(to).unsetMark('link').run();
+          }
+        },
+        onRemove: inLink ? () => at().unsetLink().setTextSelection(to).run() : undefined,
+        onCancel: () => instance.commands.focus(),
+      });
+    };
+
     // Installed before the await, so a caller that reaches for the handle early
     // gets something that works rather than null.
     if (editorRef) {
@@ -599,6 +645,24 @@ export function MarkdownEditor({
         editorProps: {
           attributes: { class: 'wn-rich-input' },
           handlePaste: (_view, event) => handlePaste(event),
+          handleDOMEvents: {
+            // Cmd/Ctrl+click follows a link. A plain click still puts the caret
+            // in it — the body is its own read view, and a tap anywhere in it
+            // means "edit". Handled on mousedown, before ProseMirror moves the
+            // selection or the editor takes focus, so following a link from
+            // the read view doesn't also drop you into editing.
+            mousedown: (_view, event) => {
+              // Cmd on a Mac, where Ctrl+click is the context menu.
+              const mod = IS_MAC ? event.metaKey : event.ctrlKey;
+              if (!mod || event.button !== 0) return false;
+              const anchor = (event.target as HTMLElement | null)?.closest?.('a');
+              const href = anchor?.getAttribute('href');
+              if (!isOpenableLinkUrl(href)) return false;
+              event.preventDefault();
+              window.open(href, '_blank', 'noopener,noreferrer');
+              return true;
+            },
+          },
         },
         onUpdate: ({ editor: e }) => cbRef.current.onChangeText(toStored(e.getHTML())),
         onFocus: () => {
@@ -606,11 +670,16 @@ export function MarkdownEditor({
           // keyboard to dismiss) can return the editor to its resting state.
           setActiveEditorDismiss(() => instance.commands.blur());
           setActiveEditorInsertImage(chooseImage);
+          setActiveEditorEditLink(editLink);
           cbRef.current.onFocusChange?.(true);
         },
         onBlur: () => {
+          // The link dialog has the focus; this editor is still the one being
+          // edited, and it takes the focus back when the dialog closes.
+          if (isLinkDialogOpenFor(linkOwner)) return;
           setActiveEditorDismiss(null);
           clearActiveEditorInsertImage(chooseImage);
+          clearActiveEditorEditLink(editLink);
           cbRef.current.onFocusChange?.(false);
         },
       });
@@ -636,6 +705,9 @@ export function MarkdownEditor({
     };
 
     /**
+     * Ctrl/Cmd+K adds or edits a link — the shortcut every editor uses for it,
+     * and one the browser would otherwise take for its own search bar.
+     *
      * Ctrl/Cmd+I inserts an image.
      *
      * It is the shortcut that was asked for, and it costs italic its usual
@@ -646,7 +718,13 @@ export function MarkdownEditor({
      */
     const onKeyDown = (event: KeyboardEvent) => {
       if (!(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey) return;
-      if (event.key !== 'i' && event.key !== 'I') return;
+      const key = event.key.toLowerCase();
+      if (key === 'k') {
+        event.preventDefault();
+        editLink();
+        return;
+      }
+      if (key !== 'i') return;
       event.preventDefault();
       chooseImage();
     };
@@ -670,6 +748,8 @@ export function MarkdownEditor({
       editor?.destroy();
       setActiveEditorDismiss(null);
       clearActiveEditorInsertImage(chooseImage);
+      clearActiveEditorEditLink(editLink);
+      closeLinkDialogFor(linkOwner);
       if (editorRef) editorRef.current = null;
     };
     // Init once — content/placeholder are frozen; `key={id}` remounts to reseed.

@@ -99,3 +99,28 @@ export function insertImageIntoActiveEditor(): boolean {
   activeInsertImage();
   return true;
 }
+
+// ---- Edit link ----
+//
+// Same shape as insert image, for the same reason: the bar is the screen's, and
+// only the editor knows the selection and the link under the caret.
+
+let activeEditLink: (() => void) | null = null;
+
+export function setActiveEditorEditLink(fn: (() => void) | null): void {
+  activeEditLink = fn;
+  listeners.forEach((l) => l());
+}
+
+/** Release the slot, but only if `fn` still holds it. */
+export function clearActiveEditorEditLink(fn: () => void): void {
+  if (activeEditLink !== fn) return;
+  setActiveEditorEditLink(null);
+}
+
+/** Ask the focused editor to add or edit a link at its selection. */
+export function editLinkInActiveEditor(): boolean {
+  if (!activeEditLink) return false;
+  activeEditLink();
+  return true;
+}

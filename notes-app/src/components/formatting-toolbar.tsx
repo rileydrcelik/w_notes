@@ -16,7 +16,7 @@ import { GlassSurface } from '@/components/glass-surface';
 import { ThemedText } from '@/components/themed-text';
 import { hexToRgba, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
-import { insertImageIntoActiveEditor } from '@/lib/active-editor';
+import { editLinkInActiveEditor, insertImageIntoActiveEditor } from '@/lib/active-editor';
 
 /** Active/highlight tint, matching the focused tab in the floating navbar. */
 const ACCENT = '#7a89b8';
@@ -98,6 +98,9 @@ export function FormattingToolbar({ editorRef, state, visible }: Props) {
   const activeList = LIST_OPTIONS.find((o) => state?.[o.key]?.isActive) ?? null;
   const shownList = activeList ?? LIST_OPTIONS.find((o) => o.key === lastList) ?? LIST_OPTIONS[0];
 
+  const linkActive = !!state?.link?.isActive;
+  const linkBlocked = !!state?.link?.isBlocking;
+
   const onListPress = () => {
     setMenuOpen(false);
     run(shownList.run);
@@ -171,6 +174,24 @@ export function FormattingToolbar({ editorRef, state, visible }: Props) {
             );
           })}
 
+          {/* Add, edit or remove a link. Lit while the caret is in one, like
+              the toggles beside it, but a press opens the link dialog rather
+              than toggling — a link needs an address. The focused editor owns
+              the selection, so it runs the action (`lib/active-editor.ts`). */}
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={linkActive ? 'Edit link' : 'Add link'}
+            disabled={linkBlocked}
+            onPress={() => editLinkInActiveEditor()}
+            style={[styles.button, linkActive && styles.buttonActive]}>
+            <MaterialCommunityIcons
+              name="link-variant"
+              size={22}
+              color={linkActive ? ACCENT : theme.text}
+              style={linkBlocked ? styles.blocked : undefined}
+            />
+          </Pressable>
+
           <View style={[styles.divider, { backgroundColor: hexToRgba(theme.textSecondary, 0.3) }]} />
 
           {/* Insert a picture. Not one of INLINE_TOOLS: those are toggles the
@@ -240,15 +261,17 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 0 },
     elevation: 16,
   },
+  // 40, the app's icon-button size: at 44 the bar outgrew a 360dp phone once
+  // the link button joined it.
   button: {
-    width: 44,
+    width: 40,
     height: 40,
     alignItems: 'center',
     justifyContent: 'center',
     borderRadius: Spacing.two,
   },
   listButton: {
-    width: 52,
+    width: 48,
     flexDirection: 'row',
     gap: 1,
   },
