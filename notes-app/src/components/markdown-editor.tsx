@@ -176,6 +176,8 @@ export function MarkdownEditor({
   const selection = useRef({ start: 0, end: 0, text: '' });
   const detectedLink = useRef<OnLinkDetected | null>(null);
   const linkActive = useRef(false);
+  // Length of the whole plain text, for `atEnd` (see `onChangeText` below).
+  const textLength = useRef(0);
   // Identifies this editor's dialog; see `closeLinkDialogFor`.
   const linkOwner = useRef({}).current;
 
@@ -407,11 +409,25 @@ export function MarkdownEditor({
       onLinkDetected={(e) => {
         detectedLink.current = e;
       }}
+      // "At the end" needs the whole text's length, which the selection event
+      // doesn't carry: its `text` is only the *selected* text on both
+      // platforms, so comparing against that read a bare caret as at the end
+      // almost everywhere — and a new line typed mid-note scrolled the screen
+      // to the bottom. The length drops the editor's zero-width spaces, as
+      // Android's offsets do; iOS counts them in its offsets, so there a caret
+      // within that many characters of the end can read as at the end — a
+      // near miss, where the old check was wrong almost everywhere. Re-checked
+      // on each change as well as each caret move, because the two events
+      // don't arrive in a fixed order.
+      onChangeText={(e) => {
+        textLength.current = e.nativeEvent.value.length;
+        const { start, end } = selection.current;
+        onSelectionChange?.({ start, end, atEnd: end >= textLength.current });
+      }}
       onChangeSelection={(e) => {
         const { start, end, text } = e.nativeEvent;
-        // `text` is the selected text on both platforms.
         selection.current = { start, end, text };
-        onSelectionChange?.({ start, end, atEnd: end >= text.length });
+        onSelectionChange?.({ start, end, atEnd: end >= textLength.current });
       }}
       onFocus={() => {
         // From here on the field can be typed into, so changes are the user's.
