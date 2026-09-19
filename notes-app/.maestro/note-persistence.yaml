@@ -29,11 +29,28 @@ appId: com.rileydrcelik.wnotes.dev
 - clearState
 - launchApp
 
-# The tab bar mounts only once the router has resolved a route, so this doubles
-# as the honest "the app is up" signal and as what the first tap needs.
+# The tab bar mounts once the router has resolved a route — which is *before*
+# the first-run seed and the home list's first render are done, so "Create is
+# visible" is not "the app is idle". Tapping there fires into the heaviest work
+# of the run, and on a software-GPU emulator that is not a slow tap, it is a
+# broken one: the frames carrying the tap's DOWN and UP were measured 717ms
+# apart, and React Native arms its long-press timer at 500ms. The button then
+# receives a genuine `onLongPress` from a short tap, opens the create menu
+# instead of a note, and the next step fails looking for 'Title'.
+#
+# So wait for something that is only true once the seed has landed and been
+# rendered, then let animations settle. On a real phone this costs nothing; on
+# a slow emulator it is the difference between measuring the app and measuring
+# the input queue. Raising `delayLongPress` on the button would be papering
+# over this — the app's behaviour is correct, the harness was mis-measuring.
 - extendedWaitUntil:
     visible: 'Create'
     timeout: 60000
+- extendedWaitUntil:
+    visible: 'Welcome to w_notes'
+    timeout: 60000
+- waitForAnimationToEnd:
+    timeout: 10000
 - tapOn: 'Create'
 
 # Tap the title field before typing. `inputText` goes to whatever holds focus,

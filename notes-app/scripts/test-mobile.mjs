@@ -5,6 +5,15 @@
 //   npm run test:mobile -- --build # rebuild + install first (needed after any code change)
 //   npm run test:mobile -- --keep  # leave the emulator running afterwards
 //
+// Exactly one device must be attached, or the run stops and says so. With more
+// than one, name the one you mean:
+//
+//   MAESTRO_DEVICE=emulator-5554 npm run test:mobile
+//
+// The device is not a detail: the same flow passes on a phone and fails on a
+// software-GPU emulator, so a result is only readable next to the device that
+// produced it. Every run prints which one it used.
+//
 // The release APK has the JS bundled in, so nothing you edit reaches the device
 // until you rebuild. `--build` is not optional after a code change; it's the
 // whole difference between testing your work and testing yesterday's.
@@ -54,14 +63,35 @@ function fail(message) {
 const adb = (...a) =>
   execFileSync(adbBin, a, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
 
-function deviceOnline() {
+/** Serials of every attached device that is actually ready for commands. */
+function onlineDevices() {
   try {
     return adb('devices')
       .split('\n')
       .slice(1)
-      .some((line) => line.trim().endsWith('\tdevice'));
+      .map((line) => line.trim())
+      .filter((line) => line.endsWith('\tdevice'))
+      .map((line) => line.split('\t')[0]);
   } catch {
-    return false;
+    return [];
+  }
+}
+
+function deviceOnline() {
+  return onlineDevices().length > 0;
+}
+
+/** `ro.product.model` for a serial, or the serial itself if the prop is unreadable. */
+function deviceModel(serial) {
+  try {
+    return (
+      execFileSync(adbBin, ['-s', serial, 'shell', 'getprop', 'ro.product.model'], {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+      }).trim() || serial
+    );
+  } catch {
+    return serial;
   }
 }
 
@@ -84,6 +114,13 @@ if (deviceOnline()) {
   console.log('• emulator already running — reusing it');
 } else {
   console.log(`• starting emulator ${AVD} (headless)`);
+  // No `-gpu` flag on purpose: the default picks host acceleration where it is
+  // available, and that is what makes this usable at all. Forcing
+  // `-gpu swiftshader_indirect` here to match CI was tried and made it strictly
+  // worse — software rendering starved the emulator badly enough that SystemUI
+  // itself ANR'd on a black screen and even the assert-only `smoke` flow failed
+  // before the app drew a frame. CI can afford swiftshader because its runner
+  // has nothing else to do; a developer machine cannot.
   startedEmulator = spawn(emulatorBin, ['-avd', AVD, '-no-window', '-no-snapshot-load', '-no-boot-anim'], {
     detached: true,
     stdio: 'ignore',
@@ -93,6 +130,31 @@ if (deviceOnline()) {
   console.log('• emulator booted');
 }
 
+// Which device everything below runs on, decided here rather than left to
+// whatever adb happens to list first.
+//
+// This is not hypothetical tidiness. A run that silently retargeted a plugged-in
+// phone to the emulator once cost an afternoon: the same flow passed on the
+// phone and failed on the emulator, which read as "the last commit broke the
+// create button" when it was only ever a slower device turning a tap into a long
+// press. `deviceOnline()` counted any attached device as "an emulator is already
+// running", and Maestro was given no `--device` at all — so the build could land
+// on one device and the flows run on another. Pick one, use it everywhere, and
+// say out loud which it was: the one log line that turns that hunt into a glance.
+const attached = onlineDevices();
+const target = process.env.MAESTRO_DEVICE ?? (attached.length === 1 ? attached[0] : null);
+
+if (!target) {
+  fail(
+    `expected exactly one attached device, found ${attached.length}${attached.length ? `: ${attached.join(', ')}` : ''}\n` +
+      '  Unplug the others, or name one: MAESTRO_DEVICE=<serial> npm run test:mobile\n' +
+      '  Which device ran the flows decides whether a failure means anything.',
+  );
+}
+if (!attached.includes(target)) {
+  fail(`MAESTRO_DEVICE=${target} is not attached (online: ${attached.join(', ') || 'none'})`);
+}
+
 if (shouldBuild) {
   console.log('• building + installing release APK (several minutes)');
   // --no-bundler: the release APK carries its own JS, so Metro has nothing to
@@ -100,7 +162,10 @@ if (shouldBuild) {
   // attached to it after installing, so this spawnSync never returned and the
   // flows never ran. It only ever looked fine because 8081 happened to be taken,
   // which makes the CLI skip the dev server and exit.
-  const build = spawnSync('npx', ['expo', 'run:android', '--variant', 'release', '--no-bundler'], {
+  // --device pins the install to the same device the flows use below. Without it
+  // the APK can land on one attached device while Maestro drives another, so the
+  // run silently tests the *previous* build.
+  const build = spawnSync('npx', ['expo', 'run:android', '--variant', 'release', '--no-bundler', '--device', target], {
     stdio: 'inherit',
     shell: true,
     // Shared with the CI build (scripts/build-android-e2e.mjs) so both produce
@@ -114,18 +179,21 @@ if (shouldBuild) {
 // The notification shade can be left open by a previous run and covers the app,
 // which shows up as a baffling "element not visible" failure.
 try {
-  adb('shell', 'cmd', 'statusbar', 'collapse');
+  adb('-s', target, 'shell', 'cmd', 'statusbar', 'collapse');
 } catch {
   // Best-effort only.
 }
 
-console.log('• running Maestro flows\n');
-const flows = spawnSync(maestroBin, ['test', '.maestro/'], { stdio: 'inherit', shell: isWindows });
+console.log(`• running Maestro flows on ${target} (${deviceModel(target)})\n`);
+const flows = spawnSync(maestroBin, ['test', '--device', target, '.maestro/'], {
+  stdio: 'inherit',
+  shell: isWindows,
+});
 
 if (startedEmulator && !keepEmulator) {
   console.log('\n• shutting down the emulator we started');
   try {
-    adb('emu', 'kill');
+    adb('-s', target, 'emu', 'kill');
   } catch {
     // Already gone.
   }
