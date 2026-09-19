@@ -46,7 +46,6 @@ import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { hexToRgba, Spacing } from '@/constants/theme';
 import { useCreateAction } from '@/hooks/use-create-action';
-import { useSaveAction } from '@/hooks/use-save-action';
 import { useScrollToTop } from '@/hooks/use-scroll-to-top';
 import { useScrolled } from '@/hooks/use-scrolled';
 import { useTabBarInset } from '@/hooks/use-tab-bar-inset';
@@ -63,7 +62,6 @@ import {
   type InternshipStatus,
   type TrackerEntry,
 } from '@/lib/internship';
-import { saveNoteToDevice } from '@/lib/save-note';
 import { noFocusOutline } from '@/lib/web-style';
 import { useNotes } from '@/store/notes-store';
 
@@ -293,15 +291,6 @@ export default function InternshipTrackerScreen() {
     const next = setEntryStatus(current, entry, status);
     if (next !== null && next !== current) updateNote(id, { body: next });
   };
-
-  useSaveAction(
-    note && !editorOpen && entries.length > 0
-      ? {
-          label: 'Save tracker to device',
-          run: () => void saveNoteToDevice(note),
-        }
-      : null,
-  );
 
   if (!note) {
     return (
