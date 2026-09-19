@@ -312,7 +312,6 @@ export default function InternshipTrackerScreen() {
     );
   }
 
-  const hairline = hexToRgba(theme.text, 0.12);
 
   return (
     <SwipeBackView>
@@ -423,7 +422,7 @@ export default function InternshipTrackerScreen() {
                           <Animated.View
                             key={`${entry.index}:${entry.text}`}
                             layout={LinearTransition.duration(220)}
-                            style={[styles.row, { borderColor: hairline }]}
+                            style={styles.row}
                           >
                             <View style={styles.rowMain}>
                               <Pressable onPress={openEditor} style={styles.rowText}>
@@ -568,11 +567,9 @@ const styles = StyleSheet.create({
   group: { gap: Spacing.two },
   groupHeader: { flexDirection: 'row', alignItems: 'center', gap: Spacing.two },
   dot: { width: 8, height: 8, borderRadius: Spacing.one },
+  // No box: rows sit on the page, flush with their group's heading.
   row: {
-    borderRadius: Spacing.three,
-    borderWidth: StyleSheet.hairlineWidth,
     paddingVertical: Spacing.two,
-    paddingHorizontal: Spacing.three,
     gap: Spacing.two,
   },
   rowMain: { flexDirection: 'row', alignItems: 'center', gap: Spacing.two },
