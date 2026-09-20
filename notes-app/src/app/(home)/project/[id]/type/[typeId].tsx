@@ -40,6 +40,7 @@ import {
   upsertAttrsBlock,
 } from '@/lib/issue-github';
 import { pushOrQueue } from '@/lib/github-outbox';
+import { issueToClipboardText } from '@/lib/issue-clipboard';
 import { cancelIssueRetitle } from '@/lib/issue-retitle';
 import { usePendingGithubIssues } from '@/hooks/use-github-outbox';
 import { useIssues } from '@/store/issues-store';
@@ -50,9 +51,22 @@ const ACCENT = '#16a394';
 const DONE_COLOR = '#3fb950';
 const GITHUB_ACCENT = '#8250df';
 
-/** An issue as pasteable text: strictly its description, nothing else. */
-function issueToClipboardText(issue: Issue): string {
-  return issue.description.trim();
+/**
+ * Put an issue on the clipboard, answering whether anything was written. An
+ * issue with neither body nor title is skipped outright rather than writing a
+ * blank string, which on web clears the clipboard instead of filling it.
+ */
+async function copyIssue(issue: Issue): Promise<boolean> {
+  const text = issueToClipboardText(issue);
+  if (!text) return false;
+  try {
+    await Clipboard.setStringAsync(text);
+    return true;
+  } catch {
+    // A denied or unavailable clipboard: no checkmark, so the press reads as
+    // the nothing it was.
+    return false;
+  }
 }
 
 /** Compact chips summarizing an issue's set attribute values. */
@@ -129,7 +143,8 @@ function IssueCard({
   selected: boolean;
   onToggleSelect: () => void;
   onToggleDone: () => void;
-  onCopy: () => void;
+  /** Writes the clipboard; resolves false when there was nothing to copy. */
+  onCopy: () => Promise<boolean>;
 }) {
   const theme = useTheme();
   // Same shared tile height the note/folder feed uses, so issue cards line up
@@ -146,8 +161,11 @@ function IssueCard({
   const onStatusPress = selectionActive ? onToggleSelect : onToggleDone;
 
   // Copy this issue to the clipboard, flashing a checkmark for confirmation.
-  const handleCopy = useCallback(() => {
-    onCopy();
+  // The flash waits on the write, because it is the only confirmation there is:
+  // it used to fire regardless, so an issue with nothing to copy — or a refused
+  // clipboard — looked exactly like a successful copy.
+  const handleCopy = useCallback(async () => {
+    if (!(await onCopy())) return;
     setCopied(true);
     setTimeout(() => setCopied(false), 1200);
   }, [onCopy]);
@@ -293,7 +311,7 @@ function IssueCard({
         )}
       </Pressable>
       <Pressable
-        onPress={handleCopy}
+        onPress={() => void handleCopy()}
         hitSlop={8}
         accessibilityRole="button"
         accessibilityLabel="Copy issue"
@@ -674,7 +692,7 @@ export default function IssueTypeScreen() {
                     selected={isSelected(item.id)}
                     onToggleSelect={() => toggle(item.id)}
                     onToggleDone={() => syncDone(item, !item.done)}
-                    onCopy={() => void Clipboard.setStringAsync(issueToClipboardText(item))}
+                    onCopy={() => copyIssue(item)}
                   />
                 );
               })}
